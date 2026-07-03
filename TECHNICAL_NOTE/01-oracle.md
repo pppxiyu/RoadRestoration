@@ -1,26 +1,11 @@
-# 01 — `run_oracle()`：完整执行逻辑
+# 01 — `run_oracle()`
 
-**这份文档在做什么。** 它逐步追踪 `run_oracle()`（在 `util/oracle.py`）的完整执行逻辑：为了得到一个"上帝视角"（oracle）的 ground-truth，需要按什么顺序做哪几步、每一步为什么这么做、关键产物是什么、又被后面哪一步用到。**本文只讲逻辑步骤**（"要解决什么问题 → 做了什么 → 为什么 → 产物给谁用"），不是变量之间的 dataflow 对照表，也不是 API 手册。文中会引用源码行号（如 `util/oracle.py:119`）方便查阅，technical term 与变量名/函数名/路径保留英文原样。
+**oracle 到底解什么问题。** 对一批被摧毁的路段（disrupted segments），枚举**所有** work-conserving 的修复 schedule（也就是这些路段的所有 permutation），在 `M` 个随机抽出的 duration scenario 下，对每个 schedule 计算**精确的** Figure-1 目标 `F(x|ω)`。最终产出两样东西：(a) 每个 scenario 下的事后最优（hindsight optimum）`F*`，以及 (b) 完整的 landscape（每一个被测过的 `x` 及其 `F/F1/F2`）。这就是日后用来验证 pretraining MILP 的 ground-truth（Level B — 用真实目标验证，见附录 B）。
 
-**这个 oracle 到底解什么问题。** 对一批被摧毁的路段（disrupted segments），枚举**所有** work-conserving 的修复 schedule（也就是这些路段的所有 permutation），在 `M` 个随机抽出的 duration scenario 下，对每个 schedule 计算**精确的** Figure-1 目标 `F(x|ω)`。最终产出两样东西：(a) 每个 scenario 下的事后最优（hindsight optimum）`F*`，以及 (b) 完整的 landscape（每一个被测过的 `x` 及其 `F/F1/F2`）。这就是日后用来验证 pretraining MILP 的 ground-truth（Level B — 用真实目标验证，见附录 B）。
+**入口。** `util/oracle.py :: run_oracle()`（定义在 `util/oracle.py:122`）。
 
-**入口。** `util/oracle.py :: run_oracle()`（定义在 `util/oracle.py:119`）。
-
-**运行方式。**
-```
-python -m util.oracle --probe     # 只测 s/UE + 估算总运行时间，然后停
-python -m util.oracle             # 完整枚举 + 出图
-python -m util.oracle --force     # 忽略 cache / 部分 checkpoint，强制重算
-python -m util.oracle --figs      # render_figs()：从已存 CSV 重画图（独立路径，不重算）
-```
-`__main__` 块（`util/oracle.py:242-246`）把 `--figs` 路由到 `render_figs()`，否则调用 `run_oracle(probe=…, force=…)`。
-
----
 
 ## 目录
-1. [Call-tree 总览](#1-call-tree)
-2. [模块常量与 fingerprint 机制](#2-fingerprint)
-3. [Step 0 — 输出目录 + figures 目录](#step0)
 4. [Step 1 — `select_oracle_instance`：选定 disruption set](#step1)
 5. [Step 2 — `build_context`：网络 / index maps / baseline / B(Φ) / u_pen / severity](#step2)
 6. [Step 3 — `sample_scenarios`：抽 duration scenario](#step3)
@@ -40,148 +25,49 @@ python -m util.oracle --figs      # render_figs()：从已存 CSV 重画图（�
 
 ---
 
-## 1. Call-tree 总览 <a id="1-call-tree"></a>
-
-下面这棵树是整篇文档的骨架——它按执行顺序把 `run_oracle` 会走到的每一层调用都摊开，后文各 Step 逐个展开讲"为什么"。
-
-```
-run_oracle()                                    util/oracle.py:119
-├─ scale_dir(out_dir)                            util/oracle.py:57      → outputs/oracle/n{N}/
-├─ (out_dir/"figures").mkdir(...)
-├─ select_oracle_instance(toy, N)                util/oracle.py:83      （注意：已无 seed 参数）
-│   └─ _reference_twoway_flow(toy)               util/oracle.py:63      读 raw/SiouxFalls_flow.tntp
-│      · 读 network/edges.csv                     (pd.read_csv)
-│      · 写 disruption/disrupted_segments_oracle{n}.csv
-├─ segments = sorted(edge_id)
-├─ build_context(toy, disrupted)                 util/evaluate.py:106
-│   ├─ load_toy_network(toy)                      util/io.py:10          读 edges.csv, od_pairs.csv, nodes.csv
-│   ├─ solve_ue(edges, M(H0), zone_ids)          util/ue.py:81          在“未受损”网络上做 UE → baseline
-│   │   ├─ _build_graph(edges, zone_ids)          util/ue.py:46          AequilibraE Graph
-│   │   ├─ _build_matrix(M, zone_ids)             util/ue.py:71          AequilibraeMatrix
-│   │   └─ TrafficAssignment.execute()            (AequilibraE bi-conjugate Frank-Wolfe)
-│   ├─ _matrix_from_H(H0, ctx)                    util/evaluate.py:48
-│   ├─ od_travel_times(base_links, ctx)           util/evaluate.py:27    networkx single-source dijkstra
-│   └─ 构建 B(Φ), u_pen, severity_vec             (在 free-flow 图上跑 networkx shortest_path)
-├─ sample_scenarios(disrupted, M, seed)          util/scenarios.py:14   在 DURATION_SUPPORT × ETA 上抽签
-├─ perms = itertools.permutations(segments)
-├─ compute_horizon(segments, scenarios)          util/oracle.py:109
-│   └─ 对每个 perm × scenario:
-│       schedule_from_permutation(perm, dur)      util/evaluate.py:82
-│       makespan_slot(start, dur)                 util/evaluate.py:94
-├─ _param_fingerprint()                          util/oracle.py:44      对 FINGERPRINT_PARAMS 做 sha1
-├─ [cache] meta.json 的 hash 匹配 → 读 CSV, make_figures, RETURN         util/oracle.py:134-145
-├─ [probe] 评一个 schedule，估算总时间；若 --probe 则 RETURN               util/oracle.py:148-156
-├─ [resume] 读 landscape_progress.json + 部分 oracle_landscape.csv        util/oracle.py:159-169
-├─ 主循环  for m,dur in scenarios: for perm in perms:                     util/oracle.py:174-192
-│   ├─ schedule_from_permutation(perm, dur)       util/evaluate.py:82
-│   ├─ evaluate_schedule(start, dur, T, ctx)      util/evaluate.py:156   ← 精确目标 F(x|ω)
-│   │   ├─ f2_value(start, dur)                    util/evaluate.py:98    (makespan_slot util/evaluate.py:94)
-│   │   └─ 逐 slot 循环 k=1..T:
-│   │       ├─ demand shortfall  D=max(B·v, ρD); H=clip(H0−D)
-│   │       ├─ build_damaged_edges(ctx, damaged)  util/evaluate.py:54
-│   │       ├─ _matrix_from_H(H, ctx)             util/evaluate.py:48
-│   │       ├─ solve_ue(dmg_edges, M(H), ...)      util/ue.py:81          每个 slot 一次 UE
-│   │       └─ od_travel_times(links, ctx)         util/evaluate.py:27
-│   ├─ append row(scenario,perm,F,F1,F2,eval_s,start_e…)
-│   └─ per-scenario checkpoint: 写 oracle_landscape.csv + landscape_progress.json
-├─ land.sort_values(["scenario","perm"]); 写 oracle_landscape.csv
-├─ opt = land.groupby("scenario")["F"].idxmin(); 写 oracle_optima.csv    util/oracle.py:197-198
-├─ 写 summary.txt                                 util/oracle.py:200-211
-├─ make_figures(...)                              viz/oracle_viz.py:23   figs 01/02/03
-├─ 写 meta.json (hash+params+timing)              util/oracle.py:216-222
-└─ prog_path.unlink()                             util/oracle.py:223    删掉 resume 标记
-```
-
-**关键观察：整份计算的成本几乎全在 UE 上。** 只有两处调用真正跑 AequilibraE UE：(1) `build_context` 里一次 baseline UE；(2) `evaluate_schedule` 里**每个 slot 一次** UE。其余全是纯算术 + networkx 最短路。一次完整运行的 UE 求解次数 ≈ `1 + (perms × M × T)`（再加 probe 的 1 次和 baseline 的 1 次）。这也是为什么整套设计要围着"能不能省掉一次 UE 枚举"来做 cache / resume。
-
----
-
-## 2. 模块常量与 fingerprint 机制 <a id="2-fingerprint"></a>
-
-在讲 Step 0 之前，先说清楚两件贯穿全程的基础设施：**路径常量**和 **fingerprint**。它们决定了"结果存到哪、什么时候可以复用、什么时候必须重算"。
-
-**路径常量**（`util/oracle.py:31-33`）：
-- `ROOT` = 仓库根目录（`util/` 的上一级）。
-- `TOY = ROOT/data/siouxfalls_toy` — 默认的 `toy_dir`。
-- `OUT = ROOT/outputs/oracle` — 默认的 `out_dir`（加 scale 后缀之前）。
-
-**为什么需要 fingerprint。** 一次完整枚举很贵（几十上百次 UE），所以希望"参数没变就直接复用上次结果"。问题是"参数没变"要能被精确判定。做法是：把所有会影响 `F` 的 config 参数打包成一个 JSON，做 sha1，得到一个短哈希（fingerprint）。这个哈希写进 `meta.json`；下次运行先算当前 fingerprint，和 `meta.json` 里存的比——一样就复用，不一样就重算。
-
-**`FINGERPRINT_PARAMS`**（`util/oracle.py:37-41`）——被纳入 fingerprint 的 config 属性清单：
-```
-N_DISRUPTED_ORACLE, MU, CAP_RETAIN, SPEED_RETAIN, SEVER_SEVERITY,
-F1_ACTIVE_ONLY, RHO, KAPPA, UPEN_FACTOR, DELTA_T_H, C_MAX,
-M_SCENARIOS, SEED, UE_RGAP, UE_MAX_ITER, DURATION_SUPPORT, ETA
-```
-注意这里有个两层设计：**`N_DISRUPTED_ORACLE` 单独充当 cache 文件夹的 key**（`n{N}/`，经由 `scale_dir`），而**整个清单（含 `N_DISRUPTED_ORACLE`）** 才是那个文件夹内部的"新鲜度哈希"。这样不同 `N` 的结果永远存在不同文件夹、互不覆盖；同一个 `N` 下再看别的参数有没有变。
-
-### `_param_fingerprint()` — `util/oracle.py:44-54`
-这一步要解决的问题：把 config 里那堆参数稳定地序列化成一个哈希。做法：
-- 遍历 `FINGERPRINT_PARAMS`，用 `getattr(P, name)` 逐个取值（`import config as P`，参数现在都在根目录的 `config.py`）。
-- 对任何 `dict` 型参数（`CAP_RETAIN`、`SPEED_RETAIN`、`DURATION_SUPPORT`），把 key 转成字符串：`{str(k): v[k] …}`。**为什么必须这么做**：`DURATION_SUPPORT` 的 key 是 tuple（如 `("local", 1)`），JSON 无法把 tuple 当作 key 序列化，不转就会报错。
-- `blob = json.dumps(values, sort_keys=True)`（`sort_keys` 保证同样的参数总产生同样的字符串）。
-- 返回 `(values, hashlib.sha1(blob.encode("utf-8")).hexdigest())`。
-- **产物给谁用**：`values` 会原样写进 `meta.json`（便于人读），`fp`（哈希）同时用于 cache 检查（`meta.json["hash"]`）和 resume 标记（`landscape_progress.json["hash"]`）。
-
-### `scale_dir(base=OUT, n=None)` — `util/oracle.py:57-60`
-- `n` 缺省取 `P.N_DISRUPTED_ORACLE`。
-- 返回 `Path(base)/f"n{n}"`，例如 `outputs/oracle/n4/`。作用是把不同规模（不同 `N`）的结果隔离到不同子目录，谁也不会覆盖谁。这是 `run_oracle` 进来做的**第一件事**（`util/oracle.py:120`）。
-
----
-
-## Step 0 — 输出目录 + figures 目录 <a id="step0"></a>
-`util/oracle.py:120-121`
-```python
-out_dir = scale_dir(out_dir)                 # outputs/oracle/n{N}/
-(out_dir / "figures").mkdir(parents=True, exist_ok=True)
-```
-**要解决的问题**：先把本次规模对应的落地目录准备好。**做了什么**：把 `out_dir` 换成带 scale 后缀的 `outputs/oracle/n{N}/`，并建好其下的 `figures/`（含父目录）。**为什么**：后面所有 CSV、meta.json、图都往这里写；先隔离到 `n{N}/` 保证不同规模不打架。**用到的 config**：`N_DISRUPTED_ORACLE`（经 `scale_dir`）。
-
----
-
 ## Step 1 — `select_oracle_instance`：选定 disruption set <a id="step1"></a>
-`util/oracle.py:123` → `select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)`，定义在 `util/oracle.py:83-106`。
+`util/oracle.py:126` → `select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)`，定义在 `util/oracle.py:85-109`。
 
-> **与旧文档的差异（已更新）**：这个函数**现在没有 `seed` 参数**了。当前签名是 `def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):`，`run_oracle` 也是按 `select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)` 调用（`util/oracle.py:123`）。选择过程本来就是完全确定性的（由 flow 决定），旧的 `seed` 参数是多余的，已删掉。
+> **与旧文档的差异（已更新）**：这个函数**现在没有 `seed` 参数**了。当前签名是 `def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):`，`run_oracle` 也是按 `select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)` 调用（`util/oracle.py:126`）。选择过程本来就是完全确定性的（由 flow 决定），旧的 `seed` 参数是多余的，已删掉。
 
 **这一步要解决什么问题。** 得先决定"哪些路段被摧毁、各自多严重"。这批 disruption 不能随便选——如果所有路段重要性差不多，那修复顺序（permutation）对 `F1` 的影响就很弱，枚举出来的 landscape 会平得看不出优劣，起不到验证 ground-truth 的作用。所以要**故意混搭关键路与次要路**，让 severity 和位置差异足够大，从而"先修哪条"这件事对目标值有强影响。
 
 **为什么按 flow 排重要性。** 用 baseline two-way UE flow 当"重要性"代理：流量越大的边，一旦断掉对 accessibility 的冲击越大。
 
 **逐步逻辑：**
-1. `edges = pd.read_csv(toy/"network"/"edges.csv")`（`util/oracle.py:89`）。列：`edge_id,u,v,capacity,length,free_flow_time,bpr_alpha,bpr_beta,road_class`。
-2. `flow = _reference_twoway_flow(toy)` — 见下面小节。
-3. 给每条边贴一个 `flow` 列：按 `(min(u,v), max(u,v))` 无向 key 去查流量，查不到默认 `0.0`（`util/oracle.py:91-92`）。
-4. `ranked = edges.sort_values("flow", ascending=False)` — 流量最大的边排最前（`util/oracle.py:93`）。
-5. **挑索引**（`util/oracle.py:95-100`）：
+1. `edges = pd.read_csv(toy/"network"/"edges.csv")`（`util/oracle.py:92`）。列：`edge_id,u,v,capacity,length,free_flow_time,bpr_alpha,bpr_beta,road_class`。
+2. `flow = _baseline_twoway_flow(toy)` — 见下面小节。
+3. 给每条边贴一个 `flow` 列：按 `(min(u,v), max(u,v))` 无向 key 去查流量，查不到默认 `0.0`（`util/oracle.py:94-95`）。
+4. `ranked = edges.sort_values("flow", ascending=False)` — 流量最大的边排最前（`util/oracle.py:96`）。
+5. **挑索引**（`util/oracle.py:98-102`）：
    - `n_crit = min(2, n)` → 流量最高的前 2 条定为 "critical"。
    - `picks = [0, 1, …, n_crit-1]`（最高流量那几名）。
    - `rest = n - n_crit`。若 `rest>0`，把剩下的名额用 `np.linspace(len(ranked)//5, len(ranked)-1, rest)` 取整索引，铺在**较低流量**的边上（从 20% 分位一路到最不常用的边）。这样额外挑出来的都是刻意选的低流量"次要"边。
    - `sub = ranked.iloc[picks]`。
-6. **分配 severity**（`util/oracle.py:101`）：
+6. **分配 severity**（`util/oracle.py:104`）：
    - `sub["severity"] = [3]*n_crit + [2 if i%2==0 else 1 for i in range(rest)]`。
    - 也就是：**前 2 条高流量边给 severity 3**（因为 `SEVER_SEVERITY=3`，它们在受损网络里会被**整条移除**，制造真正的断连）；剩下的边 severity 在 **2, 1, 2, 1, …** 之间交替。
-7. `sub["level_id"] = road_class + "-S" + severity`（如 `highway-S3`）（`util/oracle.py:102`）。
-8. 选取并按 `edge_id` 排序输出列 `[edge_id,u,v,road_class,severity,level_id]`（`util/oracle.py:103-104`）。
-9. **写** `toy/"disruption"/f"disrupted_segments_oracle{n}.csv"`（`util/oracle.py:105`），返回该 DataFrame。
+7. `sub["level_id"] = road_class + "-S" + severity`（如 `highway-S3`）（`util/oracle.py:105`）。
+8. 选取并按 `edge_id` 排序输出列 `[edge_id,u,v,road_class,severity,level_id]`（`util/oracle.py:106-107`）。
+9. **写** `toy/"disruption"/f"disrupted_segments_oracle{n}.csv"`（`util/oracle.py:108`），返回该 DataFrame。
 
 **关键产物给谁用**：返回的 `disrupted` DataFrame 会喂给 Step 2（`build_context`）、Step 3（`sample_scenarios`）和 Step 12（`make_figures`）；同时侧写一份 CSV 到 `disruption/`。**用到的 config**：`N_DISRUPTED_ORACLE`（作为 `n`）；`SEVER_SEVERITY` 这里不直接读，但它决定了"severity=3 意味着整条移除"这个下游含义。
 
-### `_reference_twoway_flow(toy)` — `util/oracle.py:63-80`
-**要解决的问题**：给上面的"重要性排序"提供每条无向边的 baseline 流量。数据源是开源 Sioux Falls 的参考 UE 解 `raw/SiouxFalls_flow.tntp`。逐步：
-- 逐行读该文件。
-- 跳过空行和表头（以 `from` 开头的行，大小写不敏感）（`util/oracle.py:69`）。
-- 去掉行尾 `;`、按空白切分；至少要 3 个 token（`util/oracle.py:71-73`）。
-- 解析 `a,b = int`、`vol = float`（对应 From, To, Volume 三列）；`ValueError` 就跳过。
-- `key = (min(a,b), max(a,b))`；**把两个有向流量累加进同一个无向 key**：`f[key] += vol`（`util/oracle.py:78-79`）。为什么合并两向：网络是无向边，重要性看的是这条边总承载多少车。
-- 返回 `{(min,max): 两向合计流量}`。只读 `raw/SiouxFalls_flow.tntp` 这一个文件。
+### `_baseline_twoway_flow(toy_dir)` — `util/oracle.py:65-82`
+**要解决的问题**：给上面的"重要性排序"提供每条无向边的 baseline 流量。流量**由项目自己的 UE 引擎**在**无损网络**上算出，不再读任何外部参考解文件。逐步：
+- `edges, od, zone_ids = load_toy_network(toy_dir)`（`util/oracle.py:74`）——载入无损 edge 表、OD 对、zone id。
+- `od_to_matrix(od, zone_ids)` 把 OD 对造成一个稠密需求矩阵（正常时期需求 `H0`）。
+- `flows, _ = solve_ue(edges, od_to_matrix(...), zone_ids, rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)`（`util/oracle.py:75-76`）——在**完好**网络、正常需求上做一次 baseline user-equilibrium 分配，拿到每条有向 link 的均衡 `volume`（内部细节同 §2e）。
+- 遍历 `flows` 每一行有向 link `(from, to, volume)`：`key = (min(from,to), max(from,to))`；**把两个方向的 `volume` 累加进同一个无向 key**：`f[key] += vol`（`util/oracle.py:79-81`）。为什么合并两向：网络是无向边，重要性看的是这条边总承载多少车。
+- 返回 `{(min,max): 两向合计流量}`。
+- **为什么这么算**：这一步去掉了对开源参考解文件 `raw/SiouxFalls_flow.tntp` 的依赖——以后换成别的网络/OD 数据集时，不再需要随附一份外部 reference-flow 文件。经验证，把流量来源从参考解换成自算 baseline UE 后，选出的受损实例**完全不变**（edge_ids `[1,12,15,17]`、severity `[1,2,3,3]`；两向流量与旧参考解逐边误差仅 ~0.14%）。（`raw/SiouxFalls_flow.tntp` 现在**只被** `util/ue.py:_validate` 的 UE 自校验用到——那是独立的自检，未改动。）
 
-回到 `run_oracle`：`segments = sorted(int(e) for e in disrupted["edge_id"])`（`util/oracle.py:124`）——被调度的 edge id 的规范排序列表，后面 permutation、horizon、landscape 列名都以它为准。
+回到 `run_oracle`：`segments = sorted(int(e) for e in disrupted["edge_id"])`（`util/oracle.py:127`）——被调度的 edge id 的规范排序列表，后面 permutation、horizon、landscape 列名都以它为准。
 
 ---
 
 ## Step 2 — `build_context`：网络 / index maps / baseline / B(Φ) / u_pen / severity <a id="step2"></a>
-`util/oracle.py:125` → `ctx = build_context(toy_dir, disrupted)`，定义在 `util/evaluate.py:106-150`。
+`util/oracle.py:128` → `ctx = build_context(toy_dir, disrupted)`，定义在 `util/evaluate.py:106-150`。
 
 **这一步整体要解决什么问题。** 后面要对 `perms × M × T` 这么多次评估反复调用同一套"静态背景"——网络结构、正常需求、基准通行时间、需求受损的敏感度矩阵、断连惩罚等等。这些东西和具体 schedule 无关，只需**算一次**，塞进一个 `ctx` dict 里，之后所有 scenario × permutation 复用。`build_context` 就是把这套背景一次性备好。
 
@@ -256,7 +142,7 @@ ctx["u_pen"] = P.UPEN_FACTOR * float(np.nanmax(baseline_u[np.isfinite(baseline_u
 ---
 
 ## Step 3 — `sample_scenarios`：抽 duration scenario <a id="step3"></a>
-`util/oracle.py:126` → `scenarios = sample_scenarios(disrupted, M, seed)`，定义在 `util/scenarios.py:14-28`。
+`util/oracle.py:129` → `scenarios = sample_scenarios(disrupted, M, seed)`，定义在 `util/scenarios.py:14-28`。
 
 **这一步要解决什么问题。** 修复每条边要多少个 slot 是不确定的——同一 disruption，不同的现实（crew 效率、损伤实际严重度）会给出不同工期。oracle 要在**一批** duration scenario 上评估，才能看出某个 schedule 是否稳健、以及事后最优随 scenario 怎么变。这一步就是抽 `M` 个这样的 scenario。
 
@@ -275,18 +161,18 @@ ctx["u_pen"] = P.UPEN_FACTOR * float(np.nanmax(baseline_u[np.isfinite(baseline_u
 ---
 
 ## Step 4 — permutations <a id="step4"></a>
-`util/oracle.py:127` → `perms = list(itertools.permutations(segments))`。
+`util/oracle.py:130` → `perms = list(itertools.permutations(segments))`。
 
 **要解决的问题**：把"所有可能的修复顺序"穷举出来。`N` 条受损边的每一种排列就是一个修复**优先级顺序**，喂给 work-conserving list scheduling 生成具体 schedule。`N=4` → `4! = 24` 个 permutation。**为什么可以只枚举 permutation**：见附录 C 的 work-conserving 归约——假设 idling 永远不划算，于是最优 schedule 一定对应某个优先级排列，把搜索空间压到 `|ℰ|!`。
 
 ---
 
 ## Step 5 — `compute_horizon`：全局 horizon T <a id="step5"></a>
-`util/oracle.py:128` → `T = compute_horizon(segments, scenarios)`，定义在 `util/oracle.py:109-116`。
+`util/oracle.py:131` → `T = compute_horizon(segments, scenarios)`，定义在 `util/oracle.py:112-119`。
 
 **这一步要解决什么问题。** `F1` 是逐 slot 项在 `[1,T]` 上的平均。如果每个 schedule 各用各的 horizon，`F1` 就不可比。所以要取一个**全局 T** = 所有 permutation × scenario 里的最大完工 slot，保证每个被枚举的 schedule 都在 `T` 内完工，且大家共享同一 horizon。
 
-**逐步逻辑**（`util/oracle.py:112-116`）：
+**逐步逻辑**（`util/oracle.py:115-119`）：
 ```python
 T = 0
 for perm in itertools.permutations(segments):
@@ -306,12 +192,12 @@ return T
 ### `makespan_slot(start, durations)` — `util/evaluate.py:94-95`
 - `max(start[e] + durations[e] for e in start)` —— 最后完工那条边的完工 slot。
 
-**产物给谁用**：整数 `T` 给 Step 7（probe）、Step 9（`evaluate_schedule`）、Step 12（figures）和 timing 用。随后 `print(...)` 打一行实例摘要（`util/oracle.py:129`）：段数、`perms`、`M`、`T`。
+**产物给谁用**：整数 `T` 给 Step 7（probe）、Step 9（`evaluate_schedule`）、Step 12（figures）和 timing 用。随后 `print(...)` 打一行实例摘要（`util/oracle.py:132`）：段数、`perms`、`M`、`T`。
 
 ---
 
 ## Step 6 — cache 检查（meta.json） <a id="step6"></a>
-`util/oracle.py:132-145`。
+`util/oracle.py:134-148`。
 ```python
 values, fp = _param_fingerprint()
 meta_path = out_dir / "meta.json"
@@ -333,7 +219,7 @@ if not probe and not force and meta_path.exists():
 ---
 
 ## Step 7 — probe timing <a id="step7"></a>
-`util/oracle.py:148-156`。
+`util/oracle.py:150-159`。
 ```python
 t0 = time.perf_counter()
 evaluate_schedule(schedule_from_permutation(list(perms[0]), scenarios[0]), scenarios[0], T, ctx)
@@ -351,7 +237,7 @@ if probe:
 ---
 
 ## Step 8 — 从 checkpoint resume <a id="step8"></a>
-`util/oracle.py:159-169`。
+`util/oracle.py:161-172`。
 ```python
 land_path = out_dir / "oracle_landscape.csv"
 prog_path = out_dir / "landscape_progress.json"
@@ -371,7 +257,7 @@ if not force and land_path.exists() and prog_path.exists():
 ---
 
 ## Step 9 — 主枚举循环 + `evaluate_schedule` <a id="step9"></a>
-`util/oracle.py:172-192`。
+`util/oracle.py:174-195`。
 ```python
 t_run = time.perf_counter(); scen_times = []
 for m, dur in enumerate(scenarios):
@@ -394,7 +280,7 @@ for m, dur in enumerate(scenarios):
 ```
 **这一步在做的事**：这是整个 oracle 的主体——对每个 scenario `m`（跳过已 `done` 的），遍历所有 `perms`，构建 schedule、评估、每个 `(scenario, permutation)` 记一行。
 - **行的列**：`scenario, perm`（用 `-` 连接的 edge id）、`F, F1, F2, eval_s`（这一 schedule 的墙钟时间），外加每段一个 `start_{edge}`。
-- **每个 scenario 存一次 checkpoint**（`util/oracle.py:190-191`）：一个 scenario 做完就把整个 `rows` 重写进 `oracle_landscape.csv`，并把 `{hash, done}` 更新进 `landscape_progress.json`。这正是 resume 能工作的原因。
+- **每个 scenario 存一次 checkpoint**（`util/oracle.py:193-194`）：一个 scenario 做完就把整个 `rows` 重写进 `oracle_landscape.csv`，并把 `{hash, done}` 更新进 `landscape_progress.json`。这正是 resume 能工作的原因。
 
 ### `evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=False)` —— 完整追踪
 `util/evaluate.py:156-207`。**它就是那个精确目标 `F(x|ω)`**：给定一个 schedule（开工时刻）、一个 scenario（工期）、horizon `T`，算出 `F`。
@@ -455,7 +341,7 @@ else:
 ---
 
 ## Step 10 — landscape 排序 + per-scenario 最优 <a id="step10"></a>
-`util/oracle.py:193-198`。
+`util/oracle.py:196-201`。
 ```python
 total_time = time.perf_counter() - t_run
 land = pd.DataFrame(rows).sort_values(["scenario","perm"]).reset_index(drop=True)
@@ -471,7 +357,7 @@ opt.to_csv(out_dir / "oracle_optima.csv", index=False)
 ---
 
 ## Step 11 — summary.txt <a id="step11"></a>
-`util/oracle.py:200-211`。**要解决的问题**：给人一个一眼能读的运行总结。组装并写 `summary.txt`（同时回显到 stdout）：
+`util/oracle.py:203-214`。**要解决的问题**：给人一个一眼能读的运行总结。组装并写 `summary.txt`（同时回显到 stdout）：
 - `segments`、`perms`、`scenarios (M)`、horizon `T`。
 - `~{s_ue*1000:.0f} ms/UE`（来自 probe）；评估过的 schedule 总数 `= len(land)`。
 - 总评估计算量 = `land["eval_s"].sum()/60` min；平均 `ms/schedule = land["eval_s"].mean()*1000`；本次会话分钟数 `total_time/60`。
@@ -482,7 +368,7 @@ opt.to_csv(out_dir / "oracle_optima.csv", index=False)
 ---
 
 ## Step 12 — figures（`make_figures`） <a id="step12"></a>
-`util/oracle.py:213-214` → `make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted)`，定义在 `viz/oracle_viz.py:23-110`。（这与 Step 6 cache 命中时调的是**同一个**函数。）
+`util/oracle.py:216-217` → `make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted)`，定义在 `viz/oracle_viz.py:23-110`。（这与 Step 6 cache 命中时调的是**同一个**函数。）
 
 **准备**（`viz/oracle_viz.py:24-28`）：`use_pub()`（套用 `viz/style.py:59` 的出版级 rcParams）；确保 `figures/` 存在；`sev = {edge_id: severity}`；`drep` = 代表性 scenario `rep=0` 的 landscape 行。
 
@@ -504,7 +390,7 @@ opt.to_csv(out_dir / "oracle_optima.csv", index=False)
 ---
 
 ## Step 13 — meta.json 写入 + checkpoint 清理 <a id="step13"></a>
-`util/oracle.py:216-224`。
+`util/oracle.py:219-227`。
 ```python
 meta_path.write_text(json.dumps(
     {"hash": fp, "params": values,

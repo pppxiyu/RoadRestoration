@@ -52,11 +52,11 @@ optimization solver 是非线性、且要在每次评估内部反复跑 UE，代
 
 ```
 run_pretrain_milp()                                   util/pretrain_milp.py:184
-├─ scale_dir(out_dir)                                 util/oracle.py:57      → outputs/pretrain_milp/n{N}/
+├─ scale_dir(out_dir)                                 util/oracle.py:59      → outputs/pretrain_milp/n{N}/
 ├─ (out_dir/"figures").mkdir(...)
-├─ select_oracle_instance(toy_dir, N)                 util/oracle.py:83      ← 注意：现在没有 seed 参数
+├─ select_oracle_instance(toy_dir, N)                 util/oracle.py:85      ← 注意：现在没有 seed 参数
 │   ├─ pd.read_csv(edges.csv)
-│   └─ _reference_twoway_flow(toy)                    util/oracle.py:63      ← raw/SiouxFalls_flow.tntp
+│   └─ _baseline_twoway_flow(toy)                     util/oracle.py:65      ← 自算 baseline UE（solve_ue，无损网络）
 ├─ segments = sorted(int(e) for e in disrupted.edge_id)
 ├─ build_context(toy_dir, disrupted)                  util/evaluate.py:106
 │   ├─ load_toy_network(toy_dir)                      util/io.py:10          ← edges/od_pairs/nodes.csv
@@ -67,11 +67,11 @@ run_pretrain_milp()                                   util/pretrain_milp.py:184
 │   ├─ od_travel_times(base_links, ctx)               util/evaluate.py:27    (networkx Dijkstra)
 │   └─ B(Φ) 通过 networkx free-flow shortest_path 构造
 ├─ sample_scenarios(disrupted, M, seed)               util/scenarios.py:14   (DURATION_SUPPORT × ETA)
-├─ compute_horizon(segments, scenarios)               util/oracle.py:109
+├─ compute_horizon(segments, scenarios)               util/oracle.py:112
 │   └─ 对每个 perm × scenario:
 │       ├─ schedule_from_permutation(perm, dur)       util/evaluate.py:82
 │       └─ makespan_slot(start, dur)                  util/evaluate.py:94
-├─ _param_fingerprint()                               util/oracle.py:44      + hashlib SHA1 扩展 (damp/maxit/cyc)
+├─ _param_fingerprint()                               util/oracle.py:46      + hashlib SHA1 扩展 (damp/maxit/cyc)
 ├─ RESUME: 读 milp_optima.csv + milp_trace.csv + milp_progress.json → 建 `done` 集合
 │
 ├─ for m, dur in enumerate(scenarios):  (m in done 则跳过)
@@ -116,7 +116,7 @@ out_dir = scale_dir(out_dir)                     # outputs/pretrain_milp/n{N}/
 (out_dir / "figures").mkdir(parents=True, exist_ok=True)
 ```
 
-`scale_dir(base=OUT, n=None)`（`util/oracle.py:57-60`）在 `n is None` 时取 `n = P.N_DISRUPTED_ORACLE`，返回
+`scale_dir(base=OUT, n=None)`（`util/oracle.py:59-62`）在 `n is None` 时取 `n = P.N_DISRUPTED_ORACLE`，返回
 `Path(base)/f"n{n}"`。默认 `N_DISRUPTED_ORACLE = 4`，所以 `out_dir → outputs/pretrain_milp/n4/`，并创建
 `…/n4/figures/`。
 
@@ -127,7 +127,7 @@ out_dir = scale_dir(out_dir)                     # outputs/pretrain_milp/n{N}/
 
 ---
 
-## 3. Shared setup 第 2 步 — 选定受损实例（`select_oracle_instance` + `_reference_twoway_flow`）
+## 3. Shared setup 第 2 步 — 选定受损实例（`select_oracle_instance` + `_baseline_twoway_flow`）
 
 **这一步要解决什么问题。** 需要确定"到底哪几条 segment 受损、各自 severity 多少"。为了让"修复顺序"真正影响 F1，
 故意混入既有关键干道、又有次要小路的组合。
@@ -143,40 +143,47 @@ segments = sorted(int(e) for e in disrupted["edge_id"])
 > 这里也是按 `select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)` 调用的，不再传 seed。
 > 旧文档 3.1 节写的 `select_oracle_instance(toy_dir, n, seed)` 是过时的。选实例的逻辑本来就完全确定性、不用 RNG。
 
-### 3.1 `select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE)` — `util/oracle.py:83-106`
+### 3.1 `select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE)` — `util/oracle.py:85-108`
 
 按**重要性**（baseline 双向 UE flow）挑 `n` 条 segment，是**确定性**的（不用任何 RNG）。内部逻辑：
 
-1. `edges = pd.read_csv(toy/"network"/"edges.csv")`（`oracle.py:89`）。
-2. `flow = _reference_twoway_flow(toy)`（`oracle.py:90`）——见 §3.2。
-3. 给每条 edge 挂上一列 `flow`：按无向 key `(min(u,v), max(u,v))` 查表，查不到默认 `0.0`（`oracle.py:91-92`）。
-4. `ranked = edges.sort_values("flow", ascending=False)`（`oracle.py:93`）——按 flow 从高到低排序。
-5. `n_crit = min(2, n)`；`picks = list(range(n_crit))`——取 flow 最高的 `n_crit`（≤2）条作为"critical"干道（`oracle.py:95-96`）。
+1. `edges = pd.read_csv(toy/"network"/"edges.csv")`（`oracle.py:92`）。
+2. `flow = _baseline_twoway_flow(toy)`（`oracle.py:93`）——见 §3.2。
+3. 给每条 edge 挂上一列 `flow`：按无向 key `(min(u,v), max(u,v))` 查表，查不到默认 `0.0`（`oracle.py:94-95`）。
+4. `ranked = edges.sort_values("flow", ascending=False)`（`oracle.py:96`）——按 flow 从高到低排序。
+5. `n_crit = min(2, n)`；`picks = list(range(n_crit))`——取 flow 最高的 `n_crit`（≤2）条作为"critical"干道（`oracle.py:98-99`）。
 6. `rest = n - n_crit`；若 `rest > 0`，用 `np.linspace(len(ranked)//5, len(ranked)-1, rest)` 取整，把剩下的名额
-   均匀铺到 flow 较低的 edge 上（`oracle.py:97-99`）。
-7. `sub = ranked.iloc[picks]`（`oracle.py:100`）。
-8. 分配 severity（`oracle.py:101`）：`n_crit` 条 critical edge 给 severity **3**（severed，UE 网络里被彻底移除，见 §7.2）；
+   均匀铺到 flow 较低的 edge 上（`oracle.py:100-102`）。
+7. `sub = ranked.iloc[picks]`（`oracle.py:103`）。
+8. 分配 severity（`oracle.py:104`）：`n_crit` 条 critical edge 给 severity **3**（severed，UE 网络里被彻底移除，见 §7.2）；
    其余按奇偶交替给 **2 / 1**（`2 if i%2==0 else 1`）。
-9. 拼 `level_id = road_class + "-S" + severity`（`oracle.py:102`）。
-10. `out` = 子表 `[edge_id, u, v, road_class, severity, level_id]`，按 `edge_id` 排序（`oracle.py:103-104`）。
-11. **写** `toy/"disruption"/f"disrupted_segments_oracle{n}.csv"`（`oracle.py:105`），返回 `out`。
+9. 拼 `level_id = road_class + "-S" + severity`（`oracle.py:105`）。
+10. `out` = 子表 `[edge_id, u, v, road_class, severity, level_id]`，按 `edge_id` 排序（`oracle.py:106-107`）。
+11. **写** `toy/"disruption"/f"disrupted_segments_oracle{n}.csv"`（`oracle.py:108`），返回 `out`。
 
-**为什么这么做。** 这是 oracle 端调用的**同一个**选实例函数（`util/oracle.py:123`），保证 MILP 与 oracle 面对**完全相同的
+**为什么这么做。** 这是 oracle 端调用的**同一个**选实例函数（`util/oracle.py:126`），保证 MILP 与 oracle 面对**完全相同的
 instance**——这是刻意共享的问题定义，不是泄露。severity 3 会导致真正的网络断开，让"先修哪条"对可达性影响巨大，
 从而让 schedule 的优化有意义。
 
 **关键产物。** `disrupted`（DataFrame），以及紧接着由它得到的 `segments = sorted(int(e) …)`（`pretrain_milp.py:189`）
 ——这个排好序的 edge id 列表是下游到处用的**规范列顺序**，必须和 `ctx["B"]` 的列、`durations` 的 key 对齐。
 
-### 3.2 `_reference_twoway_flow(toy)` — `util/oracle.py:63-80`
+### 3.2 `_baseline_twoway_flow(toy_dir)` — `util/oracle.py:65-82`
 
-解析开源 Sioux Falls 均衡 flow 文件，用来给 link 按重要性排序。
-- 逐行读 `toy/"raw"/"SiouxFalls_flow.tntp"`（`oracle.py:67`）。
-- 跳过空行和 `From` 表头行（`oracle.py:69-70`）。
-- 每条数据行拆 token、去掉尾部 `;`、要求 ≥3 个 token（`oracle.py:71-73`）。
-- 解析 `a, b = ints`、`vol = float(t[2])`（第 3 列是 link volume），带 `ValueError` 保护（`oracle.py:74-77`）。
-- 把两个有向 volume 聚合进**无向** key `(min(a,b), max(a,b))`（`oracle.py:78-79`）。
-- 返回 `{(min,max): summed_flow}`。
+用**项目自己的 UE 引擎**在**无损**网络上算 baseline 双向 flow，用来给 link 按重要性排序。**不再读任何外部参考解文件。**
+- `edges, od, zone_ids = load_toy_network(toy_dir)`（`oracle.py:74`）——载入无损路网 + OD 对（见 §4.2）。
+- `flows, _ = solve_ue(edges, od_to_matrix(od, zone_ids), zone_ids, rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)`
+  （`oracle.py:75-76`）——先 `od_to_matrix(od, zone_ids)` 把 OD 对展成稠密矩阵，再在**无损网络 + baseline 需求 H0** 上解一次 UE
+  （见 §4.3）。
+- 把 `flows` 里每条**有向** link 的 `volume` 按**无向** key `(min(u,v), max(u,v))` 两向累加：
+  `f[key] = f.get(key, 0.0) + volume`（`oracle.py:77-81`）。
+- 返回 `{(min,max): 两向合计流量}`（`oracle.py:82`）。
+
+**为什么这么做。** 旧实现逐行读开源参考解文件 `raw/SiouxFalls_flow.tntp`（published equilibrium flow）来排序；现在改成自己跑
+一次 baseline UE 算出同样的双向 flow，**去掉了对那个 shipped 参考文件的依赖**——换一套 network / OD 数据集时不必再另配一个外部
+参考-flow 文件。**经验证：换成自算 UE flow 后，选出的受损实例完全不变**（仍是 edge_ids `[1,12,15,17]`、severity `[1,2,3,3]`，
+两向流量与旧参考解逐边误差仅约 0.14%）。注意 `raw/SiouxFalls_flow.tntp` 现在**只被** `util/ue.py:_validate` 的 UE 自校验读取，
+选实例流程不再碰它。
 
 ---
 
@@ -324,11 +331,11 @@ T = compute_horizon(segments, scenarios)
 print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}")
 ```
 
-### 6.1 `compute_horizon(segments, scenarios)` — `util/oracle.py:109-116`
+### 6.1 `compute_horizon(segments, scenarios)` — `util/oracle.py:112-119`
 
 全局 horizon `T` = **所有 permutation × 所有 scenario** 上的最大完工 slot。
-- 双层遍历 `itertools.permutations(segments)` 和 `scenarios`（`oracle.py:113-114`）。
-- 每组：`T = max(T, makespan_slot(schedule_from_permutation(list(perm), dur), dur))`（`oracle.py:115`）。
+- 双层遍历 `itertools.permutations(segments)` 和 `scenarios`（`oracle.py:116-117`）。
+- 每组：`T = max(T, makespan_slot(schedule_from_permutation(list(perm), dur), dur))`（`oracle.py:118`）。
 - 返回最大的 `T`（int）。
 
 #### 6.1.1 `schedule_from_permutation(perm, durations, c_max=P.C_MAX)` — `util/evaluate.py:82-91`
@@ -562,7 +569,7 @@ from util.oracle import _param_fingerprint
 _, base_fp = _param_fingerprint()
 fp = hashlib.sha1(f"{base_fp}|damp={P.MILP_DAMPING}|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}".encode()).hexdigest()
 ```
-- `_param_fingerprint()`（`util/oracle.py:44-54`）：读 `FINGERPRINT_PARAMS` 列表（`oracle.py:37-41`——
+- `_param_fingerprint()`（`util/oracle.py:46-56`）：读 `FINGERPRINT_PARAMS` 列表（`oracle.py:39-43`——
   `N_DISRUPTED_ORACLE, MU, CAP_RETAIN, SPEED_RETAIN, SEVER_SEVERITY, F1_ACTIVE_ONLY, RHO, KAPPA, UPEN_FACTOR,
   DELTA_T_H, C_MAX, M_SCENARIOS, SEED, UE_RGAP, UE_MAX_ITER, DURATION_SUPPORT, ETA`），把 dict 的 key 字符串化
   （`DURATION_SUPPORT` 是 tuple key）以求稳定 JSON，返回 `(values, sha1(json.dumps(..., sort_keys=True)))`。
@@ -664,7 +671,7 @@ make_process_figures(out_dir, pd.DataFrame(trace_rows), milp_opt, segments, T)
 | read | `data/siouxfalls_toy/network/edges.csv` | `select_oracle_instance`、`load_toy_network` | §3.1, §4.2 |
 | read | `data/siouxfalls_toy/network/od_pairs.csv` | `load_toy_network` | §4.2 |
 | read | `data/siouxfalls_toy/network/nodes.csv` | `load_toy_network` | §4.2 |
-| read | `data/siouxfalls_toy/raw/SiouxFalls_flow.tntp` | `_reference_twoway_flow` | §3.2 |
+| read | `data/siouxfalls_toy/raw/SiouxFalls_flow.tntp` | 仅 `util/ue.py:_validate` UE 自检读取；选实例流程改为内部 `solve_ue`（不读此文件） | §3.2 |
 | write | `data/siouxfalls_toy/disruption/disrupted_segments_oracle{N}.csv` | `select_oracle_instance` | §3.1 |
 | read (resume) | `outputs/pretrain_milp/n{N}/milp_optima.csv` | resume | §11.2 |
 | read (resume) | `outputs/pretrain_milp/n{N}/milp_trace.csv` | resume | §11.2 |

@@ -26,7 +26,9 @@ import pandas as pd
 import config as P
 from util.evaluate import (build_context, evaluate_schedule, makespan_slot,
                            schedule_from_permutation)
+from util.io import load_toy_network, od_to_matrix
 from util.scenarios import sample_scenarios
+from util.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
@@ -60,34 +62,35 @@ def scale_dir(base=OUT, n=None):
     return Path(base) / f"n{n}"
 
 
-def _reference_twoway_flow(toy):
-    """Baseline two-way UE flow per undirected edge, from raw/SiouxFalls_flow.tntp (sum of both
-    directed volumes). Returns {(min(u,v), max(u,v)): flow}."""
+def _baseline_twoway_flow(toy_dir):
+    """Baseline two-way UE flow per undirected edge, computed by OUR OWN UE engine on the
+    UNDAMAGED network with the base demand H0 (sum of both directed volumes). Used only to rank
+    edges by importance for disruption selection. Returns {(min(u,v), max(u,v)): flow}.
+
+    This replaces the earlier read of raw/SiouxFalls_flow.tntp (the published reference solution).
+    Computing the flow ourselves removes the dependency on that shipped file, so swapping in a
+    different network/OD dataset needs no external reference-flow file. (`util/ue.py:_validate`
+    still checks our UE against the .tntp reference — that self-check is left untouched.)"""
+    edges, od, zone_ids = load_toy_network(toy_dir)
+    flows, _ = solve_ue(edges, od_to_matrix(od, zone_ids), zone_ids,
+                        rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
     f = {}
-    for line in (toy / "raw" / "SiouxFalls_flow.tntp").read_text().splitlines():
-        s = line.strip()
-        if not s or s.lower().startswith("from"):
-            continue
-        t = s.rstrip(";").split()
-        if len(t) < 3:
-            continue
-        try:
-            a, b, vol = int(t[0]), int(t[1]), float(t[2])
-        except ValueError:
-            continue
-        key = (min(a, b), max(a, b))
-        f[key] = f.get(key, 0.0) + vol
+    fa, ta, vol = (flows["from"].to_numpy(), flows["to"].to_numpy(), flows["volume"].to_numpy())
+    for a, b, v in zip(fa, ta, vol):
+        key = (min(int(a), int(b)), max(int(a), int(b)))
+        f[key] = f.get(key, 0.0) + float(v)
     return f
 
 
 def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
-    """Choose n disrupted segments by IMPORTANCE (baseline two-way UE flow), mixing critical and
-    minor links so the restoration order strongly affects F1: the top-2 flow edges get severity 3
-    (severed), the rest are spread over lower-flow edges at severity 2/1. Deterministic. Saves
+    """Choose n disrupted segments by IMPORTANCE (baseline two-way UE flow, computed by our own UE
+    engine — see _baseline_twoway_flow), mixing critical and minor links so the restoration order
+    strongly affects F1: the top-2 flow edges get severity 3 (severed), the rest are spread over
+    lower-flow edges at severity 2/1. Deterministic. Saves
     disruption/disrupted_segments_oracle{n}.csv and returns the DataFrame."""
     toy = Path(toy_dir)
     edges = pd.read_csv(toy / "network" / "edges.csv")
-    flow = _reference_twoway_flow(toy)
+    flow = _baseline_twoway_flow(toy)
     edges["flow"] = [flow.get((min(int(r.u), int(r.v)), max(int(r.u), int(r.v))), 0.0)
                      for r in edges.itertuples(index=False)]
     ranked = edges.sort_values("flow", ascending=False).reset_index(drop=True)
