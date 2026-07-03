@@ -16,7 +16,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from util import params as P
+import config as P
 from util.io import load_toy_network
 from util.ue import solve_ue
 

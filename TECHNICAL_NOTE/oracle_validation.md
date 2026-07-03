@@ -68,7 +68,7 @@ tune κ for depth, ρ for recovery speed (inspect `outputs/oracle/figures/03_bes
   brute force at a small instance (4 segments, M=10 ≈ 2 h). A fast in-house Frank-Wolfe would lift
   this limit if a larger instance is needed later.
 
-## 6. Assumed-parameter defaults (mirror of `util/params.py`)
+## 6. Assumed-parameter defaults (mirror of `config.py`)
 | param | default | meaning |
 |---|---|---|
 | A (inertia) | ρ = 0.7 | recovery rate of the demand shortfall |

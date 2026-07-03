@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from util import params as P
+import config as P
 from util.evaluate import evaluate_schedule
 from viz.style import C, CMAP_SEQ, panel_label, save_pub, severity_color, use_pub
 

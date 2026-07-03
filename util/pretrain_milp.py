@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import Bounds, LinearConstraint, milp
 
-from util import params as P
+import config as P
 from util.evaluate import (build_context, evaluate_schedule,
                            schedule_from_permutation)
 from util.oracle import compute_horizon, scale_dir, select_oracle_instance

@@ -1,7 +1,7 @@
 """
 main.py - single entry point for the toy pipeline.
 
-DEFAULT (`python main.py`): run the whole task for the current scale in util/params.py --
+DEFAULT (`python main.py`): run the whole task for the current scale in config.py --
   Step 1  brute-force oracle (ground truth, resumable)        -> outputs/oracle/n{N}/
   Step 2  section 2.1.1 traffic-fixation MILP + all figures   -> outputs/pretrain_milp/n{N}/
 The oracle is RESUMABLE: if a run is interrupted, just run `python main.py` again and it
@@ -20,7 +20,7 @@ Run inside the road_restore conda env:
 import sys
 from pathlib import Path
 
-from util import params as P
+import config as P
 from util.evaluate import (build_context, evaluate_schedule, f2_value, makespan_slot,
                            schedule_from_permutation)
 from util.oracle import select_oracle_instance

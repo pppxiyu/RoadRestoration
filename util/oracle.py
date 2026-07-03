@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from util import params as P
+import config as P
 from util.evaluate import (build_context, evaluate_schedule, makespan_slot,
                            schedule_from_permutation)
 from util.scenarios import sample_scenarios

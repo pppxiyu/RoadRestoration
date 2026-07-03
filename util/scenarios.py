@@ -8,7 +8,7 @@ a dict {edge_id: duration_in_slots}.
 
 import numpy as np
 
-from util import params as P
+import config as P
 
 
 def sample_scenarios(disrupted, M=P.M_SCENARIOS, seed=P.SEED):
