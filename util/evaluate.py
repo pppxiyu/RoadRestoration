@@ -159,7 +159,6 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
     dis = ctx["disrupted"]
     H0, B = ctx["H0"], ctx["B"]
     base_u = ctx["baseline_u"]
-    sev = ctx["severity_vec"]
 
     # --- Figure 1, Step 2: F2 (no UE) ---
     F2 = f2_value(start, durations)

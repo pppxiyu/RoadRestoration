@@ -185,7 +185,7 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     out_dir = scale_dir(out_dir)                     # outputs/pretrain_milp/n{N}/ (mirror oracle scale)
     (out_dir / "figures").mkdir(parents=True, exist_ok=True)
 
-    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE, seed)
+    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, M, seed)
@@ -272,7 +272,7 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
 # work-conserving schedules, so its surrogate optimum must be >= the best work-conserving one.
 # --------------------------------------------------------------------------- #
 def level_a(toy_dir=TOY, seed=P.SEED, scenario=0):
-    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE, seed)
+    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, P.M_SCENARIOS, seed)
@@ -316,7 +316,7 @@ def render_landscape(out_dir=OUT):
     CSVs (no UE loop). Run this after the oracle for this scale finishes."""
     out_dir = scale_dir(out_dir)
     oracle_dir = scale_dir(ROOT / "outputs" / "oracle")
-    disrupted = select_oracle_instance(TOY, P.N_DISRUPTED_ORACLE, P.SEED)
+    disrupted = select_oracle_instance(TOY, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     scenarios = sample_scenarios(disrupted, P.M_SCENARIOS, P.SEED)
     T = compute_horizon(segments, scenarios)

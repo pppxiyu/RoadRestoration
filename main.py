@@ -47,7 +47,7 @@ def run_all():
 
 def walkthrough():
     # --- instance: oracle subset + one scenario + one example schedule ---
-    disrupted = select_oracle_instance(TOY, n=P.N_DISRUPTED_ORACLE, seed=P.SEED)
+    disrupted = select_oracle_instance(TOY, n=P.N_DISRUPTED_ORACLE)
     ctx = build_context(TOY, disrupted)
     durations = sample_scenarios(disrupted, M=1, seed=P.SEED)[0]
     segments = sorted(int(e) for e in disrupted["edge_id"])

@@ -80,7 +80,7 @@ def _reference_twoway_flow(toy):
     return f
 
 
-def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE, seed=P.SEED):
+def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
     """Choose n disrupted segments by IMPORTANCE (baseline two-way UE flow), mixing critical and
     minor links so the restoration order strongly affects F1: the top-2 flow edges get severity 3
     (severed), the rest are spread over lower-flow edges at severity 2/1. Deterministic. Saves
@@ -120,7 +120,7 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
     out_dir = scale_dir(out_dir)                     # outputs/oracle/n{N}/  (per-scale cache)
     (out_dir / "figures").mkdir(parents=True, exist_ok=True)
 
-    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE, seed)
+    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, M, seed)
@@ -228,7 +228,7 @@ def render_figs(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     """Re-render figures from already-saved CSVs (no re-enumeration)."""
     from viz.oracle_viz import make_figures
     out_dir = scale_dir(out_dir)
-    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE, seed)
+    disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, M, seed)
