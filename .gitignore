@@ -1,0 +1,26 @@
+# ================= Research_RoadRestoration — outer repo (-> GitHub) =================
+
+# The manuscript has its OWN git repo (-> Overleaf); it is versioned there, not here.
+/paper/
+
+# Stray local backup of results
+/outputs - Copy/
+
+# Large / generated data — kept out of the GitHub repo (files stay on disk locally)
+/outputs/
+/data/
+/literature_analysis/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+*~
+.vscode/
+.idea/
