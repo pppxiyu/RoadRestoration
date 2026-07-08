@@ -244,27 +244,51 @@ The venue distribution is highly dispersed: the 190 papers span reliability, str
 | Natural Hazards (4), Sustainability (4) | 4 each |
 | Comput. & Industrial Eng., Sustainable Cities, OR Spectrum, J. Computing in Civil Eng., Applied Sciences, IEEE Access, J. Management in Eng., TR Part B, TR Part E | 3 each |
 
-Citation counts are taken from OpenAlex (by DOI, real-time cumulative) and are naturally biased toward older papers; `s3_is_classic=True` marks the 15 papers cited at least 50 times. Note that citation counts and the relevance tier are complete only for the subset annotated in detail in the earlier round; the more recently added batch was judged primarily by content, and frontier papers naturally have low citation counts.
+Citation counts are taken from OpenAlex (by DOI, real-time cumulative) and now cover all 190 papers (189 resolved; idx 120 is not indexed by OpenAlex). `ref_is_classic=True` marks the 39 papers cited at least 50 times, listed below in descending order of citations. Counts are biased toward older papers, so a high count signals impact rather than closeness to this study. The relevance tier (core / method-neighbor / background) was assigned only for the earlier v1 subset; more recent papers were judged by content.
 
-| Citations | Year | Tier | idx | Title |
-|---|---|---|---|---|
-| 229 | 2012 | core | 96 | Restoration of Bridge Networks after an Earthquake: Multicriteria |
-| 218 | 2017 | method_neighbor | 61 | Resilience-based post-disaster recovery strategies for road-bridge |
-| 216 | 2012 | method_neighbor | 153 | Optimal Resilience- and Cost-Based Postdisaster Intervention Prioritization |
-| 170 | 2014 | method_neighbor | 421 | A hierarchical compromise model for the joint optimization of recovery |
-| 127 | 2016 | method_neighbor | 22 | Network repair crew scheduling and routing for emergency relief distribution |
-| 83 | 2018 | method_neighbor | 102 | Determination of Near-Optimal Restoration Programs for Transportation networks |
-| 79 | 2007 | domain_background | 40 | Fund allocation for transportation network recovery |
-| 77 | 2021 | method_neighbor | 4 | Optimal restoration schedules of transportation network considering resilience |
-| 61 | 2019 | method_neighbor | 127 | Post-disaster multi-period road network repair: work scheduling |
-| 58 | 2022 | core | 181 | Prioritizing transportation network recovery using a resilience measure |
-| 56 | 2021 | core | 18 | Resilience-based Recovery Scheduling of Transportation Network |
-| 56 | 2017 | method_neighbor | 113 | From Component Damage to System-Level Probabilistic Restoration |
-| 54 | 2017 | method_neighbor | 186 | Multi-vehicle prize collecting arc routing for connectivity |
-| 52 | 2016 | method_neighbor | 12 | Sequencing algorithm with multiple-input genetic operators |
-| 51 | 2020 | core | 84 | Postdisaster Decision Framework for Bridge Repair Prioritization |
+| Citations | Year | idx | Title |
+|---|---|---|---|
+| 378 | 2012 | 886 | Measuring and maximizing resilience of freight transportation networks |
+| 270 | 2018 | 1101 | Resiliency assessment of urban rail transit networks: Shanghai metro as an example |
+| 229 | 2012 | 96 | Restoration of Bridge Networks after an Earthquake: Multicriteria Intervention Optimization |
+| 226 | 2009 | 1047 | Optimal scheduling of emergency roadway repair and subsequent relief distribution |
+| 221 | 2017 | 61 | Resilience-based post-disaster recovery strategies for road-bridge networks |
+| 216 | 2012 | 153 | Optimal Resilience- and Cost-Based Postdisaster Intervention Prioritization for Bridges along a Highway Segment |
+| 170 | 2014 | 421 | A hierarchical compromise model for the joint optimization of recovery operations and distribution of emergency goods in Humanitarian Logistics |
+| 158 | 2014 | 827 | A mathematical model for post-disaster road restoration: Enabling accessibility and evacuation |
+| 148 | 2018 | 587 | A resilience optimization model for transportation networks under disasters |
+| 134 | 2019 | 682 | Resilience-based transportation network recovery strategy during emergency recovery phase under uncertainty |
+| 133 | 2014 | 741 | Optimal recovery sequencing for enhanced resilience and service restoration in transportation networks |
+| 127 | 2016 | 22 | Network repair crew scheduling and routing for emergency relief distribution problem |
+| 112 | 2020 | 702 | A post-disaster resource allocation framework for improving resilience of interdependent infrastructure networks |
+| 112 | 2017 | 905 | Multi-vehicle synchronized arc routing problem to restore post-disaster network connectivity |
+| 100 | 2019 | 539 | Community resilience-driven restoration model for interdependent infrastructure networks |
+| 99 | 2018 | 1035 | Multi-objective, multi-period location-routing model to distribute relief after earthquake by considering emergency roadway repair |
+| 97 | 2003 | 604 | Transportation planning for disasters: an accessibility approach |
+| 97 | 2022 | 889 | Resilience assessment of railway networks: Combining infrastructure restoration and transport management |
+| 83 | 2018 | 102 | Determination of Near-Optimal Restoration Programs for Transportation Networks Following Natural Hazard Events Using Simulated Annealing |
+| 79 | 2007 | 40 | Fund allocation for transportation network recovery following natural disasters |
+| 77 | 2021 | 4 | Optimal restoration schedules of transportation network considering resilience |
+| 77 | 2014 | 555 | Coordinating debris cleanup operations in post disaster road networks |
+| 77 | 2016 | 803 | Arc routing problems to restore connectivity of a road network |
+| 73 | 2009 | 692 | Optimizing Postdisaster Reconstruction Planning for Damaged Transportation Networks |
+| 71 | 2011 | 860 | A GRASP metaheuristic to improve accessibility after a disaster |
+| 69 | 2019 | 1135 | Integrated optimal scheduling of repair crew and relief vehicle after disaster |
+| 62 | 2021 | 676 | An online optimization approach to post-disaster road restoration |
+| 61 | 2019 | 127 | Post-disaster multi-period road network repair: work scheduling and relief logistics optimization |
+| 60 | 2022 | 181 | Prioritizing transportation network recovery using a resilience measure |
+| 60 | 2019 | 1045 | Minimizing latency in post-disaster road clearance operations |
+| 58 | 2023 | 1030 | Sustainability and climate resilience metrics and trade-offs in transport infrastructure asset recovery |
+| 56 | 2021 | 18 | Resilience-based Recovery Scheduling of Transportation Network in Mixed Traffic Environment: A Deep-Ensemble-Assisted Active Learning Approach |
+| 56 | 2017 | 113 | From Component Damage to System-Level Probabilistic Restoration Functions for a Damaged Bridge |
+| 55 | 2015 | 576 | Scheduling Short-Term Recovery Activities to Maximize Transportation Network Resilience |
+| 54 | 2017 | 186 | Multi-vehicle prize collecting arc routing for connectivity problem |
+| 52 | 2016 | 12 | Sequencing algorithm with multiple-input genetic operators: Application to disaster resilience |
+| 52 | 2019 | 913 | CRISIS: Modeling the Restoration of Interdependent Civil and Social Infrastructure Systems Following an Extreme Event |
+| 51 | 2020 | 84 | Postdisaster Decision Framework for Bridge Repair Prioritization to Improve Road Network Resilience |
+| 51 | 2022 | 1043 | Strategies to Enhance the Resilience of an Urban Rail Transit Network |
 
-The most relevant classic is idx 96 (2012, 229 citations, core), namely Restoration of Bridge Networks after an Earthquake, the most-cited and must-cite classic in the core set; it is followed by idx 181 (58 citations), idx 18 (56 citations), and idx 84 (51 citations, core). Note that frontier does not equal classic: the competitors closest to this study are mostly from 2025 to 2026 with only 0 to 1 citations, belonging to the research frontier rather than the classics, and must be judged by content rather than citations — for example idx 911, Robust Multicrew Scheduling and Routing in road restoration (Comput. & OR); idx 716, Coordinating road recovery and supply distribution (EJOR, DRO); idx 994, Prioritizing Disaster Recovery Under Budget Uncertainty (M&SOM); idx 1059 (constrained reinforcement learning for metro-bus recovery sequencing, TR-D); idx 747 (two-stage stochastic programming for road-network hardening and recovery, RESS); as well as idx 133, 35, 60, and 98. Classics serve for foundations and method lineage, while frontier papers serve for direct competitive positioning. The core set contains 19 papers (core tier): idx 1, 11, 17, 18, 26, 35, 49, 55, 60, 63, 68, 76, 84, 89, 96, 98, 133, 181, 221.
+The most-cited works are older resilience and routing papers — idx 886 (378, freight-network resilience), idx 1101 (270, metro resiliency), idx 96 (229, bridge-network restoration), and idx 1047 (226, emergency roadway repair) — which serve as foundations rather than direct competitors. The most relevant core classic remains idx 96 (Restoration of Bridge Networks after an Earthquake). Frontier does not equal classic: the competitors closest to this study are mostly from 2025 to 2026 with only 0 to 1 citations — for example idx 911, Robust Multicrew Scheduling and Routing in road restoration (Comput. & OR); idx 716, Coordinating road recovery and supply distribution (EJOR, DRO); idx 994, Prioritizing Disaster Recovery Under Budget Uncertainty (M&SOM); idx 1059 (constrained reinforcement learning for metro-bus recovery sequencing, TR-D); idx 747 (two-stage stochastic programming for road-network hardening and recovery, RESS); as well as idx 133, 35, 60, and 98 — and must be judged by content, not citations. Classics serve for foundations and method lineage, while frontier papers serve for direct competitive positioning. The core set (v1 relevance tier) contains 19 papers: idx 1, 11, 17, 18, 26, 35, 49, 55, 60, 63, 68, 76, 84, 89, 96, 98, 133, 181, 221.
 
 ## Appendix B　Full-Text Validation and Dimension Cross-Tabulation
 
@@ -300,7 +324,7 @@ The corpus contains 30 papers marked as reviews (`is_review=True`). Reviews do n
 
 ## Appendix D　Papers Whose Full Text Could Not Be Obtained (6 papers)
 
-Of the 190 papers, 184 have been read in full; 6 could not be obtained due to paywalls or anti-scraping measures (neither the NYU nor the GT account has a subscription). The six-dimension labels of these 6 papers are best abstract-level judgments; the retrieval status is recorded in the CSV column `s3_access` (paywalled or failed) and can be updated if the full texts are obtained later.
+Of the 190 papers, 184 have been read in full; 6 could not be obtained due to paywalls or anti-scraping measures (neither the NYU nor the GT account has a subscription). The six-dimension labels of these 6 papers are best abstract-level judgments; the retrieval status is recorded in the CSV column `ref_access` (paywalled or failed) and can be updated if the full texts are obtained later.
 
 | idx | Status | Year | Venue | Title | DOI |
 |---|---|---|---|---|---|
