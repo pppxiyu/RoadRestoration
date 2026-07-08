@@ -18,7 +18,7 @@ Filter C refinement  operated object of interdependent papers (§2.4)   −73; r
 Final reference set: 190 papers ──→ Stage 2: six-dimension labeling (§3.1–3.6)
 ```
 
-This report documents the systematic literature work for the post-disaster road-restoration scheduling topic. The work consists of three steps: candidate papers were first exported from Web of Science using a topic query; Stage 1 then applied sequential filters to converge on the final reference set; finally, Stage 2 labeled every paper in the final set along several dimensions. The per-paper decisions and labels are recorded in `screening_results.csv`, whose columns are distinguished by prefix (`s1_` for Stage 1; `s2_` and `final_*` for category filtering and final disposition; `s3_` and `ref_` for the Stage 2 dimension labels).
+This report documents the systematic literature work for the post-disaster road-restoration scheduling topic. The work consists of three steps: candidate papers were first exported from Web of Science using a topic query; Stage 1 then applied sequential filters to converge on the final reference set; finally, Stage 2 labeled every paper in the final set along several dimensions. The per-paper decisions and labels are recorded in `screening_results.csv`, whose columns are distinguished by prefix (`s1_` for Stage 1; `s2_` and `final_*` for category filtering and final disposition; `s3_` for the Stage 2 dimension labels).
 
 The final reference set contains 190 papers (`final_curated=True`). All papers were classified by human judgment at the abstract level, and key subsets were independently double-checked by a second group. The overall funnel is: 1475 papers retrieved → 1341 after Filter A → 264 in the intersection of Filter B and Filter C → 190 after the interdependent refinement and removal of reviews. Each layer takes intersections only, so the set can only shrink, never grow.
 
@@ -127,7 +127,7 @@ Among the interdependent papers that passed the intersection of Filter B and Fil
 
 ### 2.5 Screening Results (1341 → 264 → 190)
 
-Applying Filter B and Filter C to the 1341 papers remaining after Filter A, 264 papers pass their intersection (`final_kept=True` in the CSV). Of the removed papers, 634 failed only the problem-type criterion, 428 failed both problem type and object, and 15 failed only the object criterion. The CSV column `final_status` retains the historical value names `removed_filterA`, `removed_filterA+B`, and `removed_filterB`, which correspond respectively to this report's Filter B, the intersection of Filter B and Filter C, and Filter C.
+Applying Filter B and Filter C to the 1341 papers remaining after Filter A, 264 papers pass their intersection (both Filter B and Filter C). Of the removed papers, 634 failed only the problem-type criterion, 428 failed both problem type and object, and 15 failed only the object criterion. The CSV column `final_status` retains the historical value names `removed_filterA`, `removed_filterA+B`, and `removed_filterB`, which correspond respectively to this report's Filter B, the intersection of Filter B and Filter C, and Filter C.
 
 On top of the 264 papers, the interdependent refinement and the removal of reviews yield the final reference set of 190 papers (`final_curated=True`); the set only shrinks, never grows:
 
@@ -137,13 +137,13 @@ On top of the 264 papers, the interdependent refinement and the removal of revie
 | removed_filterB_refined | 73 | Interdependent but actually restoring the power grid or water/gas systems; removed at the object level |
 | moved_to_review | 1 | Passed the intersection of Filter B and Filter C but is itself a review (idx 20); moved to the review list (see Appendix C) |
 
-`final_kept` (264) is a snapshot of the automatic filtering, while `final_curated` (190) is the final reference set; all labeling analysis in Stage 2 is based on these 190 papers.
+The 264 papers passing Filter B and Filter C are captured by `final_status` (values `kept`, `removed_filterB_refined`, and `moved_to_review`), while `final_curated=True` marks the final reference set of 190; all labeling analysis in Stage 2 is based on these 190 papers.
 
 ---
 
 ## 3 Stage 2: Dimension Labels for the Final Set
 
-Stage 2 performs no further removal; it only labels each of the 190 papers in the final set along several dimensions, for positioning during writing. The labels fall into two groups: objective type and traffic model (Sections 3.1 and 3.2, corresponding to the CSV columns `s3_*`), and solution method, decision architecture, demand dynamics, and uncertainty (Sections 3.3 to 3.6, corresponding to the CSV columns `ref_*`).
+Stage 2 performs no further removal; it only labels each of the 190 papers in the final set along several dimensions, for positioning during writing. The labels fall into two groups: objective type and traffic model (Sections 3.1 and 3.2), and solution method, decision architecture, demand dynamics, and uncertainty (Sections 3.3 to 3.6); all six are stored in the CSV columns prefixed `s3_`.
 
 The latter four dimensions, as well as the re-checks of the objective and traffic dimensions, were all validated against full texts: full-text retrieval from the publishers was attempted for all 190 papers, of which 184 were successfully read in full and 6 could not be obtained due to paywalls; the latter retain the best abstract-level judgment. The overall effect of the full-text validation and the novelty cross-tabulation are given in Appendix B.
 
@@ -244,7 +244,7 @@ The venue distribution is highly dispersed: the 190 papers span reliability, str
 | Natural Hazards (4), Sustainability (4) | 4 each |
 | Comput. & Industrial Eng., Sustainable Cities, OR Spectrum, J. Computing in Civil Eng., Applied Sciences, IEEE Access, J. Management in Eng., TR Part B, TR Part E | 3 each |
 
-Citation counts are taken from OpenAlex (by DOI, real-time cumulative) and are naturally biased toward older papers; `s3_is_classic=True` marks the 15 papers cited at least 50 times. Note that citation counts and the relevance tier (`ref_relevance_tier`) are complete only for the subset annotated in detail in the earlier round; the more recently added batch was judged primarily by content, and frontier papers naturally have low citation counts.
+Citation counts are taken from OpenAlex (by DOI, real-time cumulative) and are naturally biased toward older papers; `s3_is_classic=True` marks the 15 papers cited at least 50 times. Note that citation counts and the relevance tier are complete only for the subset annotated in detail in the earlier round; the more recently added batch was judged primarily by content, and frontier papers naturally have low citation counts.
 
 | Citations | Year | Tier | idx | Title |
 |---|---|---|---|---|
@@ -264,7 +264,7 @@ Citation counts are taken from OpenAlex (by DOI, real-time cumulative) and are n
 | 52 | 2016 | method_neighbor | 12 | Sequencing algorithm with multiple-input genetic operators |
 | 51 | 2020 | core | 84 | Postdisaster Decision Framework for Bridge Repair Prioritization |
 
-The most relevant classic is idx 96 (2012, 229 citations, core), namely Restoration of Bridge Networks after an Earthquake, the most-cited and must-cite classic in the core set; it is followed by idx 181 (58 citations), idx 18 (56 citations), and idx 84 (51 citations, core). Note that frontier does not equal classic: the competitors closest to this study are mostly from 2025 to 2026 with only 0 to 1 citations, belonging to the research frontier rather than the classics, and must be judged by content rather than citations — for example idx 911, Robust Multicrew Scheduling and Routing in road restoration (Comput. & OR); idx 716, Coordinating road recovery and supply distribution (EJOR, DRO); idx 994, Prioritizing Disaster Recovery Under Budget Uncertainty (M&SOM); idx 1059 (constrained reinforcement learning for metro-bus recovery sequencing, TR-D); idx 747 (two-stage stochastic programming for road-network hardening and recovery, RESS); as well as idx 133, 35, 60, and 98. Classics serve for foundations and method lineage, while frontier papers serve for direct competitive positioning. The core set contains 19 papers (`ref_relevance_tier=core`): idx 1, 11, 17, 18, 26, 35, 49, 55, 60, 63, 68, 76, 84, 89, 96, 98, 133, 181, 221.
+The most relevant classic is idx 96 (2012, 229 citations, core), namely Restoration of Bridge Networks after an Earthquake, the most-cited and must-cite classic in the core set; it is followed by idx 181 (58 citations), idx 18 (56 citations), and idx 84 (51 citations, core). Note that frontier does not equal classic: the competitors closest to this study are mostly from 2025 to 2026 with only 0 to 1 citations, belonging to the research frontier rather than the classics, and must be judged by content rather than citations — for example idx 911, Robust Multicrew Scheduling and Routing in road restoration (Comput. & OR); idx 716, Coordinating road recovery and supply distribution (EJOR, DRO); idx 994, Prioritizing Disaster Recovery Under Budget Uncertainty (M&SOM); idx 1059 (constrained reinforcement learning for metro-bus recovery sequencing, TR-D); idx 747 (two-stage stochastic programming for road-network hardening and recovery, RESS); as well as idx 133, 35, 60, and 98. Classics serve for foundations and method lineage, while frontier papers serve for direct competitive positioning. The core set contains 19 papers (core tier): idx 1, 11, 17, 18, 26, 35, 49, 55, 60, 63, 68, 76, 84, 89, 96, 98, 133, 181, 221.
 
 ## Appendix B　Full-Text Validation and Dimension Cross-Tabulation
 
