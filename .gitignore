@@ -9,7 +9,8 @@
 # Large / generated data — kept out of the GitHub repo (files stay on disk locally)
 /outputs/
 /data/
-/literature_analysis/
+/literature_analysis/*
+!/literature_analysis/notes/
 
 # --- Python ---
 __pycache__/
