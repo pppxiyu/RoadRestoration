@@ -22,7 +22,7 @@ This report documents the systematic literature work for the post-disaster road-
 
 The final reference set contains 190 papers (`final_curated=True`). All papers were classified by human judgment at the abstract level, and key subsets were independently double-checked by a second group. The overall funnel is: 1475 papers retrieved → 1341 after Filter A → 264 in the intersection of Filter B and Filter C → 190 after the interdependent refinement and removal of reviews. Each layer takes intersections only, so the set can only shrink, never grow.
 
-The companion data referenced in this report — `screening_results.csv`, `savedrecs.bib`, and the working files under `_dims_work/` — are kept locally in the parent `literature_analysis/` directory and are not part of this repository.
+The per-paper screening table `screening_results.csv` is included in this repository (in the parent `literature_analysis/` directory); the raw WOS export `savedrecs.bib` and the working files under `_dims_work/` are kept locally and are not included.
 
 ---
 
