@@ -145,7 +145,7 @@ The 264 papers passing Filter B and Filter C are captured by `final_status` (val
 
 Stage 2 performs no further removal; it only labels each of the 190 papers in the final set along several dimensions, for positioning during writing. The labels fall into two groups: objective type and traffic model (Sections 3.1 and 3.2), and solution method, decision architecture, demand dynamics, and uncertainty (Sections 3.3 to 3.6); all six are stored in the CSV columns prefixed `s3_`.
 
-The latter four dimensions, as well as the re-checks of the objective and traffic dimensions, were all validated against full texts: full-text retrieval from the publishers was attempted for all 190 papers, of which 184 were successfully read in full and 6 could not be obtained due to paywalls; the latter retain the best abstract-level judgment. The overall effect of the full-text validation and the novelty cross-tabulation are given in Appendix B.
+The latter four dimensions, as well as the re-checks of the objective and traffic dimensions, were all validated against full texts: full-text retrieval from the publishers was attempted for all 190 papers, of which 184 were successfully read in full and 6 could not be obtained due to paywalls; the latter retain the best abstract-level judgment. The overall effect of the full-text validation and the novelty cross-tabulation are given in Appendix A.
 
 ### 3.1 Objective Type (objective_type, 8 categories)
 
@@ -191,7 +191,7 @@ This dimension is multi-label: a paper can match multiple methods simultaneously
 | graph-neural-network/GNN | 5 | Graph neural networks (GNN or GCN) as the model, state encoder, or surrogate. |
 | learn+optimize-hybrid/warmstart-pretraining | 3 | Hybridizes learning with optimization, or warm-starts/pretrains the learning component with solutions obtained from optimization. |
 
-Across the entire corpus, the learn+optimize warm-start category is the rarest, with only 3 papers (idx 47, 50, 900). Although the learning cluster (15 DRL papers and 5 GNN papers) is growing, the path of warm-starting DRL and GNN with MILP or Benders optimal solutions remains almost untouched; see Appendix B.
+Across the entire corpus, the learn+optimize warm-start category is the rarest, with only 3 papers (idx 47, 50, 900). Although the learning cluster (15 DRL papers and 5 GNN papers) is growing, the path of warm-starting DRL and GNN with MILP or Benders optimal solutions remains almost untouched; see Appendix A.
 
 ### 3.4 Decision Architecture (decision_architecture, 3 categories)
 
@@ -221,7 +221,43 @@ Across the entire corpus, the learn+optimize warm-start category is the rarest, 
 
 Non-deterministic approaches total 62 papers (44 stochastic, 9 multistage, 6 robust, 3 fuzzy).
 
-## Appendix A　Years, Venues, and Classics
+---
+
+## Appendix A　Validation
+
+This appendix records two independent validation checks on the screening: an external recall check against a hand-curated reference set (A.1), and the full-text re-reading of the dimension labels (A.2).
+
+### A.1 External Validation Against the Zotero Reference Set
+
+As an external recall check, the pipeline was compared against an independently hand-curated reference set: the author's Zotero collection "5.2 decision", restricted to items tagged `!-road_restoration` or `!-infrastructure_network`. This set contains 28 journal articles the author had already identified as relevant, independently of this screening pipeline.
+
+Of these 28 papers, 22 are present in the final 190-paper set (recall about 79%); they are flagged in the CSV column `ref_in_zotero`. Their idx: 3, 11, 18, 35, 37, 50, 61, 63, 68, 128, 133, 515, 562, 576, 592, 682, 702, 740, 1047, 1059, 1065, 1205.
+
+The other 6 fall into two groups, both explainable:
+
+- 2 were retrieved into the 1475-paper corpus but removed by a filter: idx 572 (community emergency-medical-service network reconfiguration, removed by Filter B as not a restoration-scheduling problem) and idx 814 (infrastructure-network restoration whose operated object is the power grid, removed by Filter C).
+- 4 were never retrieved by the WOS query at all (a search-recall gap): Yang et al. 2024 (multi-agent DRL for community post-hazard recovery), Sun et al. 2022 (AI-informed planning for hazard-impacted road networks), Li and Wu 2022 (DRL decision support for transportation infrastructure under hurricanes), and Joo et al. 2022 (multi-agent DRL road reconstruction after the 2018 western-Japan flooding).
+
+The two filtered-out papers confirm the filters behave as designed; the four missed papers mark the known recall limit of the query (consistent with the recall gap recorded for the v2 search string) and would be candidates for citation-chasing / snowballing.
+
+### A.2 Full-Text Validation and Dimension Cross-Tabulation
+
+The process and results of the full-text validation are as follows. Full-text retrieval was attempted for all 190 papers: first, the papers whose four dimensions or objective/traffic labels could not be judged confidently, together with a 20% random sample, totaling 119 papers, were read in full; the remaining 71 papers were then also read; finally, for the 30 papers behind paywalls, retries were made using 7 PDFs provided by the author, a SAGE GT account, and ScienceDirect previews. In the end, 184 papers were read in full and 6 remained unobtainable behind paywalls (see Appendix D for the list). The full-text validation corrected 20 objective-type labels and 36 traffic-model labels in total; the traffic model is the easiest to misjudge from an abstract, e.g., idx 8 was corrected from shortest-path to UE. After correction, the involving-versus-not-involving ratio for traffic changed from 105:85 to 115:75, user-equilibrium rose from 23 to 35, and dynamic demand rose from 13 to 23.
+
+The dimension cross-tabulation corroborates novelty. The positioning combination of this study is: restoration-scheduling ∩ UE traffic ∩ composite objective ∩ learning methods (DRL, GNN, or warm-start) ∩ adaptive architecture ∩ dynamic OD ∩ stochastic repair durations. Narrowing layer by layer within the 190 papers (all figures calibrated by full text):
+
+| Intersection condition | Count | idx |
+|---|---|---|
+| UE ∩ composite objective | 5 | 19, 96, 153, 692, 1314 |
+| Adaptive ∩ learning methods ∩ UE | 2 | 35, 133 |
+| Adaptive ∩ learning methods ∩ UE ∩ dynamic OD | 1 | 133 |
+| opt+RL warm-start hybrid (the method core of this study) | 3 | 47, 50, 900 |
+
+With all positioning dimensions stacked, the only complete neighbor in the entire corpus remains idx 133 (which shares the Sioux Falls testbed with this study; its full text confirms reinforcement learning with MILP subproblems, adaptive architecture, dynamic demand, UE, and stochastic repair durations). The method core (warm-starting reinforcement learning with optimization solutions) has three neighbors, idx 47, 50, and 900, but idx 900 targets all-terminal reliability (topological connectivity, involving neither UE nor dynamic demand) and thus still does not overlap with this study. This supports the novelty of this study objectively along six independent dimensions.
+
+---
+
+## Appendix B　Years, Venues, and Classics
 
 The year distribution is as follows. Of the 190 papers, recent years (2021 to 2026) account for 127 papers, about 67%, with 28 papers in 2026 alone, reflecting the research surge in deep reinforcement learning and optimization-based recovery; the earliest paper dates to 2003.
 
@@ -289,21 +325,6 @@ Citation counts are taken from OpenAlex (by DOI, real-time cumulative) and now c
 | 51 | 2022 | 1043 | Strategies to Enhance the Resilience of an Urban Rail Transit Network |
 
 The most-cited works are older resilience and routing papers — idx 886 (378, freight-network resilience), idx 1101 (270, metro resiliency), idx 96 (229, bridge-network restoration), and idx 1047 (226, emergency roadway repair) — which serve as foundations rather than direct competitors. The most relevant core classic remains idx 96 (Restoration of Bridge Networks after an Earthquake). Frontier does not equal classic: the competitors closest to this study are mostly from 2025 to 2026 with only 0 to 1 citations — for example idx 911, Robust Multicrew Scheduling and Routing in road restoration (Comput. & OR); idx 716, Coordinating road recovery and supply distribution (EJOR, DRO); idx 994, Prioritizing Disaster Recovery Under Budget Uncertainty (M&SOM); idx 1059 (constrained reinforcement learning for metro-bus recovery sequencing, TR-D); idx 747 (two-stage stochastic programming for road-network hardening and recovery, RESS); as well as idx 133, 35, 60, and 98 — and must be judged by content, not citations. Classics serve for foundations and method lineage, while frontier papers serve for direct competitive positioning. The core set (v1 relevance tier) contains 19 papers: idx 1, 11, 17, 18, 26, 35, 49, 55, 60, 63, 68, 76, 84, 89, 96, 98, 133, 181, 221.
-
-## Appendix B　Full-Text Validation and Dimension Cross-Tabulation
-
-The process and results of the full-text validation are as follows. Full-text retrieval was attempted for all 190 papers: first, the papers whose four dimensions or objective/traffic labels could not be judged confidently, together with a 20% random sample, totaling 119 papers, were read in full; the remaining 71 papers were then also read; finally, for the 30 papers behind paywalls, retries were made using 7 PDFs provided by the author, a SAGE GT account, and ScienceDirect previews. In the end, 184 papers were read in full and 6 remained unobtainable behind paywalls (see Appendix D for the list). The full-text validation corrected 20 objective-type labels and 36 traffic-model labels in total; the traffic model is the easiest to misjudge from an abstract, e.g., idx 8 was corrected from shortest-path to UE. After correction, the involving-versus-not-involving ratio for traffic changed from 105:85 to 115:75, user-equilibrium rose from 23 to 35, and dynamic demand rose from 13 to 23.
-
-The dimension cross-tabulation corroborates novelty. The positioning combination of this study is: restoration-scheduling ∩ UE traffic ∩ composite objective ∩ learning methods (DRL, GNN, or warm-start) ∩ adaptive architecture ∩ dynamic OD ∩ stochastic repair durations. Narrowing layer by layer within the 190 papers (all figures calibrated by full text):
-
-| Intersection condition | Count | idx |
-|---|---|---|
-| UE ∩ composite objective | 5 | 19, 96, 153, 692, 1314 |
-| Adaptive ∩ learning methods ∩ UE | 2 | 35, 133 |
-| Adaptive ∩ learning methods ∩ UE ∩ dynamic OD | 1 | 133 |
-| opt+RL warm-start hybrid (the method core of this study) | 3 | 47, 50, 900 |
-
-With all positioning dimensions stacked, the only complete neighbor in the entire corpus remains idx 133 (which shares the Sioux Falls testbed with this study; its full text confirms reinforcement learning with MILP subproblems, adaptive architecture, dynamic demand, UE, and stochastic repair durations). The method core (warm-starting reinforcement learning with optimization solutions) has three neighbors, idx 47, 50, and 900, but idx 900 targets all-terminal reliability (topological connectivity, involving neither UE nor dynamic demand) and thus still does not overlap with this study. This supports the novelty of this study objectively along six independent dimensions.
 
 ---
 
