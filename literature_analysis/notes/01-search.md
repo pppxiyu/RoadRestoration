@@ -34,10 +34,10 @@ Keywords are organized into concept blocks, connected by OR within a block and b
 
 | Concept block | Keywords (OR) |
 |---|---|
-| A Hazard | hurricane, typhoon, cyclone, flood, flooding, inundation, "storm surge", earthquake, seismic, "natural hazard", "natural disaster", "extreme weather" |
-| B Object | "road network", "roadway network", "transportation network", "transport network", "highway network", "street network", "road infrastructure", "transportation infrastructure", bridge |
-| C Restoration | restoration, recovery, repair, reconstruction, rehabilitation, reopening, "debris removal", "debris clearance" |
-| D Prioritization and optimization | prioritization, priority, ranking, "restoration sequence", "restoration scheduling", "recovery scheduling", "resource allocation", "crew scheduling", criticality, sequencing, scheduling, optimization, "integer programming", "mixed-integer programming", MILP, "stochastic programming", "robust optimization", heuristic, metaheuristic |
+| A Hazard or disruption | hurricane, typhoon, cyclone, flood\*, inundation, "storm surge", earthquake, seismic, tsunami, landslide, "natural hazard\*", "natural disaster\*", "extreme weather", disaster\*, postdisaster, "post-disaster", disruption\* |
+| B Object (transportation network) | "road network\*", "roadway network\*", "transportation network\*", "transport network\*", "road infrastructure", "transportation infrastructure", "transportation system\*", "transport system\*", "infrastructure network\*", highway\*, roadway\*, "road segment\*", bridge\*, subway, metro, transit |
+| C Restoration | restor\*, recover\*, repair\*, reconstruct\*, rehabilitat\*, reopen\*, "debris removal", "debris clearance", reconfigur\*, "service restoration" |
+| D Prioritization, optimization, or learning | prioriti\*, priority, ranking, sequencing, "restoration sequence", "restoration scheduling", "recovery scheduling", scheduling, "resource allocation", "crew scheduling", criticality, optimi\*, "integer programming", "mixed-integer programming", MILP, "stochastic programming", heuristic, metaheuristic, "reinforcement learning", "decision support" |
 
 ### 1.2 WOS Topic Query
 
