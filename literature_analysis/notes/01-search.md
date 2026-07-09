@@ -164,15 +164,16 @@ Each paper is assigned its dominant metric; a paper is placed in composite only 
 
 ### 3.2 Traffic Model (traffic_model, 5 categories)
 
-A strict dividing line is drawn by whether the model computes any traffic speed, time, or flow on the network, splitting the five categories into two groups: the upper three involve traffic state, totaling 115 papers; the lower two involve none at all, totaling 75 papers. The decision rule is: if any traffic speed, time, or flow appears in the model, the paper is classified as involving traffic state; only when it is certain that no traffic quantity exists (purely topological connectivity metrics, or no network flow or routing model at all) is the paper classified as not involving; in case of uncertainty, the paper is always classified as involving.
+A dividing line is drawn by whether the model computes any traffic speed, time, or flow on the network: the top three categories involve traffic state (108 papers), the next two involve none at all (59 papers), and a sixth `uncertain` bucket (23 papers) holds cases whose two full-text reads disagreed on this two-class question with no decisive feature to settle it (see Appendix A.3). The shortest-path/AON ↔ topological/graph-metric boundary is genuinely fuzzy — an efficiency or accessibility metric computed over shortest paths sits on the line — so rather than force a single label, those cases are marked `uncertain`.
 
 | Category | Count | Detailed meaning | Involves traffic state? |
 |---|---|---|---|
-| shortest-path/AON | 50 | Computes shortest paths on fixed (flow-independent) link costs, or performs all-or-nothing (AON) assignment: travel time equals the sum of static link travel times (the shortest-path length), and OD demand is loaded onto the shortest path in one block to obtain link flows; travel times and flows exist, but link costs do not vary with flow and there is no congestion feedback. This is the most common category in the field, and quite a few papers claiming to be traffic-aware actually fall here. | ✅ Yes (travel time and flow, static) |
-| network-flow/capacity | 30 | Uses maximum-flow, minimum-cost-flow, or capacitated (multi-commodity) flow models: flow is explicitly modeled subject to link-capacity constraints, but link costs are flow-independent and there is no equilibrium iteration; the concern is how much flow can pass or how much OD demand can be met, without computing congested travel times. | ✅ Yes (flow, capacity-constrained) |
-| user-equilibrium | 35 | Uses Wardrop user equilibrium (UE) or stochastic user equilibrium (SUE): link cost is a function of flow (e.g., BPR), and equilibrium flows and link travel times are solved iteratively, capturing speed, time, and flow together with their congestion feedback; this category is closest to the core of this study's UE simulator. | ✅ Yes (speed, time, and flow, with congestion feedback) |
-| topological/graph-metric | 48 | Uses only graph-theoretic performance metrics: connectivity, size of the largest connected component, betweenness centrality, network efficiency in the hop-count sense, number of reachable OD pairs, or path counts; links carry no cost, travel time, or flow, and performance is determined entirely by the topological connectivity structure. | ❌ No (purely topological) |
-| none/not-modeled | 27 | No routing, flow, or travel-time model exists on the network at all: the objective is structural functionality, component-level repair, an integrated resilience curve, or another non-flow metric, and traffic state never enters the model. | ❌ No (no network flow model) |
+| shortest-path/AON | 37 | Computes shortest paths on fixed (flow-independent) link costs, or performs all-or-nothing (AON) assignment: travel time equals the sum of static link travel times (the shortest-path length), and OD demand is loaded onto the shortest path in one block to obtain link flows; travel times and flows exist, but link costs do not vary with flow and there is no congestion feedback. | ✅ Yes (travel time and flow, static) |
+| network-flow/capacity | 31 | Uses maximum-flow, minimum-cost-flow, or capacitated (multi-commodity) flow models: flow is explicitly modeled subject to link-capacity constraints, but link costs are flow-independent and there is no equilibrium iteration; the concern is how much flow can pass or how much OD demand can be met, without computing congested travel times. | ✅ Yes (flow, capacity-constrained) |
+| user-equilibrium | 40 | Uses Wardrop user equilibrium (UE) or stochastic user equilibrium (SUE): link cost is a function of flow (e.g., BPR), and equilibrium flows and link travel times are solved iteratively, capturing speed, time, and flow together with their congestion feedback; this category is closest to the core of this study's UE simulator. | ✅ Yes (speed, time, and flow, with congestion feedback) |
+| topological/graph-metric | 37 | Uses only graph-theoretic performance metrics: connectivity, size of the largest connected component, betweenness centrality, network efficiency in the hop-count sense, number of reachable OD pairs, or path counts; links carry no cost, travel time, or flow, and performance is determined entirely by the topological connectivity structure. | ❌ No (purely topological) |
+| none/not-modeled | 22 | No routing, flow, or travel-time model exists on the network at all: the objective is structural functionality, component-level repair, an integrated resilience curve, or another non-flow metric, and traffic state never enters the model. | ❌ No (no network flow model) |
+| uncertain | 23 | Two independent full-text reads disagreed on whether the model involves traffic state and no decisive feature resolved it — chiefly the shortest-path/AON ↔ topological/graph-metric boundary (efficiency/accessibility metrics over shortest paths, gravity models, composite indices). | ⚠️ Undetermined |
 
 ### 3.3 Solution Method (solution_method, multi-label, 10 categories)
 
@@ -205,21 +206,23 @@ Across the entire corpus, the learn+optimize warm-start category is the rarest, 
 
 | Category | Count | Detailed meaning |
 |---|---|---|
-| static-demand | 133 | Fixed OD demand that remains unchanged throughout the recovery process. |
-| not-applicable | 34 | No demand or OD is modeled (structural or purely topological objectives). |
-| dynamic/time-varying-demand | 23 | OD demand varies over time, responds to the network state, or reflects adaptive traveler behavior; this study belongs to this category (dynamic OD). |
+| static-demand | 131 | Fixed OD demand that remains unchanged throughout the recovery process (route re-choice with fixed OD magnitude counts as static). |
+| not-applicable | 39 | No demand or OD is modeled (structural or purely topological objectives). |
+| dynamic/time-varying-demand | 18 | OD demand magnitude varies over time, responds to the network state, or reflects adaptive traveler behavior; this study belongs to this category (dynamic OD). |
+| uncertain | 2 | Two full-text reads disagreed on whether the demand is dynamic vs non-dynamic (idx 27, 133; see Appendix A.3). |
 
 ### 3.6 Uncertainty (uncertainty, 5 categories)
 
 | Category | Count | Detailed meaning |
 |---|---|---|
-| deterministic | 128 | All parameters are known and fixed. |
-| stochastic/scenario-based | 44 | Uses probabilistic parameters, scenarios, stochastic programming, or expected values; this study belongs to this category (stochastic repair durations). |
-| adaptive/multistage-revelation | 9 | Uncertainty is revealed in stages with recourse, or multistage stochastic or online revelation. |
+| deterministic | 136 | All parameters are known and fixed (running a deterministic model on fixed what-if scenarios still counts as deterministic). |
+| stochastic/scenario-based | 34 | Uses probabilistic parameters, scenarios, stochastic programming, or expected values inside the optimization; this study belongs to this category (stochastic repair durations). |
+| adaptive/multistage-revelation | 8 | Uncertainty is revealed in stages with recourse, or multistage stochastic or online revelation. |
 | robust/distributionally-robust | 6 | Robust optimization, distributionally robust optimization (DRO), or min-max. |
 | fuzzy/other | 3 | Fuzzy sets, intervals, or possibility theory. |
+| uncertain | 3 | Two full-text reads disagreed on deterministic vs non-deterministic (idx 61, 205, 515; see Appendix A.3). |
 
-Non-deterministic approaches total 62 papers (44 stochastic, 9 multistage, 6 robust, 3 fuzzy).
+Non-deterministic approaches total 51 papers (34 stochastic, 8 multistage, 6 robust, 3 fuzzy); 3 more are undetermined.
 
 ---
 
@@ -242,7 +245,7 @@ The two filtered-out papers confirm the filters behave as designed; the four mis
 
 ### A.2 Full-Text Validation and Dimension Cross-Tabulation
 
-The process and results of the full-text validation are as follows. Full-text retrieval was attempted for all 190 papers: first, the papers whose four dimensions or objective/traffic labels could not be judged confidently, together with a 20% random sample, totaling 119 papers, were read in full; the remaining 71 papers were then also read; finally, for the 30 papers behind paywalls, retries were made using 7 PDFs provided by the author, a SAGE GT account, and ScienceDirect previews. In the end, 184 papers were read in full and 6 remained unobtainable behind paywalls (see Appendix D for the list). The full-text validation corrected 20 objective-type labels and 36 traffic-model labels in total; the traffic model is the easiest to misjudge from an abstract, e.g., idx 8 was corrected from shortest-path to UE. After correction, the involving-versus-not-involving ratio for traffic changed from 105:85 to 115:75, user-equilibrium rose from 23 to 35, and dynamic demand rose from 13 to 23.
+The process and results of the full-text validation are as follows. Full-text retrieval was attempted for all 190 papers: first, the papers whose four dimensions or objective/traffic labels could not be judged confidently, together with a 20% random sample, totaling 119 papers, were read in full; the remaining 71 papers were then also read; finally, for the 30 papers behind paywalls, retries were made using 7 PDFs provided by the author, a SAGE GT account, and ScienceDirect previews. In the end, 184 papers were read in full and 6 remained unobtainable behind paywalls (see Appendix D for the list). The full-text validation corrected 20 objective-type labels and 36 traffic-model labels in total; the traffic model is the easiest to misjudge from an abstract, e.g., idx 8 was corrected from shortest-path to UE. After correction, the involving-versus-not-involving ratio for traffic changed from 105:85 to 115:75, user-equilibrium rose from 23 to 35, and dynamic demand rose from 13 to 23. (These are the figures from this first full-text pass; the labels were later re-checked with two independent reads per paper and an `uncertain` category was added — see Appendix A.3 for the current distributions.)
 
 The dimension cross-tabulation corroborates novelty. The positioning combination of this study is: restoration-scheduling ∩ UE traffic ∩ composite objective ∩ learning methods (DRL, GNN, or warm-start) ∩ adaptive architecture ∩ dynamic OD ∩ stochastic repair durations. Narrowing layer by layer within the 190 papers (all figures calibrated by full text):
 
@@ -250,10 +253,23 @@ The dimension cross-tabulation corroborates novelty. The positioning combination
 |---|---|---|
 | UE ∩ composite objective | 5 | 19, 96, 153, 692, 1314 |
 | Adaptive ∩ learning methods ∩ UE | 2 | 35, 133 |
-| Adaptive ∩ learning methods ∩ UE ∩ dynamic OD | 1 | 133 |
+| Adaptive ∩ learning methods ∩ UE ∩ dynamic OD | 0 confirmed | (133, but its demand is now `uncertain`) |
 | opt+RL warm-start hybrid (the method core of this study) | 3 | 47, 50, 900 |
 
-With all positioning dimensions stacked, the only complete neighbor in the entire corpus remains idx 133 (which shares the Sioux Falls testbed with this study; its full text confirms reinforcement learning with MILP subproblems, adaptive architecture, dynamic demand, UE, and stochastic repair durations). The method core (warm-starting reinforcement learning with optimization solutions) has three neighbors, idx 47, 50, and 900, but idx 900 targets all-terminal reliability (topological connectivity, involving neither UE nor dynamic demand) and thus still does not overlap with this study. This supports the novelty of this study objectively along six independent dimensions.
+With all positioning dimensions stacked, idx 133 (which shares the Sioux Falls testbed with this study) is the nearest neighbor: its full text confirms reinforcement learning with MILP subproblems, adaptive architecture, UE traffic, and stochastic repair durations. However, the two-read re-check (Appendix A.3) found its OD-demand dynamics ambiguous — the model evolves traveler routes day-to-day but holds OD *magnitude* constant ("assumed constant within the short-term restoration process"), which under this study's definition is static, not dynamic. Its `demand_dynamics` is therefore recorded as `uncertain`. Either way no paper is a confirmed complete neighbor along all positioning dimensions: if 133's demand is read as static, no corpus paper combines UE, adaptive learning, and dynamic OD; if it is read as dynamic, 133 alone is the single neighbor. The method core (warm-starting reinforcement learning with optimization solutions) has three neighbors, idx 47, 50, and 900, but idx 900 targets all-terminal reliability (involving neither UE nor dynamic demand) and thus still does not overlap with this study. The novelty holds along the independent positioning dimensions.
+
+### A.3 Binary Re-Check of Traffic, Demand, and Uncertainty
+
+All 190 papers were re-checked on `s3_traffic_model`, `s3_demand_dynamics`, and `s3_uncertainty` so that every readable paper carries **two independent full-text reads**: the original full-text label and a blind re-read that recomputed the three dimensions from scratch. 176 papers obtained two valid reads; the remaining 14 have a single read and keep it, flagged unverified (6 never retrievable — idx 42, 120, 147, 325, 741, 994 — and 8 blocked by a SAGE/Cloudflare interstitial at re-read time — idx 23, 84, 604, 744, 778, 884, 1043, 1314).
+
+The rule was deliberately conservative, to avoid the trap of treating one read as ground truth on a fuzzy label. A disagreement was **fixed directly** only when a read named an unambiguous, checkable modelling feature the other had missed (explicit Wardrop/BPR user equilibrium; capacitated max-/min-cost/multi-commodity flow; "no OD travel demand" or time-indexed demand magnitude; a single fixed scenario with no random variables versus Monte-Carlo/Latin-hypercube sampling feeding the objective). Every remaining disagreement — chiefly the genuinely fuzzy shortest-path/AON ↔ topological/graph-metric boundary — was routed to a new **`uncertain`** category rather than force-picked. Two-read agreement at the two-class level: **traffic 143/176 (81%)**, **demand 160/176 (91%)**, **uncertainty 158/176 (90%)**.
+
+Outcome across the 67 two-class disagreements: **39 decisive fixes** and **28 routed to `uncertain`**.
+
+- **Decisive fixes (39).** traffic → user-equilibrium: 4, 6, 9, 27, 101; traffic → network-flow/capacity: 29, 30, 500, 711, 913. demand → dynamic: 4, 99, 913, 1100, 1101; demand → not-applicable: 498, 818, 849, 926, 1142, 1151; demand → static: 127, 595, 889. uncertainty → deterministic: 16, 18, 47, 68, 136, 555, 740, 881, 896, 1030, 1065, 1085; uncertainty → stochastic: 10, 49, 537. (The uncertainty fixes are almost all fixed-scenario what-ifs that had been over-labelled stochastic, plus three genuine stochastic models — 10, 49, 537 — that had been missed. The demand fixes correct interdependent-power papers whose road network carries only repair crews, i.e. no OD travel demand.)
+- **Routed to `uncertain` (28).** traffic (23): 47, 60, 97, 99, 140, 271, 498, 515, 537, 568, 595, 680, 783, 825, 867, 893, 1042, 1057, 1071, 1100, 1108, 1129, 1140; demand (2): 27, 133; uncertainty (3): 61, 205, 515.
+
+The demand and uncertainty dimensions are reliable at the two-class level (91% and 90%): their disagreements are mostly one-directional and feature-decidable, so they were largely fixed rather than left uncertain. The traffic model is the weakest (81%): its shortest-path/AON ↔ topological/graph-metric boundary is genuinely fuzzy — an efficiency, accessibility, or gravity metric computed over shortest paths sits on the line — so 23 papers are recorded `uncertain` rather than assigned a possibly-wrong label. The distributions in Sections 3.2, 3.5, and 3.6 reflect the post-re-check labels including the `uncertain` bucket. One consequence worth flagging: idx 133, the nearest novelty neighbour, has its demand recorded `uncertain` because its day-to-day route evolution runs on a **constant** OD magnitude (Appendix A.2).
 
 ---
 
