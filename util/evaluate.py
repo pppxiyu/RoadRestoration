@@ -1,15 +1,19 @@
 """
-Figure-1 evaluator: the exact objective F(x | ω) for the road-recovery toy.
+Objective evaluator for the road-recovery toy problem: computes the exact objective
+F(x | ω), where x is a repair schedule and ω is a realized scenario (the repair durations).
 
-`evaluate_schedule(...)` implements the paper's §1 / Figure 1 pipeline. The TWO objectives
-are computed very differently:
-  - F2 (restoration efficiency)  : pure schedule arithmetic, NO UE.
-  - F1 (accessibility degradation): a per-step loop with ONE UE solve per step.
+`evaluate_schedule(...)` combines two objectives that are computed in very different ways:
+  - F2 (restoration efficiency)  : pure schedule arithmetic; no traffic model is needed.
+  - F1 (accessibility degradation): a loop over time steps, each step solving one user
+    equilibrium (UE) — the traffic state in which no driver can lower their own travel
+    time by unilaterally switching routes.
 
-Time is in integer slots k = 0,1,2,...; slot 0 = disaster onset t0; Δt hours/slot.
-A schedule is start slots {s_e}, s_e >= 1 (start strictly after onset). Segment e is under
-repair on slots [s_e, s_e+d_e); damaged (v_e*) for k < s_e+d_e, restored (0) for k >= s_e+d_e
-(Eq. 2). Building blocks are exposed so main.py can replay the steps with explicit labels.
+Time is discretized into integer slots k = 0, 1, 2, ...; slot 0 is the disaster onset t0,
+and each slot spans Δt hours. A schedule assigns each segment a start slot s_e >= 1, so
+repair always begins strictly after onset. Segment e is under repair on the slots
+[s_e, s_e+d_e): it stays damaged (severity v_e*) while k < s_e+d_e and becomes fully
+restored (severity 0) once k >= s_e+d_e. The stages of this pipeline are exposed as separate
+functions so the driver script can replay them one at a time with explicit labels.
 """
 
 import networkx as nx
@@ -22,11 +26,15 @@ from util.ue import solve_ue
 
 
 # --------------------------------------------------------------------------- #
-# OD travel times from per-link (congested) times, via shortest paths
+# Origin-destination travel times: shortest paths over the congested link graph
 # --------------------------------------------------------------------------- #
 def od_travel_times(link_df, ctx):
-    """link_df: DataFrame[from, to, cost] (directed congested link times).
-    Returns u_r aligned to ctx['od_pairs'] (np.inf if O and D are disconnected)."""
+    """Compute each origin-destination (OD) pair's travel time as the shortest-path
+    distance through the congested link-time graph.
+
+    `link_df` has columns [from, to, cost] giving the congested travel time of each
+    directed link. The returned array u_r is aligned to ctx['od_pairs']; an entry is
+    np.inf when the origin cannot reach the destination (the two are disconnected)."""
     G = nx.DiGraph()
     fa = link_df["from"].to_numpy()
     ta = link_df["to"].to_numpy()
@@ -52,10 +60,15 @@ def _matrix_from_H(H, ctx):
 
 
 def build_damaged_edges(ctx, damaged):
-    """Return an edges DataFrame for the currently-damaged network. `damaged`: {edge_id: severity}.
-    Segments with severity >= SEVER_SEVERITY are REMOVED from the network (true disconnection -> the
-    affected OD pairs get u_pen); milder ones keep reduced capacity/free_flow_time. Completed/undamaged
-    links are unchanged."""
+    """Build the edges DataFrame describing the network in its currently-damaged state.
+
+    `damaged` maps each still-broken segment's edge_id to its severity. A segment whose
+    severity reaches the SEVER_SEVERITY threshold is dropped from the network entirely,
+    modelling a true disconnection: OD pairs that relied on it can no longer reach their
+    destination and later fall back to the penalty travel time u_pen. Less severe damage
+    instead degrades the link in place — its capacity is scaled down and its free-flow time
+    (the uncongested travel time) is inflated. Segments that are undamaged or already
+    repaired keep their original attributes."""
     edges = ctx["edges"].copy()
     if damaged:
         cap = edges["capacity"].to_numpy(dtype=float, copy=True)
@@ -77,17 +90,21 @@ def build_damaged_edges(ctx, damaged):
 
 
 # --------------------------------------------------------------------------- #
-# Schedule construction (work-conserving) + F2
+# Schedule construction (work-conserving) and the F2 objective
 # --------------------------------------------------------------------------- #
 def schedule_from_permutation(perm, durations, c_max=P.C_MAX):
-    """perm: list of disrupted edge_ids in priority order. Work-conserving list scheduling
-    with c_max identical crews; earliest start slot = 1. Returns {edge_id: start_slot}."""
+    """Turn a priority ordering of segments into concrete start slots by greedy scheduling.
+
+    `perm` lists the disrupted edge_ids in the order they should be repaired. Work is shared
+    among c_max interchangeable crews under a work-conserving rule (no crew sits idle while
+    repairs remain): each segment is handed to whichever crew frees up earliest, and the
+    first repair may begin at slot 1. Returns {edge_id: start_slot}."""
     crew_free = [1] * c_max
     start = {}
     for e in perm:
         c = int(np.argmin(crew_free))
         start[e] = crew_free[c]
-        crew_free[c] = start[e] + durations[e]   # crew busy until completion slot
+        crew_free[c] = start[e] + durations[e]   # this crew stays busy until the repair completes
     return start
 
 
@@ -96,15 +113,25 @@ def makespan_slot(start, durations):
 
 
 def f2_value(start, durations):
-    """F2 = (makespan - t0) / Σ_e d_e·Δt = comp_slot / Σ_e d_e  (Δt cancels)."""
+    """Restoration-efficiency objective F2: the schedule's makespan (the completion slot of
+    the last repair, counted from the onset slot t0) divided by the total repair work
+    Σ_e d_e. Because every slot spans the same Δt hours, that factor cancels between elapsed
+    time and total work, leaving completion_slot / Σ_e d_e. Lower is better — it rewards
+    finishing all repairs sooner relative to the fixed amount of work they require."""
     return makespan_slot(start, durations) / sum(durations.values())
 
 
 # --------------------------------------------------------------------------- #
-# Static context (network, OD, baseline u^{t0}, B, u_pen) — built once
+# Static context, built once: network, OD structure, baseline times, B, u_pen
 # --------------------------------------------------------------------------- #
 def build_context(toy_dir, disrupted):
-    """disrupted: DataFrame with columns edge_id, u, v, severity (the ℰ being scheduled)."""
+    """Assemble the context that stays fixed across every schedule and scenario.
+
+    This bundles the network, the OD structure, the baseline (pre-disaster) travel times
+    that F1 measures degradation against, the demand-shortfall matrix B, and the
+    disconnection penalty u_pen. `disrupted` is a DataFrame with columns edge_id, u, v,
+    severity listing the damaged segments to be scheduled, where u and v are a segment's
+    two endpoint nodes."""
     edges, od, zone_ids = load_toy_network(toy_dir)
     zone_pos = {int(z): i for i, z in enumerate(zone_ids)}
     od_pairs = [(int(r.origin), int(r.destination)) for r in od.itertuples(index=False)]
@@ -119,13 +146,20 @@ def build_context(toy_dir, disrupted):
                oi=oi, di=di, nz=len(zone_ids), edge_row=edge_row,
                origins_unique=sorted({o for o, _ in od_pairs}))
 
-    # baseline u_r^{t0}: UE on the UNDAMAGED network with the normal demand H0
+    # Baseline OD travel times at onset: solve UE on the intact network under normal demand
+    # H0. These serve as the reference times against which F1 later scores degradation.
     base_links, _ = solve_ue(edges, _matrix_from_H(H0, ctx), zone_ids,
                              rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
     ctx["baseline_u"] = od_travel_times(base_links, ctx)
+    # Penalty travel time for disconnected OD pairs: a multiple of the worst finite baseline
+    # time, so a lost connection is charged a large but bounded cost rather than infinity.
     ctx["u_pen"] = P.UPEN_FACTOR * float(np.nanmax(ctx["baseline_u"][np.isfinite(ctx["baseline_u"])]))
 
-    # disrupted columns + B(Φ): B[r, j] = KAPPA*(h_r0/3) if disrupted_j on r's free-flow shortest path
+    # Disrupted-segment records, plus the demand-shortfall matrix B. Entry B[r, j] captures
+    # how much OD pair r's demand drops per unit severity of disrupted segment j, and it is
+    # non-zero only when segment j lies on r's free-flow (uncongested) shortest path — the
+    # premise being that damage on a route a traveler would normally take suppresses that
+    # trip. The coefficient KAPPA * (H0[r]/3) scales the drop by the pair's baseline demand.
     dis = [(int(r.edge_id), int(r.u), int(r.v), int(r.severity))
            for r in disrupted.itertuples(index=False)]
     ctx["disrupted"] = dis
@@ -151,38 +185,49 @@ def build_context(toy_dir, disrupted):
 
 
 # --------------------------------------------------------------------------- #
-# THE Figure-1 pipeline
+# The objective-evaluation pipeline
 # --------------------------------------------------------------------------- #
 def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=False):
-    """F(x|ω) for one schedule (start slots) under one scenario (durations), horizon T slots.
-    Returns {F, F1, F2[, traces]}.  See module docstring for the slot conventions."""
+    """Evaluate F(x | ω) for a single schedule (the start slots) under a single scenario
+    (the repair durations), over a horizon of T slots. Returns a dict holding the combined
+    objective F alongside its two components F1 and F2, plus optional per-step traces. The
+    module docstring explains the slot conventions used here."""
     dis = ctx["disrupted"]
     H0, B = ctx["H0"], ctx["B"]
     base_u = ctx["baseline_u"]
 
-    # --- Figure 1, Step 2: F2 (no UE) ---
+    # F2 is pure schedule arithmetic and needs no traffic model.
     F2 = f2_value(start, durations)
 
-    # --- Figure 1, Step 3: per-step F1 loop ---
+    # F1 is accumulated over the horizon: for every slot k, reconstruct the traffic state the
+    # schedule produces and record one accessibility term for that slot.
     D = np.zeros(len(H0))
     terms, active, traces, u_rows = [], [], [], []
     for k in range(1, T + 1):
-        # Step 1 (per step): damage state v^{t_k}  (Eq. 2)
+        # Damage state at slot k: a segment is still broken while k has not yet reached its
+        # completion slot start+duration; v_vec carries the severity, or 0 once restored.
         damaged = {eid: s for (eid, _, _, s) in dis if k < start[eid] + durations[eid]}
         v_vec = np.array([s if (eid in damaged) else 0.0 for (eid, _, _, s) in dis])
-        # Step 3a: demand shortfall -> H_t  (sharp drop to current shortfall, recover at rate RHO)
+        # Demand shortfall D and the demand H that survives it. `target` is the shortfall the
+        # current damage would cause; D jumps up to it at once when damage worsens but only
+        # decays geometrically (retaining fraction RHO each slot) as damage clears, capturing
+        # trips that return gradually. H is the baseline demand minus that shortfall.
         target = B @ v_vec
         D = np.maximum(target, P.RHO * D)
         H = np.clip(H0 - D, 0.0, None)
-        # Step 3b: damaged network
+        # Network as it stands at slot k, with severed and degraded links applied.
         dmg_edges = build_damaged_edges(ctx, damaged)
-        # Step 3c: UE -> congested link times -> OD travel times u_r
+        # Solve UE on the damaged network under demand H to obtain congested link times, then
+        # collapse them into OD travel times. Disconnected pairs (infinite time) are charged
+        # the finite penalty u_pen so the objective stays well defined.
         links, _ = solve_ue(dmg_edges, _matrix_from_H(H, ctx), ctx["zone_ids"],
                             rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
         u = od_travel_times(links, ctx)
         u_tilde = np.where(np.isfinite(u), u, ctx["u_pen"])
         u_rows.append(u_tilde)
-        # Step 3d: demand-weighted ratio of realized to baseline travel time
+        # Accessibility term for slot k: realized travel time relative to the baseline, both
+        # weighted by demand H so busier OD pairs count for more. A value of 1.0 means no
+        # degradation, which is also the fallback when there is no demand to weight.
         den = float(np.sum(H * base_u))
         term = float(np.sum(H * u_tilde) / den) if den > 0 else 1.0
         terms.append(term)
@@ -192,15 +237,18 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
                                f1_term=term))
 
     terms = np.asarray(terms)
-    if P.F1_ACTIVE_ONLY:                      # lever 5: only the active-recovery window
+    if P.F1_ACTIVE_ONLY:                      # average only over slots that still have damage
         mask = np.asarray(active, dtype=bool)
         F1 = float(terms[mask].mean()) if mask.any() else float(terms.mean())
     else:
         F1 = float(terms.mean())
+    # Blend the two objectives; MU is the weight given to accessibility over efficiency.
     F = P.MU * F1 + (1.0 - P.MU) * F2
     out = dict(F=F, F1=F1, F2=F2)
     if return_u:
-        out["u_tilde"] = np.asarray(u_rows)      # (T, |R|) fixed travel times for c_e^k
+        # (T, |R|) matrix of per-slot OD travel times, reused downstream as fixed surrogate
+        # cost coefficients — a surrogate being a cheap stand-in that avoids re-solving UE.
+        out["u_tilde"] = np.asarray(u_rows)
     if collect_traces:
         out["traces"] = pd.DataFrame(traces)
     return out

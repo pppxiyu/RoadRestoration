@@ -1,19 +1,29 @@
 """
-main.py - single entry point for the toy pipeline.
+Single entry point for the road-restoration toy study.
 
-DEFAULT (`python main.py`): run the whole task for the current scale in config.py --
-  Step 1  brute-force oracle (ground truth, resumable)        -> outputs/oracle/n{N}/
-  Step 2  section 2.1.1 traffic-fixation MILP + all figures   -> outputs/pretrain_milp/n{N}/
-The oracle is RESUMABLE: if a run is interrupted, just run `python main.py` again and it
-continues from the last completed scenario (skips the finished ones). If the oracle result for
-this scale + params is already complete, it is reused from cache (no re-computation).
+The study asks in what order to repair the road segments damaged by a disaster. Each candidate
+repair order is scored by an objective F that balances two competing goals: restoring the
+network quickly, and limiting how much travel accessibility is lost while repairs are underway.
+The toy instance is small enough that the truly best order can be found by exhaustive search,
+which gives a ground-truth benchmark for a faster approximate solver.
 
-`python main.py --walkthrough`: evaluate ONE (schedule, scenario) with every Figure-1 step
-printed under an explicit label, so the pipeline logic can be checked against the paper.
+DEFAULT (`python main.py`): run the whole task at the problem size configured in config.py.
+  Step 1  Brute-force ORACLE: evaluate every feasible repair order to find the true optimum
+          for each scenario. This is the ground truth; the run is resumable. -> outputs/oracle/n{N}/
+  Step 2  Approximate "traffic-fixation" solver: a much cheaper mixed-integer linear program
+          (MILP) that estimates the same schedule, plus comparison and process figures. Its
+          quality is measured against the oracle. -> outputs/pretrain_milp/n{N}/
+The oracle is RESUMABLE: if a run is interrupted, rerun `python main.py` and it continues from
+the last completed scenario (finished ones are skipped). If a complete oracle result already
+exists for this problem size and parameter set, it is reused from cache rather than recomputed.
+
+`python main.py --walkthrough`: evaluate ONE (schedule, scenario) pair while printing every
+stage of the objective-evaluation pipeline under an explicit label, so the scoring logic can
+be inspected end to end.
 
 Run inside the road_restore conda env:
   python main.py                 # full run (oracle + MILP)
-  python main.py --walkthrough   # Figure-1 walkthrough for one example
+  python main.py --walkthrough   # step-by-step objective walkthrough for one example
 (Equivalent module entry points: `python -m util.oracle`, `python -m util.pretrain_milp`.)
 """
 
@@ -31,7 +41,8 @@ TOY = ROOT / "data" / "siouxfalls_toy"
 
 
 def run_all():
-    """Run the full task: brute-force oracle (Step 1) then the section 2.1.1 MILP (Step 2)."""
+    """Run the full task: the brute-force oracle first (Step 1), then the approximate
+    traffic-fixation MILP whose schedule is scored against that oracle (Step 2)."""
     from util.oracle import run_oracle
     from util.pretrain_milp import run_pretrain_milp
     print("=" * 72)
@@ -46,12 +57,15 @@ def run_all():
 
 
 def walkthrough():
-    # --- instance: oracle subset + one scenario + one example schedule ---
+    # Build one concrete instance to trace end to end: the disrupted-segment set the oracle
+    # scores, a single sampled duration scenario (realized repair times), and one repair order.
     disrupted = select_oracle_instance(TOY, n=P.N_DISRUPTED_ORACLE)
     ctx = build_context(TOY, disrupted)
     durations = sample_scenarios(disrupted, M=1, seed=P.SEED)[0]
     segments = sorted(int(e) for e in disrupted["edge_id"])
-    perm = segments                                   # example priority order (by edge id)
+    perm = segments                                   # example repair priority: segments in ascending edge-id order (arbitrary but reproducible)
+    # A "work-conserving" schedule assigns the crews greedily so no crew sits idle while a
+    # segment still waits; the makespan is the slot at which the last repair finishes (horizon T).
     start = schedule_from_permutation(perm, durations, P.C_MAX)
     T = makespan_slot(start, durations)
 
@@ -62,19 +76,21 @@ def walkthrough():
               f"-> completes at k={start[e] + durations[e]}")
     print(f"Horizon for this example T={T} slots\n")
 
-    # ===================== Figure 1 . Step 1 - damage trajectory v^{t_k} (Eq. 2) =====================
+    # ===================== Step 1 - damage trajectory: which segments are still under repair (damaged) in each time slot =====================
     print("# Figure 1 . Step 1 - damage trajectory v^(t_k) (Eq. 2): still-damaged segments per slot")
     for k in range(1, T + 1):
         damaged = [e for e in segments if k < start[e] + durations[e]]
         print(f"    k={k:2d}: damaged = {damaged}")
     print()
 
-    # ===================== Figure 1 . Step 2 - F2 (makespan / work), NO UE =====================
+    # ===================== Step 2 - F2, the restoration-efficiency objective: makespan divided by total repair work; pure schedule arithmetic, no traffic assignment =====================
     print("# Figure 1 . Step 2 - F2 = (makespan - t0) / sum_e d_e*dt   (pure schedule math, no UE)")
     print(f"    makespan slot = {makespan_slot(start, durations)}, total work = "
           f"{sum(durations.values())} slots  ->  F2 = {f2_value(start, durations):.4f}\n")
 
-    # ===================== Figure 1 . Step 3 - per-step UE loop for F1 =====================
+    # ===================== Step 3 - F1, the accessibility-degradation objective =====================
+    # A per-slot loop over k=1..T; each slot solves one user equilibrium (UE) -- the traffic state in
+    # which no driver can lower their own travel time by switching route -- on the network as it stands.
     print("# Figure 1 . Step 3 - per-step loop k=1..T:")
     print("#     3a  demand shortfall  D_t = max(B*v_t, rho*D_{t-1}) ;  H_t = max(0, H0 - D_t)   (sharp drop -> recover)")
     print("#     3b  damaged network   (capacity x retain, free-flow-time / retain, per severity)")
@@ -87,7 +103,7 @@ def walkthrough():
     print(tr.to_string(index=False))
     print(f"\n    F1 = mean(per-step terms) = {res['F1']:.4f}\n")
 
-    # ===================== Figure 1 . Step 4 - compose F =====================
+    # ===================== Step 4 - combine into the overall objective F = mu*F1 + (1-mu)*F2 =====================
     print("# Figure 1 . Step 4 - F = mu*F1 + (1-mu)*F2")
     print(f"    F = {P.MU}*{res['F1']:.4f} + {1 - P.MU}*{res['F2']:.4f}  =  {res['F']:.4f}")
 

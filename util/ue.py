@@ -1,34 +1,41 @@
 """
-User-equilibrium (UE) static traffic assignment for the toy network.
+Static user-equilibrium (UE) traffic assignment for the toy network.
 
-The heavy numerical loop runs inside AequilibraE, so the high-level idea of the UE
-method is written out here explicitly. The single entry point is `solve_ue`.
+User equilibrium (UE) is the traffic state in which no driver can lower their own
+travel time by unilaterally switching route; this is Wardrop's first principle of
+route choice. The heavy numerical work runs inside the AequilibraE library, so this
+module spells out the high-level method in plain terms. `solve_ue` is the single
+entry point.
 
     INPUT
-      - a road network: each link has a free-flow travel time t0, a capacity c, and
-        BPR parameters (alpha, beta)
-      - an origin-destination (OD) demand matrix h (trips per period, zone -> zone)
+      - A road network in which each link has a free-flow travel time t0 (the time to
+        traverse it when empty), a capacity c, and BPR parameters (alpha, beta).
+      - An origin-destination (OD) demand matrix h giving the number of trips per
+        period from each origin zone to each destination zone.
 
-    CORE LOGIC  (Frank-Wolfe user equilibrium, Wardrop's first principle)
-      User equilibrium = the link-flow pattern in which no traveler can reduce their
-      own travel time by unilaterally changing route. It is the minimizer of the
-      Beckmann objective
+    CORE LOGIC  (Frank-Wolfe user equilibrium)
+      The UE flow pattern is the unique minimizer of the Beckmann objective
             Z(x) = sum_a  integral_0^{x_a} t_a(w) dw,
-      where the BPR congested link cost is
+      where each link's cost rises with congestion through the BPR (Bureau of Public
+      Roads) travel-time function
             t_a(x) = t0_a * (1 + alpha * (x_a / c_a)^beta).
-      Frank-Wolfe finds it by repeating:
-        1. ALL-OR-NOTHING: with the current link costs, put every OD trip entirely on
-           its current shortest path  ->  an auxiliary flow y.
-        2. LINE SEARCH / MOVE: shift the current flow x a step toward y so that Z
-           decreases  (x <- x + step * (y - x)).
-        3. UPDATE COSTS from the new flows; stop when the RELATIVE GAP
-           (distance between x and the all-or-nothing target) < rgap_target.
-      AequilibraE uses the bi-conjugate Frank-Wolfe variant ("bfw"), which converges
-      faster than plain Frank-Wolfe.
+      Frank-Wolfe is an iterative descent method that minimizes Z by repeating:
+        1. ALL-OR-NOTHING loading: holding the current link costs fixed, assign every
+           OD trip entirely to its current shortest path, yielding an auxiliary
+           target flow y.
+        2. MOVE: shift the current flow x a fractional step toward y so that Z
+           decreases (x <- x + step * (y - x)); the step size is picked by a line
+           search along the segment from x to y.
+        3. RECOMPUTE link costs from the new flows, and stop once the RELATIVE GAP
+           (how far x still sits from its all-or-nothing target, i.e. the remaining
+           room for improvement) drops below rgap_target.
+      AequilibraE uses the bi-conjugate Frank-Wolfe variant ("bfw"), which reuses
+      information from earlier iterations to converge faster than plain Frank-Wolfe.
 
     OUTPUT
-      - per directed link: the equilibrium flow `volume` and the congested travel
-        time `cost`, returned as a tidy DataFrame[from, to, volume, cost].
+      - For each directed link, the equilibrium flow `volume` and the resulting
+        congested travel time `cost`, returned as a tidy
+        DataFrame[from, to, volume, cost].
 """
 
 import contextlib
@@ -45,31 +52,37 @@ from aequilibrae.paths import Graph, TrafficAssignment, TrafficClass
 
 def _build_graph(edges, zone_ids):
     """Build a routable AequilibraE graph from the undirected edge table.
-    Each edge is a bidirectional link (direction=0); symmetric AB/BA attributes."""
+
+    Each row of `edges` is one physical road treated as a bidirectional link
+    (direction=0), so its capacity and BPR attributes are copied identically to the
+    forward (AB) and reverse (BA) directions. Every network node is also registered
+    as a zone (a place where trips can start or end) so demand can load anywhere.
+    """
     net = pd.DataFrame({
         "link_id": np.arange(1, len(edges) + 1, dtype=np.int64),
         "a_node": edges["u"].to_numpy(dtype=np.int64),
         "b_node": edges["v"].to_numpy(dtype=np.int64),
-        "direction": 0,                       # 0 = bidirectional
+        "direction": 0,                       # direction 0 = link usable both ways
         "distance": edges["length"].to_numpy(dtype=float),
         "modes": "c",
         "capacity_ab": edges["capacity"].to_numpy(dtype=float),
         "capacity_ba": edges["capacity"].to_numpy(dtype=float),
         "free_flow_time": edges["free_flow_time"].to_numpy(dtype=float),
-        "b": edges["bpr_alpha"].to_numpy(dtype=float),      # BPR alpha (field name "b")
-        "power": edges["bpr_beta"].to_numpy(dtype=float),   # BPR beta  (field name "power")
+        "b": edges["bpr_alpha"].to_numpy(dtype=float),      # BPR alpha coefficient (AequilibraE names this column "b")
+        "power": edges["bpr_beta"].to_numpy(dtype=float),   # BPR beta exponent (AequilibraE names this column "power")
     })
     net["id"] = net["link_id"]
     g = Graph()
     g.network = net
-    g.prepare_graph(np.asarray(zone_ids, dtype=np.int64))   # all nodes are zones
+    g.prepare_graph(np.asarray(zone_ids, dtype=np.int64))   # register every node as a trip origin/destination
     g.set_graph("free_flow_time")
-    g.set_blocked_centroid_flows(False)                     # allow thru-traffic at zones
+    g.set_blocked_centroid_flows(False)                     # let routes pass through zones rather than terminate at them
     return g, net
 
 
 def _build_matrix(M, zone_ids):
-    """Wrap a dense OD matrix as an AequilibraE matrix."""
+    """Wrap a dense NumPy OD demand matrix in the in-memory AequilibraE matrix
+    container the assignment engine expects, indexed by zone id."""
     mat = AequilibraeMatrix()
     mat.create_empty(memory_only=True, zones=len(zone_ids), matrix_names=["demand"])
     mat.index[:] = np.asarray(zone_ids, dtype=np.int64)
@@ -79,36 +92,43 @@ def _build_matrix(M, zone_ids):
 
 
 def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e-10, quiet=False):
-    """Solve static user equilibrium. Returns (flows_df, assignment).
+    """Solve static user equilibrium and return (flows_df, assignment).
 
-    flows_df: DataFrame[from, to, volume, cost] (one row per directed link).
-    See the module docstring for the high-level UE idea (input / core logic / output).
+    `flows_df` is a DataFrame[from, to, volume, cost] with one row per directed link,
+    where `volume` is the equilibrium flow on that link and `cost` its congested
+    travel time. The second value is the AequilibraE assignment object, kept so the
+    caller can inspect the convergence report. The module docstring describes the
+    underlying UE method.
 
-    edges columns required: u, v, capacity, length, free_flow_time, bpr_alpha, bpr_beta.
+    `edges` must supply the columns u, v, capacity, length, free_flow_time,
+    bpr_alpha, bpr_beta. `algorithm` names the assignment algorithm ("bfw" =
+    bi-conjugate Frank-Wolfe), `max_iter` caps the number of iterations, and `rgap`
+    is the relative-gap tolerance at which the solver is considered converged. Set
+    `quiet=True` to suppress AequilibraE's logging and progress output.
     """
-    graph, net = _build_graph(edges, zone_ids)        # network -> routable graph
-    mat = _build_matrix(od_matrix, zone_ids)          # OD demand -> matrix
+    graph, net = _build_graph(edges, zone_ids)        # turn the network table into a routable graph
+    mat = _build_matrix(od_matrix, zone_ids)          # wrap the OD demand as an AequilibraE matrix
 
     tc = TrafficClass("car", graph, mat)
     assig = TrafficAssignment()
     assig.set_classes([tc])
-    assig.set_vdf("BPR")                                       # BPR congestion cost
-    assig.set_vdf_parameters({"alpha": "b", "beta": "power"})  # alpha=field b, beta=field power
+    assig.set_vdf("BPR")                                       # let flow raise travel time via the BPR function
+    assig.set_vdf_parameters({"alpha": "b", "beta": "power"})  # read BPR alpha/beta from graph columns "b"/"power"
     assig.set_capacity_field("capacity")
     assig.set_time_field("free_flow_time")
-    assig.set_algorithm(algorithm)                             # bi-conjugate Frank-Wolfe
+    assig.set_algorithm(algorithm)                             # e.g. "bfw" = bi-conjugate Frank-Wolfe
     assig.max_iter = max_iter
     assig.rgap_target = rgap
-    if quiet:                                                  # silence logging + progress bars
+    if quiet:                                                  # route logging and progress bars to null
         logging.getLogger("aequilibrae").setLevel(logging.CRITICAL)
         with open(os.devnull, "w") as _dn, contextlib.redirect_stdout(_dn), \
                 contextlib.redirect_stderr(_dn):
             assig.execute()
     else:
-        assig.execute()                                        # <-- runs the FW loop
+        assig.execute()                                        # run the Frank-Wolfe iterations
 
-    res = assig.results()                                      # per-link AB/BA flow + cost
-    # assigned-flow columns are named after the matrix core ("demand")
+    res = assig.results()                                      # equilibrium flow + congested time per link, both directions
+    # the assigned-flow columns take their name from the matrix core, here "demand"
     link = net.set_index("link_id")
     rows = []
     for lid, r in res.iterrows():
@@ -122,9 +142,16 @@ def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e
 
 
 def beckmann_objective(flows, linkp):
-    """Beckmann objective Z = sum_a [ t0*x + t0*alpha/(beta+1) * x^(beta+1)/cap^beta ],
-    the convex function user equilibrium minimizes. `flows` has columns from,to,volume;
-    `linkp` (from util.io.directed_link_params) carries capacity/free_flow_time/alpha/beta."""
+    """Evaluate the Beckmann objective Z(x) in closed form for a given flow pattern.
+
+    Integrating the BPR link cost from zero flow up to x gives the per-link term
+        t0*x + t0*alpha/(beta+1) * x^(beta+1) / cap^beta,
+    and Z is the sum of these terms over all links. User equilibrium is the flow that
+    minimizes this convex Z, so comparing Z between two flow patterns measures how
+    close each is to equilibrium. `flows` has columns from, to, volume; `linkp` (from
+    util.io.directed_link_params) supplies each link's capacity, free_flow_time,
+    alpha, and beta.
+    """
     m = flows.merge(linkp, on=["from", "to"], how="left")
     x = m["volume"].to_numpy()
     t0 = m["free_flow_time"].to_numpy()
@@ -135,8 +162,9 @@ def beckmann_objective(flows, linkp):
 
 
 # --------------------------------------------------------------------------- #
-# Self-check: run this module to verify the UE engine reproduces the open-source
-# Sioux Falls reference solution.   ->   python -m util.ue
+# Self-check: running this module as a script assigns UE on the Sioux Falls toy
+# network and checks the result against its published reference solution, so a
+# regression in the engine surfaces immediately.   ->   python -m util.ue
 # --------------------------------------------------------------------------- #
 def _validate():
     import sys

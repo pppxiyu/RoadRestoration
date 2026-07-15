@@ -1,16 +1,28 @@
 """
-Brute-force oracle: enumerate all work-conserving schedules (permutations of the 5 disrupted
-segments) over M scenarios, evaluate the EXACT objective F(x|ω) for each (Figure 1), and record
-the per-scenario optimum + the FULL landscape (every tested x). This is the ground truth the
-later pretraining MILP will be tested against.
+Brute-force oracle for the road-restoration scheduling problem.
 
-By construction every enumerated x satisfies the §1.5 constraints: work-conserving list
-scheduling never runs more than C_max crews and starts each segment exactly once (start>t0);
-the global horizon T is set so every schedule finishes within it.
+An "oracle" here is an exhaustive ground-truth solver: for a deliberately small instance it
+enumerates every possible restoration schedule and evaluates each one exactly, so the best it
+reports per scenario is the true hindsight optimum with no approximation. It exists as the
+reference against which the later learned/pretrained MILP solver is measured.
+
+Concretely, it enumerates all work-conserving schedules of the disrupted road segments and, for
+each of M sampled damage scenarios, evaluates the exact objective F(x|ω). A schedule x assigns a
+start time to every disrupted segment. A "work-conserving" schedule never leaves a repair crew
+idle while repairable work is waiting — for list scheduling this means each segment is started
+exactly once and the crews stay busy up to the crew cap. A "scenario" ω is one random draw of the
+uncertain repair durations. For every scenario the oracle records both the optimal schedule and
+the FULL landscape (the objective value of every schedule tested), so the whole shape of the
+search space, not just its minimum, is available for later analysis.
+
+By construction every enumerated schedule is feasible: work-conserving list scheduling never runs
+more than C_max crews at once and starts each segment exactly once after it is disrupted; the
+global horizon T is chosen large enough that every schedule finishes within it, so all schedules
+are scored over one common time window.
 
 Run inside the road_restore conda env:
-  python -m util.oracle --probe     # measure s/UE + project runtime only
-  python -m util.oracle             # full run + figures
+  python -m util.oracle --probe     # measure seconds per UE solve and project runtime only
+  python -m util.oracle             # full enumeration + figures
 """
 
 import hashlib
@@ -34,8 +46,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
 OUT = ROOT / "outputs" / "oracle"
 
-# Parameters whose change should REFRESH a cached oracle result of the same scale.
-# Only the problem SIZE (N_DISRUPTED_ORACLE) keys the cache folder; these values key its freshness.
+# Every parameter that affects the objective F is listed here. A short hashed "fingerprint" of
+# these values (see _param_fingerprint) is stored with each cached result and re-checked on the
+# next run: the problem SIZE (N_DISRUPTED_ORACLE) alone names the cache folder — one folder per
+# scale — while a fingerprint mismatch means the parameters changed and the folder must be
+# recomputed rather than reused.
 FINGERPRINT_PARAMS = [
     "N_DISRUPTED_ORACLE", "MU", "CAP_RETAIN", "SPEED_RETAIN", "SEVER_SEVERITY",
     "F1_ACTIVE_ONLY", "RHO", "KAPPA", "UPEN_FACTOR", "DELTA_T_H", "C_MAX",
@@ -44,8 +59,11 @@ FINGERPRINT_PARAMS = [
 
 
 def _param_fingerprint():
-    """Return (values, sha1) for the F-affecting params. DURATION_SUPPORT has tuple keys, so
-    stringify keys for stable JSON; sha1 over json.dumps(..., sort_keys=True)."""
+    """Build the parameter fingerprint. Returns (values, sha1_hex): the dict of every
+    objective-affecting parameter together with a SHA-1 digest of it. DURATION_SUPPORT is keyed by
+    tuples, which JSON cannot use as object keys, so those keys are stringified first. Hashing the
+    JSON with sort_keys=True makes the digest independent of dict ordering, so identical parameter
+    values always produce the same fingerprint."""
     values = {}
     for name in FINGERPRINT_PARAMS:
         v = getattr(P, name)
@@ -57,20 +75,26 @@ def _param_fingerprint():
 
 
 def scale_dir(base=OUT, n=None):
-    """Scale-specific subfolder outputs/oracle/n{N}/ (never overwrites a different scale)."""
+    """Return the scale-specific output folder outputs/oracle/n{N}/, where N is the number of
+    disrupted segments. Giving each problem size its own folder ensures a run at one scale never
+    overwrites the cached result of another."""
     n = P.N_DISRUPTED_ORACLE if n is None else n
     return Path(base) / f"n{n}"
 
 
 def _baseline_twoway_flow(toy_dir):
-    """Baseline two-way UE flow per undirected edge, computed by OUR OWN UE engine on the
-    UNDAMAGED network with the base demand H0 (sum of both directed volumes). Used only to rank
-    edges by importance for disruption selection. Returns {(min(u,v), max(u,v)): flow}.
+    """Compute the baseline traffic flow on each undirected edge, used only to rank edges by
+    importance when choosing which ones to disrupt.
 
-    This replaces the earlier read of raw/SiouxFalls_flow.tntp (the published reference solution).
-    Computing the flow ourselves removes the dependency on that shipped file, so swapping in a
-    different network/OD dataset needs no external reference-flow file. (`util/ue.py:_validate`
-    still checks our UE against the .tntp reference — that self-check is left untouched.)"""
+    The flow comes from a user-equilibrium (UE) solve — the traffic state in which no driver can
+    lower their own travel time by unilaterally switching route — run by our own UE engine on the
+    UNDAMAGED network under the base origin-destination (OD) demand H0. The two directed volumes on
+    an edge are summed into a single undirected flow. Returns {(min(u,v), max(u,v)): flow}.
+
+    Computing the flow here rather than reading a shipped reference solution keeps the pipeline
+    self-contained: swapping in a different network or OD dataset needs no external reference-flow
+    file. A separate self-check inside the UE engine still validates our UE against that reference
+    solution, and is left untouched."""
     edges, od, zone_ids = load_toy_network(toy_dir)
     flows, _ = solve_ue(edges, od_to_matrix(od, zone_ids), zone_ids,
                         rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
@@ -83,11 +107,14 @@ def _baseline_twoway_flow(toy_dir):
 
 
 def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
-    """Choose n disrupted segments by IMPORTANCE (baseline two-way UE flow, computed by our own UE
-    engine — see _baseline_twoway_flow), mixing critical and minor links so the restoration order
-    strongly affects F1: the top-2 flow edges get severity 3 (severed), the rest are spread over
-    lower-flow edges at severity 2/1. Deterministic. Saves
-    disruption/disrupted_segments_oracle{n}.csv and returns the DataFrame."""
+    """Choose which n segments to disrupt, ranking edges by importance (their baseline UE flow
+    from _baseline_twoway_flow). The selection deliberately mixes heavily used and lightly used
+    links so that the ORDER of restoration has a large effect on the objective: if every disrupted
+    link mattered equally, any repair order would score about the same and the instance would be a
+    weak test. The two highest-flow edges are marked severity 3 (fully severed, the most damaged
+    state); the remaining picks are spread across lower-flow edges at severity 2 or 1
+    (progressively lighter damage). The choice is deterministic. Writes
+    disrupted_segments_oracle{n}.csv and returns the resulting DataFrame."""
     toy = Path(toy_dir)
     edges = pd.read_csv(toy / "network" / "edges.csv")
     flow = _baseline_twoway_flow(toy)
@@ -96,9 +123,9 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
     ranked = edges.sort_values("flow", ascending=False).reset_index(drop=True)
 
     n_crit = min(2, n)
-    picks = list(range(n_crit))                                  # top-flow "critical" edges
+    picks = list(range(n_crit))                                  # highest-flow "critical" edges
     rest = n - n_crit
-    if rest > 0:                                                 # spread the rest over lower flow
+    if rest > 0:                                                 # spread remaining picks over lower-flow edges
         picks += [int(round(x)) for x in np.linspace(len(ranked) // 5, len(ranked) - 1, rest)]
     sub = ranked.iloc[picks].copy().reset_index(drop=True)
     sub["severity"] = [3] * n_crit + [2 if i % 2 == 0 else 1 for i in range(rest)]
@@ -110,8 +137,11 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
 
 
 def compute_horizon(segments, scenarios):
-    """Global horizon T = max completion slot over all permutations × scenarios (so every
-    enumerated schedule finishes within T, and all share one comparable horizon for F1)."""
+    """Return the global time horizon T: the largest completion time — the makespan, i.e. the
+    slot at which the last segment finishes — taken over every schedule and every scenario.
+    Setting T to this maximum guarantees that every enumerated schedule finishes within the
+    horizon, and that all schedules are scored over one identical time window so their objectives
+    are directly comparable."""
     T = 0
     for perm in itertools.permutations(segments):
         for dur in scenarios:
@@ -120,7 +150,7 @@ def compute_horizon(segments, scenarios):
 
 
 def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=False, force=False):
-    out_dir = scale_dir(out_dir)                     # outputs/oracle/n{N}/  (per-scale cache)
+    out_dir = scale_dir(out_dir)                     # per-scale cache folder outputs/oracle/n{N}/
     (out_dir / "figures").mkdir(parents=True, exist_ok=True)
 
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
@@ -131,7 +161,9 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
     T = compute_horizon(segments, scenarios)
     print(f"instance: {len(segments)} segments {segments}; perms={len(perms)}; M={M}; horizon T={T} slots")
 
-    # --- cache check: reuse an up-to-date result for this scale, unless --force ---
+    # --- cache check: if a saved result for this scale carries the same parameter fingerprint,
+    # its enumeration is still valid, so skip the expensive UE work and only re-render figures
+    # (unless --force is given) ---
     values, fp = _param_fingerprint()
     meta_path = out_dir / "meta.json"
     if not probe and not force and meta_path.exists():
@@ -147,7 +179,8 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
             print(f"Re-rendered figures in {out_dir / 'figures'} (cache hit)")
             return
 
-    # --- measure s/UE on one schedule, project full runtime ---
+    # --- time one full schedule evaluation to estimate the per-UE-solve cost, then extrapolate to
+    # the whole enumeration; --probe stops here so the runtime can be sized before committing ---
     t0 = time.perf_counter()
     evaluate_schedule(schedule_from_permutation(list(perms[0]), scenarios[0]), scenarios[0], T, ctx)
     dt = time.perf_counter() - t0
@@ -158,7 +191,8 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
     if probe:
         return
 
-    # --- resume from a matching partial checkpoint (interruption-safe) ---
+    # --- resume support: if a previous run was interrupted, reload the already-computed scenarios
+    # from the on-disk checkpoint (only when its fingerprint matches) and continue from there ---
     land_path = out_dir / "oracle_landscape.csv"
     prog_path = out_dir / "landscape_progress.json"
     rows, done = [], set()
@@ -171,7 +205,8 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
             print(f"[resume] {len(done)}/{M} scenarios already computed for N={P.N_DISRUPTED_ORACLE}; "
                   f"continuing with the remaining {M - len(done)}", flush=True)
 
-    # --- full enumeration: every tested x is logged (with per-schedule timing) ---
+    # --- full enumeration: evaluate every schedule under every remaining scenario, logging each
+    # tested schedule and its objective (with per-schedule timing) into the landscape ---
     t_run = time.perf_counter()
     scen_times = []
     for m, dur in enumerate(scenarios):
@@ -190,7 +225,7 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
             rows.append(row)
         scen_times.append(time.perf_counter() - t_scen)
         done.add(m)
-        pd.DataFrame(rows).to_csv(land_path, index=False)                       # checkpoint
+        pd.DataFrame(rows).to_csv(land_path, index=False)                       # checkpoint after each scenario
         prog_path.write_text(json.dumps({"hash": fp, "done": sorted(done)}), encoding="utf-8")
         print(f"  scenario {m + 1}/{M} done  ({scen_times[-1] / 60:.1f} min)", flush=True)
     total_time = time.perf_counter() - t_run
@@ -223,12 +258,14 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
                     "s_per_ue": float(land["eval_s"].sum() / (len(land) * T)),
                     "this_session_s": total_time, "scenario_s": scen_times}},
         sort_keys=True, indent=2), encoding="utf-8")
-    prog_path.unlink(missing_ok=True)                # completed -> drop the resume marker
+    prog_path.unlink(missing_ok=True)                # run finished: remove the resume checkpoint marker
     print(f"\nWrote {out_dir}  (meta.json hash={fp[:12]}…)")
 
 
 def render_figs(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
-    """Re-render figures from already-saved CSVs (no re-enumeration)."""
+    """Re-render the oracle figures from the already-saved landscape and optima CSVs, without
+    re-running the expensive enumeration. It only recomputes the lightweight context the plots
+    need (the disrupted instance, the scenarios, and the horizon)."""
     from viz.oracle_viz import make_figures
     out_dir = scale_dir(out_dir)
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)

@@ -1,10 +1,23 @@
 """
-Comparison figure for the Section 2.1.1 traffic-fixation MILP vs the brute-force oracle.
+Figures that benchmark the fast traffic-fixation solver against the exact brute-force oracle.
 
-`make_comparison(...)` writes outputs/pretrain_milp/figures/01_milp_vs_oracle.png (PNG only):
-  panel a: per-scenario objective F -- oracle optimum F* vs the MILP schedule's TRUE F
-  panel b: the gap F_milp - F*  (<=0 means the MILP found a schedule at least as good as the
-           oracle's best work-conserving schedule; >0 is the traffic-fixation surrogate cost)
+Context. The restoration problem asks in what order to repair disrupted road segments so as to
+minimise an objective F (lower is better; F combines network travel time and unmet demand). Two
+solvers produce a schedule:
+  - Oracle: enumerates every work-conserving schedule (a schedule that never leaves a crew idle
+    while repair work is waiting) and evaluates the EXACT F of each, so its per-scenario minimum
+    F* is the ground-truth optimum.
+  - MILP (mixed-integer linear program): a much cheaper approximation that fixes the network
+    travel times from a previous solve so that F becomes linear in the start-time decisions,
+    then optimises that linearised "surrogate" objective. Fixing the travel times is called
+    traffic fixation.
+
+`make_comparison(...)` writes outputs/pretrain_milp/figures/01_milp_vs_oracle.png:
+  panel a: per-scenario objective F -- the oracle optimum F* against the TRUE F of the schedule
+           the MILP actually returned.
+  panel b: the gap F_milp - F*. A value <= 0 means the MILP found a schedule at least as good as
+           the oracle's best work-conserving schedule; a value > 0 is the accuracy loss incurred
+           by optimising the linear surrogate instead of the true objective.
 """
 
 from pathlib import Path
@@ -19,7 +32,12 @@ from viz.style import C, panel_label, save_pub, use_pub
 
 
 def make_comparison(out_dir, merged, segments, T):
-    """merged: DataFrame with columns scenario, F_milp, F_oracle, gap (one row per scenario)."""
+    """Draw the two-panel MILP-vs-oracle comparison and save it as a PNG.
+
+    `merged` is a DataFrame with one row per scenario and columns scenario, F_milp (true objective
+    of the MILP's schedule), F_oracle (the exact per-scenario optimum F*), and gap (F_milp - F*).
+    `segments` and `T` (the repair horizon, i.e. the number of time slots) are used only for the
+    figure caption. Returns the path of the written PNG."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
@@ -60,10 +78,19 @@ def make_comparison(out_dir, merged, segments, T):
 
 
 def make_landscape(out_dir, oracle_landscape, milp_opt, oracle_opt, segments, T):
-    """Cross-scenario landscape (one-decision view): the fixed single-policy schedules ranked by
-    their MEAN objective F over all scenarios (band = across-scenario range), with the MILP's
-    mean and the per-scenario hindsight bound overlaid -- i.e. 'if you must commit to one policy,
-    where does the field sit, and where does the adaptive MILP land'."""
+    """Draw the cross-scenario landscape, which answers: if you had to commit to ONE fixed repair
+    order for every scenario, how good would each choice be, and how does the scenario-adaptive
+    MILP compare?
+
+    Each candidate is a fixed single policy (one repair permutation applied unchanged across all
+    scenarios). Policies are ranked by their MEAN objective F over the scenarios; for each, a band
+    shows the across-scenario range (min to max F). Two reference lines are overlaid: the MILP's
+    mean F (it may pick a different order per scenario, i.e. it is adaptive), and the per-scenario
+    hindsight bound -- the mean of the oracle optima, the unbeatable score you would get if you
+    could choose the best order separately for each scenario knowing its outcome in advance.
+
+    `oracle_landscape` holds F for every (permutation, scenario) pair; `milp_opt` and `oracle_opt`
+    supply the MILP and oracle per-scenario results. Returns the path of the written PNG."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
@@ -109,10 +136,18 @@ def make_landscape(out_dir, oracle_landscape, milp_opt, oracle_opt, segments, T)
 
 
 def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
-    """Diagnostics of the alternating optimization, from the per-iteration trace:
-      03_optimization_process.png -- true F and surrogate value vs iteration (one line/scenario,
-                                      marker = the best-by-true-F iterate that is actually returned)
-      04_runtime.png              -- per-scenario wall-clock and iteration count."""
+    """Draw diagnostics of the MILP's alternating optimisation from its per-iteration trace.
+
+    The solver alternates two steps until the schedule stops changing: solve the linear surrogate
+    for a start-time schedule, then recompute the true objective F. This function produces:
+      03_optimization_process.png -- how the true objective F and the surrogate value evolve over
+                                      the iterations (one line per scenario; the marked point is
+                                      the best-by-true-F iterate, which is the one actually
+                                      returned).
+      04_runtime.png              -- per-scenario wall-clock time and the number of iterations
+                                      needed to converge.
+    Returns the figures directory. `trace_df` carries the per-iteration records; `milp_opt` holds
+    per-scenario timing and iteration counts."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
@@ -120,13 +155,13 @@ def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
     cmap = plt.get_cmap("viridis")
     colors = {m: cmap(i / max(1, len(scen_ids) - 1)) for i, m in enumerate(scen_ids)}
 
-    # ---- 03: objective + surrogate trajectories over the alternating iterations ----
+    # Panel 03: how the true objective and the linear surrogate move over the alternating steps.
     fig, ax = plt.subplots(1, 2, figsize=(7.4, 3.2))
     a = ax[0]
     for m in scen_ids:
         g = trace_df[trace_df["scenario"] == m].sort_values("iter")
-        a.plot(g["iter"], g["F"].cummin(), "-", color=colors[m], lw=1.6, alpha=0.9)      # damped best-so-far (descends)
-        bi = g["F"].idxmin()                                                             # returned best (min true F)
+        a.plot(g["iter"], g["F"].cummin(), "-", color=colors[m], lw=1.6, alpha=0.9)      # plot the running best-so-far F, so the curve only descends
+        bi = g["F"].idxmin()                                                             # the iterate with the lowest true F is the schedule the solver returns
         a.plot(g.loc[bi, "iter"], g.loc[bi, "F"], "o", color=colors[m], ms=4, mec="white", mew=0.5, zorder=5)
     a.set_xlabel("alternating iteration")
     a.set_ylabel("true objective $F$")
@@ -148,7 +183,7 @@ def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
     save_pub(fig, figs / "03_optimization_process")
     plt.close(fig)
 
-    # ---- 04: runtime breakdown ----
+    # Panel 04: runtime breakdown -- solve time and iteration count per scenario.
     fig, ax = plt.subplots(1, 2, figsize=(7.2, 3.0))
     x = milp_opt["scenario"].to_numpy()
     a = ax[0]

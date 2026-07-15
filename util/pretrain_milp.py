@@ -1,26 +1,44 @@
 """
-Section 2.1.1 pretraining solver: iterative alternating optimization via traffic fixation.
+Pretraining solver for the road-restoration scheduling problem: given a fixed set of damaged road
+segments, decide at which time slot repair of each segment should start.
 
-For each scenario we fix the whole-horizon travel times (from the previous iteration's UE run),
-precompute the analytic F1-sensitivity coefficients c_e^k, solve a small MILP for the start-time
-schedule, then re-run the UE pipeline to refresh travel times, and repeat until the schedule stops
-changing. The resulting schedule's TRUE F is compared against the brute-force oracle optimum.
+The difficulty is circular: the objective depends on the traffic state, the traffic state depends on
+which segments are already open, and that depends on the very schedule we are trying to choose. We
+break the loop with ALTERNATING OPTIMIZATION under "traffic fixation" -- hold the traffic state fixed,
+optimize the schedule against it, then refresh the traffic state for the new schedule, and iterate.
+Concretely, for each demand scenario:
+  1. FIX the whole-horizon per-slot travel times taken from the previous iteration's user-equilibrium
+     (UE) run. UE is the traffic state in which no driver can lower their own travel time by switching
+     route.
+  2. With travel times frozen, the marginal accessibility gain of starting each segment at each slot
+     becomes a constant, so precompute those analytic sensitivity coefficients c_e^k.
+  3. Solve a small mixed-integer linear program (MILP) that picks the best start-time schedule for
+     those coefficients.
+  4. Re-run the UE pipeline under the new schedule to refresh the travel times, and repeat until the
+     schedule stops changing.
+The chosen schedule's TRUE objective F -- re-evaluated with a real UE solve rather than the linearized
+surrogate -- is then compared against a brute-force oracle that exhaustively searches all
+work-conserving schedules (schedules that never leave a crew idle while repairs remain) to give the
+reference optimum.
 
-Problem-2 fix (matches paper eqn:Q_linear shortfall model): the demand recovered by restoring
-segment e at slot k GROWS as (1 - rho^{k'-k-d_e+1}) * B[:,e] v_e*  (NOT the old decaying
-rho^{k'-k-d_e}). See paper/main.tex sec 2.1.1.
+Recovery model: the demand a segment carries returns GRADUALLY after the segment is restored, not all
+at once. The fraction recovered by a later slot k' after starting repair at slot k grows as
+(1 - rho^{k'-k-d_e+1}), where rho is the recovery-inertia rate and d_e the repair duration, so the
+gain accumulates toward the segment's full demand B[:,e] v_e* as time passes.
 
-Objective (mu=1, F2 weight 0):   min_y  -sum_{e,k} c_e^k y_e^k
-  s.t.  sum_k y_e^k = 1                                       (each segment starts exactly once)
-        sum_e sum_{k'=max(1,k-d_e+1)}^{k} y_e^{k'} <= C_MAX   (crew cap at every slot k)
-        y_e^k = 0  for k > T - d_e                            (finish within the horizon; the one real guard)
+MILP objective (all weight on accessibility; the efficiency term carries zero weight here):
+      min_y  -sum_{e,k} c_e^k y_e^k                            (equivalently: maximize total gain)
+  s.t.  sum_k y_e^k = 1                                        (each segment starts exactly once)
+        sum_e sum_{k'=max(1,k-d_e+1)}^{k} y_e^{k'} <= C_MAX    (crew cap: at most C_MAX active at slot k)
+        y_e^k = 0  for k > T - d_e                             (repair must finish within horizon T)
         y_e^k in {0,1}
-F2 is still computed (a "dull" value) for logging only; it never enters the objective.
+The efficiency term F2 (pure schedule arithmetic, unaffected by the linearization) is still computed
+for logging but never enters the MILP objective.
 
-Solver: scipy.optimize.milp (HiGHS) -- ships with scipy, no license needed.
+Solver: scipy.optimize.milp (the HiGHS backend) -- ships with scipy, so no external license is needed.
 
 Run inside the road_restore conda env (PYTHONPATH = project root):
-  python -m util.pretrain_milp --level-a   # encoding sanity check (MILP >= best work-conserving surrogate)
+  python -m util.pretrain_milp --level-a   # encoding sanity check (MILP surrogate >= best work-conserving one)
   python -m util.pretrain_milp             # full alternating run over M scenarios + comparison figure
 """
 
@@ -50,29 +68,35 @@ OUT = ROOT / "outputs" / "pretrain_milp"
 # c_e^k precompute  (pure numpy, no UE)
 # --------------------------------------------------------------------------- #
 def precompute_c(ctx, u_by_slot, durations, segments, T):
-    """Analytic F1-improvement coefficients c[j, k-1] for segments[j] starting at slot k, given
-    FIXED per-slot travel times u_by_slot (shape (T, |R|)) from the previous iteration.
+    """Precompute the analytic accessibility-gain coefficients c[j, k-1]: the improvement in the F1
+    (accessibility) objective from starting repair of segments[j] at slot k, GIVEN the per-slot travel
+    times u_by_slot (shape (T, |R|), one row of OD travel times per slot) held FIXED from the previous
+    iteration. Freezing the travel times turns this gain into a constant, which is what lets the MILP
+    treat it as a plain linear coefficient instead of re-solving traffic inside the loop.
 
-    c_e^k = (1/T) sum_{k'=k+d_e}^{T} (1 - rho^{k'-k-d_e+1}) * sum_r B[r,e] v_e* alpha_r^{k'},
-      alpha_r^{k'} = 1 - baseline_u[r] / u_by_slot[k'-1, r].
-    Infeasible starts (k > T - d_e) are left at 0 (the MILP bounds force those y to 0).
-    Returns (c, alpha) with c shape (|E|, T), alpha shape (T, |R|)."""
+    c_e^k = (1/T) sum_{k'=k+d_e}^{T} (1 - rho^{k'-k-d_e+1}) * sum_r B[r,e] v_e* alpha_r^{k'}, where
+    alpha_r^{k'} = 1 - baseline_u[r] / u_by_slot[k'-1, r] measures how much worse route r's travel time
+    is at slot k' than its undisrupted baseline (its "room for improvement"), the (1 - rho^...) factor
+    is the fraction of segment e's demand recovered by slot k', and the sum runs only over slots at or
+    after completion (k + d_e). Infeasible starts (k > T - d_e, which would overrun the horizon) are
+    left at 0; the MILP bounds separately force those decisions to 0.
+    Returns (c, alpha) with c of shape (|E|, T) and alpha of shape (T, |R|)."""
     B = ctx["B"]
     sev = ctx["severity_vec"]
     base_u = ctx["baseline_u"]
     rho = P.RHO
     assert B.shape[1] == len(segments), "B columns must align with segments (edge_id order)"
 
-    alpha = 1.0 - base_u[None, :] / u_by_slot          # (T, |R|); can be <0 if u < baseline (allowed)
+    alpha = 1.0 - base_u[None, :] / u_by_slot          # (T, |R|); negative where a slot beat baseline -- legal, not clipped
     c = np.zeros((len(segments), T))
     for j, e in enumerate(segments):
         d = int(durations[e])
-        Bv = B[:, j] * sev[j]                           # (|R|,) demand this segment restores at full
-        w = alpha @ Bv                                  # (T,)  w[k'-1] = sum_r alpha_r^{k'} B[r,e] v*
+        Bv = B[:, j] * sev[j]                           # (|R|,): per-route demand fully served once segment j is restored
+        w = alpha @ Bv                                  # (T,): accessibility gain per slot if j were fully open, w[k'-1] = sum_r alpha_r^{k'} B[r,e] v*
         for k in range(1, T - d + 1):                   # feasible starts only (completion k+d <= T)
-            kp = np.arange(k + d, T + 1)                # completion slot .. horizon end
+            kp = np.arange(k + d, T + 1)                # slots from completion through the horizon end
             if kp.size:
-                decay = 1.0 - rho ** (kp - k - d + 1)   # (1 - rho^{n+1}),  n = k' - k - d
+                decay = 1.0 - rho ** (kp - k - d + 1)   # recovery fraction (1 - rho^{n+1}), n = k' - k - d slots since completion
                 c[j, k - 1] = float(decay @ w[kp - 1]) / T
     return c, alpha
 
@@ -81,36 +105,38 @@ def precompute_c(ctx, u_by_slot, durations, segments, T):
 # MILP build + solve
 # --------------------------------------------------------------------------- #
 def build_and_solve_milp(c, durations, segments, T, c_max=P.C_MAX):
-    """min -sum c[j,k] y[j,k]  s.t. start-once + crew cap + horizon bound; y binary.
-    Returns {edge_id: start_slot}."""
+    """Build and solve the start-time MILP for the fixed coefficients c: choose exactly one start slot
+    per segment to maximize total accessibility gain, encoded as minimizing -sum c[j,k] y[j,k], subject
+    to the start-once, crew-capacity, and horizon-bound constraints with y binary. Returns the chosen
+    schedule as {edge_id: start_slot}."""
     E = len(segments)
     n = E * T
 
-    def idx(j, k):                                      # k is 1-based
+    def idx(j, k):                                      # flatten (segment j, 1-based slot k) to a decision-vector index
         return j * T + (k - 1)
 
     obj = -c.reshape(-1)                                # minimize -sum c y  ==  maximize sum c y
 
-    ub = np.ones(n)                                     # horizon bound: forbid starts that overrun T
+    ub = np.ones(n)                                     # horizon bound: force to 0 any start whose repair would overrun T
     for j, e in enumerate(segments):
         d = int(durations[e])
         for k in range(T - d + 1, T + 1):
             ub[idx(j, k)] = 0.0
     bounds = Bounds(np.zeros(n), ub)
 
-    A_eq = np.zeros((E, n))                             # start-once: sum_k y[j,k] = 1
+    A_eq = np.zeros((E, n))                             # start-once: each segment gets exactly one start slot, sum_k y[j,k] = 1
     for j in range(E):
         for k in range(1, T + 1):
             A_eq[j, idx(j, k)] = 1.0
     con_eq = LinearConstraint(A_eq, 1.0, 1.0)
 
-    A_ub = np.zeros((T, n))                             # crew cap at each slot
+    A_ub = np.zeros((T, n))                             # crew cap: at slot k count repairs still in progress (started within the last d_e-1 slots)
     for k in range(1, T + 1):
         for j, e in enumerate(segments):
             d = int(durations[e])
             for kp in range(max(1, k - d + 1), k + 1):
                 A_ub[k - 1, idx(j, kp)] = 1.0
-    con_ub = LinearConstraint(A_ub, -np.inf, c_max)
+    con_ub = LinearConstraint(A_ub, -np.inf, c_max)     # ... and cap the simultaneous count at c_max crews
 
     res = milp(c=obj, constraints=[con_eq, con_ub],
                integrality=np.ones(n), bounds=bounds)
@@ -122,7 +148,9 @@ def build_and_solve_milp(c, durations, segments, T, c_max=P.C_MAX):
 
 
 def _surrogate_value(start, c, segments, T):
-    """sum_e c[j, start_e - 1]  -- the (sign-flipped) MILP objective for a given schedule."""
+    """Evaluate the linearized surrogate objective sum_e c[j, start_e - 1] for a concrete schedule --
+    i.e. the value the MILP is maximizing, computed here for an arbitrary set of start slots so that
+    candidate schedules can be scored on the same footing as the MILP's own solution."""
     return float(sum(c[j, start[e] - 1] for j, e in enumerate(segments) if 1 <= start[e] <= T))
 
 
@@ -130,11 +158,15 @@ def _surrogate_value(start, c, segments, T):
 # Alternating optimization (Steps 1-4) with guards
 # --------------------------------------------------------------------------- #
 def alternating_optimize(ctx, durations, segments, T, damping=None):
-    """Fix travel times -> solve MILP -> refresh UE, until the schedule stops changing.
-    Returns (best_start, best_result, n_iter, converged, trace); best is chosen by TRUE F over ALL
-    iterates (so non-convergence is harmless). `trace` is a per-iteration list of dicts
-    (iter, F, F1, F2, surrogate, elapsed_s, is_best, start_<e>...) for later analysis.
-    `damping` in (0,1] relaxes the travel-time update (MSA): smaller -> smoother, more monotone."""
+    """Run the alternating loop for one scenario: fix travel times -> solve the MILP -> refresh the UE
+    travel times, repeating until the schedule stops changing (or a cycle/iteration guard fires).
+    Returns (best_start, best_result, n_iter, converged, trace). The returned best is the iterate with
+    the lowest TRUE objective F across ALL iterations, not just the final one, so even a loop that never
+    settles still yields the best schedule it visited. `trace` is a per-iteration list of dicts
+    (iter, F, F1, F2, surrogate, elapsed_s, is_best, start_<e>...) kept for later analysis.
+    `damping` in (0,1] is the method-of-successive-averages (MSA) step size: instead of replacing the
+    travel times with the new UE result, blend the two, so the coefficients (and hence the MILP choice)
+    drift gradually across iterations; a smaller value smooths the updates and makes descent more monotone."""
     damping = P.MILP_DAMPING if damping is None else damping
     t0 = time.perf_counter()
 
@@ -144,11 +176,11 @@ def alternating_optimize(ctx, durations, segments, T, damping=None):
         d.update({f"start_{e}": start[e] for e in segments})
         return d
 
-    start = schedule_from_permutation(list(segments), durations)      # greedy-first init
+    start = schedule_from_permutation(list(segments), durations)      # initial schedule: segments packed greedily in edge-id order (work-conserving)
     res = evaluate_schedule(start, durations, T, ctx, return_u=True)
     history = [(dict(start), res)]
-    trace = [_row(0, res, float("nan"), start)]                       # init: no surrogate yet
-    seen = {frozenset(start.items()): 1}                              # count occurrences (relaxed cycle guard)
+    trace = [_row(0, res, float("nan"), start)]                       # iteration 0 is the initial evaluation, before any MILP, so it has no surrogate value
+    seen = {frozenset(start.items()): 1}                              # per-schedule occurrence counts, feeding the relaxed cycle guard below
     u_tilde = res["u_tilde"]
     converged = False
     n_iter = 0
@@ -159,19 +191,19 @@ def alternating_optimize(ctx, durations, segments, T, damping=None):
         new_res = evaluate_schedule(new_start, durations, T, ctx, return_u=True)
         history.append((dict(new_start), new_res))
         trace.append(_row(n_iter, new_res, _surrogate_value(new_start, c, segments, T), new_start))
-        if new_start == start:                          # Step 4: schedule unchanged -> converged
+        if new_start == start:                          # schedule identical to last iteration -> fixed point reached, converged
             converged = True
             break
         h = frozenset(new_start.items())
         seen[h] = seen.get(h, 0) + 1
-        if seen[h] >= P.MILP_CYCLE_TOL:                 # relaxed cycle guard -> stop only after enough repeats
+        if seen[h] >= P.MILP_CYCLE_TOL:                 # cycle guard: the loop is oscillating, so stop once one schedule has recurred enough times
             break
-        # MSA-style damped travel-time update: blend toward the new UE so c_e^k (hence the MILP
-        # solution) shifts gradually across iterations -> smaller swings, more monotone descent
+        # MSA-damped travel-time update: blend toward the new UE rather than replacing outright, so the
+        # coefficients c_e^k (and thus the MILP solution) shift gradually -> smaller swings, more monotone descent
         u_tilde = damping * new_res["u_tilde"] + (1.0 - damping) * u_tilde
         start = new_start
 
-    best_idx = int(np.argmin([h[1]["F"] for h in history]))           # best by TRUE F
+    best_idx = int(np.argmin([h[1]["F"] for h in history]))           # pick the iterate with the lowest TRUE objective F
     for i, tr in enumerate(trace):
         tr["is_best"] = (i == best_idx)
     best_start, best_res = history[best_idx]
@@ -182,7 +214,10 @@ def alternating_optimize(ctx, durations, segments, T, damping=None):
 # Full run over M scenarios
 # --------------------------------------------------------------------------- #
 def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
-    out_dir = scale_dir(out_dir)                     # outputs/pretrain_milp/n{N}/ (mirror oracle scale)
+    # Run the full alternating solver over M sampled demand scenarios and write the results. Each
+    # scenario is solved independently, checkpointed to CSV as it finishes (so an interrupted run can
+    # resume), and finally compared against the oracle optimum once that oracle output is available.
+    out_dir = scale_dir(out_dir)                     # outputs/pretrain_milp/n{N}/, mirroring the oracle's per-scale directory layout
     (out_dir / "figures").mkdir(parents=True, exist_ok=True)
 
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
@@ -192,7 +227,9 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     T = compute_horizon(segments, scenarios)
     print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}")
 
-    # --- resume support: checkpoint per scenario; skip done ones if params (incl. damping) match ---
+    # --- resume support: a scenario's result is reusable only if the parameters that produced it match ---
+    # fp is a fingerprint (a short hash of the solver settings). We stash it beside the checkpoints and,
+    # on restart, reuse a scenario's saved result only when its fingerprint still matches the current run.
     from util.oracle import _param_fingerprint
     _, base_fp = _param_fingerprint()
     fp = hashlib.sha1(f"{base_fp}|damp={P.MILP_DAMPING}|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}".encode()).hexdigest()
@@ -222,8 +259,8 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         for tr in trace:
             trace_rows.append(dict(scenario=m, **tr))
         done.add(m)
-        pd.DataFrame(rows).to_csv(opt_path, index=False)                          # checkpoint
-        pd.DataFrame(trace_rows).to_csv(trace_path, index=False)                  # checkpoint
+        pd.DataFrame(rows).to_csv(opt_path, index=False)                          # checkpoint after each scenario so progress survives an interruption
+        pd.DataFrame(trace_rows).to_csv(trace_path, index=False)                  # checkpoint the per-iteration trace alongside it
         prog_path.write_text(json.dumps({"hash": fp, "done": sorted(done)}), encoding="utf-8")
         print(f"  scenario {m+1}/{M}: F_milp={best_res['F']:.4f}  iters={n_iter}  "
               f"converged={converged}  {scen_s:.1f}s", flush=True)
@@ -231,7 +268,7 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
 
     milp_opt = pd.DataFrame(rows)
     milp_opt.to_csv(out_dir / "milp_optima.csv", index=False)
-    pd.DataFrame(trace_rows).to_csv(out_dir / "milp_trace.csv", index=False)   # rich raw data
+    pd.DataFrame(trace_rows).to_csv(out_dir / "milp_trace.csv", index=False)   # full per-iteration trace across all scenarios
     total_ue = int(milp_opt["ue_solves"].sum())
     meta = dict(N=len(segments), M=M, T=T, segments=segments, seed=seed,
                 total_time_s=total_s, mean_scenario_time_s=float(milp_opt["time_s"].mean()),
@@ -268,10 +305,16 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
 
 
 # --------------------------------------------------------------------------- #
-# Level-A: encoding sanity (no alternating loop). The MILP optimises over a SUPERSET of the
-# work-conserving schedules, so its surrogate optimum must be >= the best work-conserving one.
+# Level-A: encoding sanity check (no alternating loop). The MILP is free to choose any start slot per
+# segment, which is a SUPERSET of the work-conserving schedules the brute-force enumeration considers,
+# so the MILP's surrogate optimum must be at least as good as the best work-conserving one. If it ever
+# came out lower, the constraint encoding would be wrong.
 # --------------------------------------------------------------------------- #
 def level_a(toy_dir=TOY, seed=P.SEED, scenario=0):
+    # Verify the MILP encoding on a single scenario without running the alternating loop: with the
+    # coefficients fixed, enumerate every work-conserving schedule, take the best surrogate value, and
+    # confirm the MILP's surrogate is at least that high while satisfying the crew-cap and horizon
+    # constraints. Returns True on pass. This catches constraint-encoding bugs, not solution quality.
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     ctx = build_context(toy_dir, disrupted)
@@ -302,7 +345,7 @@ def level_a(toy_dir=TOY, seed=P.SEED, scenario=0):
         print(f"  note: {neg:.1%} of alpha entries are negative (u < baseline; legal, not an error)")
     ok = milp_val >= best_wc - 1e-9
     print(f"  MILP >= best work-conserving ?  {ok}   -> {'PASS' if ok else 'FAIL (encoding bug)'}")
-    for k in range(1, T + 1):                           # constraint spot-checks
+    for k in range(1, T + 1):                           # independently re-check that the MILP schedule honors each constraint
         active = sum(1 for e in segments if milp_start[e] <= k < milp_start[e] + int(dur[e]))
         assert active <= P.C_MAX, f"crew cap violated at slot {k}: {active} > {P.C_MAX}"
     for e in segments:
@@ -312,8 +355,9 @@ def level_a(toy_dir=TOY, seed=P.SEED, scenario=0):
 
 
 def render_landscape(out_dir=OUT):
-    """Regenerate the comparison (01) + cross-scenario landscape (02) figures from already-saved
-    CSVs (no UE loop). Run this after the oracle for this scale finishes."""
+    """Regenerate the MILP-vs-oracle comparison figure and the cross-scenario landscape figure from the
+    already-saved CSVs, without re-running any UE solves. Run this once the oracle for this scale has
+    finished, so the comparison has an oracle optimum to plot against."""
     out_dir = scale_dir(out_dir)
     oracle_dir = scale_dir(ROOT / "outputs" / "oracle")
     disrupted = select_oracle_instance(TOY, P.N_DISRUPTED_ORACLE)
