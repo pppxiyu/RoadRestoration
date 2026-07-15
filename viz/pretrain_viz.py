@@ -69,7 +69,7 @@ def make_comparison(out_dir, merged, segments, T):
     b.set_xticks(x)
     panel_label(b, "b")
 
-    fig.suptitle("Section 2.1.1 traffic-fixation MILP vs brute-force oracle "
+    fig.suptitle("traffic-fixation MILP vs brute-force oracle "
                  f"({len(segments)} segments, horizon T={T})", fontsize=9)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     save_pub(fig, figs / "01_milp_vs_oracle")

@@ -50,7 +50,7 @@ def run_all():
     print("=" * 72, flush=True)
     run_oracle()
     print("\n" + "=" * 72)
-    print("STEP 2/2  section 2.1.1 traffic-fixation MILP  (+ comparison & process figures)")
+    print("STEP 2/2  traffic-fixation MILP  (+ comparison & process figures)")
     print("=" * 72, flush=True)
     run_pretrain_milp()
     print("\nDONE. Raw data + figures under outputs/oracle/n{N}/ and outputs/pretrain_milp/n{N}/.")
@@ -77,21 +77,21 @@ def walkthrough():
     print(f"Horizon for this example T={T} slots\n")
 
     # ===================== Step 1 - damage trajectory: which segments are still under repair (damaged) in each time slot =====================
-    print("# Figure 1 . Step 1 - damage trajectory v^(t_k) (Eq. 2): still-damaged segments per slot")
+    print("# Step 1 - damage trajectory: still-damaged segments per slot")
     for k in range(1, T + 1):
         damaged = [e for e in segments if k < start[e] + durations[e]]
         print(f"    k={k:2d}: damaged = {damaged}")
     print()
 
     # ===================== Step 2 - F2, the restoration-efficiency objective: makespan divided by total repair work; pure schedule arithmetic, no traffic assignment =====================
-    print("# Figure 1 . Step 2 - F2 = (makespan - t0) / sum_e d_e*dt   (pure schedule math, no UE)")
+    print("# Step 2 - F2 = (makespan - t0) / sum_e d_e*dt   (pure schedule math, no UE)")
     print(f"    makespan slot = {makespan_slot(start, durations)}, total work = "
           f"{sum(durations.values())} slots  ->  F2 = {f2_value(start, durations):.4f}\n")
 
     # ===================== Step 3 - F1, the accessibility-degradation objective =====================
     # A per-slot loop over k=1..T; each slot solves one user equilibrium (UE) -- the traffic state in
     # which no driver can lower their own travel time by switching route -- on the network as it stands.
-    print("# Figure 1 . Step 3 - per-step loop k=1..T:")
+    print("# Step 3 - per-step loop k=1..T:")
     print("#     3a  demand shortfall  D_t = max(B*v_t, rho*D_{t-1}) ;  H_t = max(0, H0 - D_t)   (sharp drop -> recover)")
     print("#     3b  damaged network   (capacity x retain, free-flow-time / retain, per severity)")
     print("#     3c  UE on (damaged net, H_t)  ->  congested link times  ->  OD travel times u_r")
@@ -104,7 +104,7 @@ def walkthrough():
     print(f"\n    F1 = mean(per-step terms) = {res['F1']:.4f}\n")
 
     # ===================== Step 4 - combine into the overall objective F = mu*F1 + (1-mu)*F2 =====================
-    print("# Figure 1 . Step 4 - F = mu*F1 + (1-mu)*F2")
+    print("# Step 4 - F = mu*F1 + (1-mu)*F2")
     print(f"    F = {P.MU}*{res['F1']:.4f} + {1 - P.MU}*{res['F2']:.4f}  =  {res['F']:.4f}")
 
 
