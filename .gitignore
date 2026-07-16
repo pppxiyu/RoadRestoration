@@ -11,7 +11,10 @@
 /data/
 /literature_analysis/*
 !/literature_analysis/notes/
-!/literature_analysis/screening_results.csv
+!/literature_analysis/outputs/
+!/literature_analysis/data/
+# ...but keep copyrighted full-text article PDFs local-only (never commit to the public repo)
+/literature_analysis/data/fulltext_pdfs/
 
 # --- Python ---
 __pycache__/
@@ -26,3 +29,6 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+
+/doc/
+

@@ -226,6 +226,116 @@ Non-deterministic approaches total 51 papers (34 stochastic, 8 multistage, 6 rob
 
 ---
 
+## 4 引文滚雪球检索（Snowballing）
+
+为补充从 Web of Science 系统检索可能遗漏的文献，本节以 **19 篇** 与本研究最相关的种子文献（语料 idx：1, 4, 15, 27, 30, 49, 68, 99, 133, 744, 763, 878, 893, 913, 1033, 1059, 1100, 1101, 1108）为起点做引文滚雪球（citation chasing），并将检索到的文献按第 2 节完全相同的系统性综述逻辑重新筛选、按第 3 节标注维度。种子涵盖道路/桥梁修复调度、碎片清理、多机组路径、地铁/轨道恢复等本研究的直接邻域（含 RL 方法的 idx 133 与碎片清理的 idx 878）。
+
+### 4.1 方法
+
+- **后向滚雪球（阅读参考文献）**：通过 OpenAlex 提取每篇种子的参考文献列表。
+- **前向滚雪球（查被引/施引文献）**：通过 OpenAlex 提取引用每篇种子的文献；对最初的两篇种子（idx 133、878）另用 Google Scholar 核对（Scholar 覆盖略多，如 idx 878 被引 44 vs OpenAlex 31）。idx 133 因过新，其被引全部为无关噪声。
+- **三步筛选（与 §2.1–2.4 定义一致）**：① 标题初筛（保守，仅剔除完全无关者，如金融、疫苗、纯 OR/ML/交通理论方法等）；② 摘要级 Filter A/B/C 与互依赖对象细化（分批标注，摘要缺失时保守按标题判定）；③ 对保留文献读全文，复核 Filter A/B/C 并做 §3.1–3.6 六维标注（标题初筛保守放行的文献在此阶段被复核，不合格者剔除）。
+
+### 4.2 筛选漏斗
+
+去重针对种子之间、与现有 190 篇语料、以及滚雪球内部同时进行；已在 190 篇语料内的候选（说明系统检索召回良好）不再计入。合并全部候选后逐层筛选：
+
+| 处置 | 数量 |
+|---|---|
+| 标题初筛剔除（完全无关） | 76 |
+| Filter A 剔除（灾前专属或仅非交通生命线） | 86 |
+| Filter B 剔除（非修复调度/机组路径/碎片清理） | 730 |
+| Filter C 剔除（非交通对象，或互依赖但实际修复电力/水） | 172 |
+| 非期刊（会议/预印本/学位论文，按"仅期刊"标准剔除） | 8 |
+| 综述（移入综述清单） | 1 |
+| **纳入（`final_curated=True`）** | **33** |
+
+### 4.3 新增纳入文献（33 篇）
+
+问题类型分布：restoration-scheduling/sequencing 24、debris-clearance 5、crew/resource-routing-dispatch 4。
+
+| idx | 标题 | 年 | 期刊 | 种子·方向 | problem_type | object |
+|---|---|---|---|---|---|---|
+| 2001 | Efficient allocation of heterogeneous debris clear… | 2026 | Journal of Industrial  | 878·前向 | crew/resource-routing-dispatch | road/highway-network |
+| 2006 | A logic-based Benders decomposition algorithm for … | 2023 | Computers & Industrial | 878·前向 | crew/resource-routing-dispatch | road/highway-network |
+| 2353 | A branch-and-Benders-cut algorithm for the Crew Sc… | 2018 | European Journal of Op | 30·后向 | crew/resource-routing-dispatch | road/highway-network |
+| 2622 | Short-term work team scheduling models for effecti… | 2009 | Transportation Plannin | 893;1108·后向 | crew/resource-routing-dispatch | road/highway-network |
+| 2002 | Reinforcement learning-dijkstra-genetic algorithm … | 2025 | Engineering Applicatio | 878·前向 | debris-clearance | road/highway-network |
+| 2008 | Solving the integrated multi-period scheduling rou… | 2022 | European Journal of Op | 878·前向 | debris-clearance | general-transportation-network |
+| 2010 | Simultaneous planning for disaster road clearance … | 2020 | OR Spectrum | 878·前向 | debris-clearance | road/highway-network |
+| 2012 | Solution methodologies for debris removal in disas… | 2016 | EURO Journal on Comput | 878·后向 | debris-clearance | road/highway-network |
+| 2013 | The Post-Disaster Debris Clearance Problem Under I… | 2015 | Operations Research | 133;878·后向 | debris-clearance | road/highway-network |
+| 2169 | Resilience-based joint optimization of heterogeneo… | 2025 | Structure and Infrastr | 1;99·前向 | restoration-scheduling/sequencing | road/highway-network |
+| 2525 | Repair resources scheduling for attention of trans… | 2025 | Computers & Industrial | 99·前向 | restoration-scheduling/sequencing | road/highway-network |
+| 2953 | Resilience Assessment and Recovery Strategy for Hi… | 2025 | Journal of Advanced Tr | 1101·前向 | restoration-scheduling/sequencing | railway/transit |
+| 2003 | Framework for Improving the Postdisaster Repair Se… | 2024 | Journal of Management  | 133·后向 | restoration-scheduling/sequencing | interdependent-infrastructure-incl-transport |
+| 2004 | Risk and resilience-based restoration optimization… | 2024 | PLoS ONE | 133·后向 | restoration-scheduling/sequencing | general-transportation-network |
+| 2005 | Multi-agent deep reinforcement learning based deci… | 2023 | Reliability Engineerin | 133·后向 | restoration-scheduling/sequencing | interdependent-infrastructure-incl-transport |
+| 2918 | Research on the Performance Recovery Strategy Mode… | 2023 | Sustainability | 1101·前向 | restoration-scheduling/sequencing | railway/transit |
+| 3104 | Generating Diverse Optimal Road Management Plans i… | 2023 | Journal of Disaster Re | 2704·前向 | restoration-scheduling/sequencing | road/highway-network |
+| 2007 | Integrated and coordinated relief logistics and ro… | 2022 | Transportation Researc | 878·前向 | restoration-scheduling/sequencing | road/highway-network |
+| 2704 | Road-reconstruction after multi-locational floodin… | 2022 | International Journal  | 1059·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2009 | An integer L-shaped algorithm for the integrated l… | 2021 | Transportation Researc | 878·前向 | restoration-scheduling/sequencing | road/highway-network |
+| 2462 | Learning-based restoration sequence ordering for m… | 2021 | Transportation Researc | 68·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2357 | The heterogeneous multicrew scheduling and routing… | 2020 | Transportation Researc | 30;893;1108·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2359 | Decomposition-based algorithms for the crew schedu… | 2020 | Computers & Operations | 30·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 3076 | Transportation infrastructure restoration optimiza… | 2020 | Transportation Researc | 2704·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2011 | Integrating location and network restoration decis… | 2019 | European Journal of Op | 133;878·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2150 | A model for multi-class road network recovery sche… | 2018 | Transportation | 1·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2508 | An integrated network design and scheduling proble… | 2018 | Operations Research Pe | 99;893·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2726 | Towards optimal recovery scheduling for dynamic re… | 2018 | Journal of Systems Eng | 1100·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 3091 | Proposal of a Decision Method for Road Recovery Co… | 2018 | Journal of the City Pl | 2704·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2199 | A Set‐Based Approach to Support Decision‐Making on… | 2017 | Earthquake Spectra | 4·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2625 | An Ant Colony-based Heuristic Algorithm for Joint … | 2015 | TELKOMNIKA (Telecommun | 893;1108·后向 | restoration-scheduling/sequencing | road/highway-network |
+| 2497 | Restoration of Services in Interdependent Infrastr… | 2007 | IEEE Transactions on S | 99;913·后向 | restoration-scheduling/sequencing | interdependent-infrastructure-incl-transport |
+| 2623 | A time‐space network model for work team schedulin… | 2007 | Journal of the Chinese | 893;1108·后向 | restoration-scheduling/sequencing | road/highway-network |
+
+六维标注（读全文；fuzzy 边界处 traffic 允许标 `uncertain`）：
+
+| idx | objective | traffic_model | solution_method | arch | demand | uncertainty |
+|---|---|---|---|---|---|---|
+| 2001 | multi-criteria/composite | none/not-modeled | 启发式/GA、MILP | 静态 | not-applicable | fuzzy/other |
+| 2006 | recovery-time/makespan | topological/graph-metric | MILP、分解/Benders | 静态 | static-demand | deterministic |
+| 2353 | travel-time/accessibility | shortest-path/AON | MILP、分解/Benders、启发式/GA | 静态 | static-demand | deterministic |
+| 2622 | other | none/not-modeled | MILP | 静态 | not-applicable | stochastic/scenario-based |
+| 2002 | recovery-time/makespan | shortest-path/AON | DRL、启发式/GA | 自适应/滚动 | not-applicable | deterministic |
+| 2008 | recovery-time/makespan | network-flow/capacity | MILP、启发式/GA | 静态 | not-applicable | deterministic |
+| 2010 | recovery-time/makespan | topological/graph-metric | MILP | 静态 | static-demand | deterministic |
+| 2012 | travel-time/accessibility | shortest-path/AON | MILP、启发式/GA | 静态 | not-applicable | deterministic |
+| 2013 | flow/demand-served | topological/graph-metric | DP、启发式/GA | 自适应/滚动 | static-demand | adaptive/multistage-revelation |
+| 2169 | resilience-area/functionality | user-equilibrium | 启发式/GA | 静态 | static-demand | deterministic |
+| 2525 | recovery-time/makespan | none/not-modeled | MILP | 静态 | not-applicable | deterministic |
+| 2953 | resilience-area/functionality | shortest-path/AON | 启发式/GA | 静态 | not-applicable | deterministic |
+| 2003 | resilience-area/functionality | network-flow/capacity | 启发式/GA、仿真优化 | 静态 | static-demand | deterministic |
+| 2004 | travel-time/accessibility | user-equilibrium | 启发式/GA | 静态 | static-demand | stochastic/scenario-based |
+| 2005 | resilience-area/functionality | topological/graph-metric | DRL、GNN | 自适应/滚动 | not-applicable | stochastic/scenario-based |
+| 2918 | resilience-area/functionality | topological/graph-metric | 启发式/GA | 静态 | not-applicable | deterministic |
+| 3104 | multi-criteria/composite | shortest-path/AON | DRL | 自适应/滚动 | static-demand | deterministic |
+| 2007 | recovery-time/makespan | shortest-path/AON | MILP、DP | 自适应/滚动 | static-demand | stochastic/scenario-based |
+| 2704 | flow/demand-served | network-flow/capacity | DRL | 自适应/滚动 | dynamic/time-varying-demand | deterministic |
+| 2009 | economic-cost/loss | network-flow/capacity | MILP、分解/Benders、启发式/GA | 静态 | static-demand | stochastic/scenario-based |
+| 2462 | travel-time/accessibility | uncertain | ML | 静态 | static-demand | deterministic |
+| 2357 | travel-time/accessibility | shortest-path/AON | MILP、启发式/GA | 静态 | static-demand | deterministic |
+| 2359 | connectivity/reachability | shortest-path/AON | MILP、分解/Benders、启发式/GA | 静态 | static-demand | deterministic |
+| 3076 | multi-criteria/composite | user-equilibrium | MILP、启发式/GA | 静态 | static-demand | deterministic |
+| 2011 | economic-cost/loss | network-flow/capacity | MILP、启发式/GA、仿真优化 | 静态 | static-demand | stochastic/scenario-based |
+| 2150 | multi-criteria/composite | user-equilibrium | MILP | 静态 | static-demand | deterministic |
+| 2508 | travel-time/accessibility | shortest-path/AON | MILP、分解/Benders、启发式/GA | 静态 | static-demand | deterministic |
+| 2726 | resilience-area/functionality | topological/graph-metric | 启发式/GA、仿真优化 | 自适应/滚动 | not-applicable | stochastic/scenario-based |
+| 3091 | travel-time/accessibility | shortest-path/AON | 其他 | 静态 | static-demand | deterministic |
+| 2199 | multi-criteria/composite | network-flow/capacity | 启发式/GA | 静态 | static-demand | deterministic |
+| 2625 | multi-criteria/composite | network-flow/capacity | 启发式/GA、MILP | 静态 | static-demand | deterministic |
+| 2497 | economic-cost/loss | network-flow/capacity | MILP | 静态 | static-demand | deterministic |
+| 2623 | recovery-time/makespan | none/not-modeled | MILP、启发式/GA | 静态 | not-applicable | deterministic |
+
+### 4.4 小结
+
+- 滚雪球净增 **33 篇** 符合系统筛选标准的期刊论文，集中于 **修复调度/机组路径** 与 **碎片清理** 方向——尤以"多机组调度与路径（heterogeneous multicrew scheduling & routing）"这一支线补充最多，提示其为原系统检索关键词覆盖相对薄弱处。
+- 全部候选、筛选决策与维度标注保存在 **`outputs/screening_results_snowball.csv`**（`source=snowball`，另有 `snowball_seed`/`snowball_direction`/`snowball_stage`/`snowball_reason` 标注来源与处置阶段）；原 `outputs/screening_results.csv` 未改动。
+- 大量候选（>190 篇已在语料内、数百篇被 Filter B 剔除为韧性评估/网络设计/纯方法类）印证：本领域系统检索的召回主体可靠，滚雪球的边际贡献主要在细分的调度—路径—清障子领域。
+
+---
+
 ## Appendix A　Validation
 
 This appendix records two independent validation checks on the screening: an external recall check against a hand-curated reference set (A.1), and the full-text re-reading of the dimension labels (A.2).
