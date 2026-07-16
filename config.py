@@ -61,9 +61,22 @@ UE_MAX_ITER = 100       # Hard cap on solver iterations, in case the gap toleran
 MILP_MAX_ITER = 20      # Hard stop on the number of fix-travel-times / solve-MILP / refresh-UE iterations.
 MILP_CYCLE_TOL = 3      # Cycle guard: stop only after the SAME schedule recurs this many times. 1 would stop
                         # on the first repeat; a larger value lets the damped loop keep exploring.
-MILP_DAMPING = 0.5      # Method-of-successive-averages relaxation of travel times between iterations:
-                        # u_used = damping*u_new + (1-damping)*u_prev. 1.0 uses the raw new times (large
-                        # swings); smaller values smooth the update into a steadier, more monotone trajectory.
+MILP_DAMPING_MODE = "decay"  # How the frozen travel times are relaxed between iterations.
+                        # "decay": a DIMINISHING step lambda_n = 1/(n+1) (n = 1-based iteration). Its
+                        # vanishing size drives the travel-time oscillation to zero, which is what lets the
+                        # loop actually converge to a fixed point rather than settle into a limit cycle.
+                        # "const": the earlier behaviour -- a FIXED step MILP_DAMPING, which only shrinks
+                        # the oscillation amplitude and leaves a persistent (non-zero) cycle.
+MILP_DAMPING = 0.5      # Fixed relaxation weight, used only when MILP_DAMPING_MODE == "const":
+                        # u_used = damping*u_new + (1-damping)*u_prev.
+MILP_PROX_SCALE = 0.1   # Strength of the proximal schedule penalty gamma_n * ||y - y_prev||_1 added to the
+                        # MILP objective, with gamma_n = gamma0/(n+1) and gamma0 = MILP_PROX_SCALE * (median
+                        # across-slot spread of the coefficients c). Under the start-once constraint this L1
+                        # distance equals twice the number of segments that changed start slot, so it stays
+                        # linear. It discourages needless schedule flips between mutually-best-response
+                        # schedules, tipping a would-be cycle into a fixed point. 0 disables it; 0.1 was the
+                        # smallest strength that converged every tested scenario without hurting solution
+                        # quality (a larger value freezes the schedule earlier and costs more accuracy).
 
 # --- Base restoration-duration support sets (in slots), keyed by (road_class, severity) ---
 # Each entry lists the candidate repair durations for a road of that class and damage severity;

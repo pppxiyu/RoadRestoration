@@ -16,6 +16,13 @@ Concretely, for each demand scenario:
      those coefficients.
   4. Re-run the UE pipeline under the new schedule to refresh the travel times, and repeat until the
      schedule stops changing.
+Left unstabilized this loop oscillates: repairing a segment decongests exactly the routes that made it
+look worth repairing, so the MILP's choice keeps flipping between mutually-best-response schedules (a
+congestion-feedback cobweb) instead of settling. Two coupled stabilizers make it converge: a DIMINISHING
+travel-time relaxation lambda_n = 1/(n+1) (MILP_DAMPING_MODE == "decay") that drives the travel-time
+oscillation to zero, and a decaying proximal penalty gamma_n * ||y - y_prev||_1 on the MILP
+(MILP_PROX_SCALE) that discourages needless schedule flips -- the first settles the continuous traffic
+state, the second settles the discrete schedule. See alternating_optimize.
 The chosen schedule's TRUE objective F -- re-evaluated with a real UE solve rather than the linearized
 surrogate -- is then compared against a brute-force oracle that exhaustively searches all
 work-conserving schedules (schedules that never leave a crew idle while repairs remain) to give the
@@ -104,18 +111,28 @@ def precompute_c(ctx, u_by_slot, durations, segments, T):
 # --------------------------------------------------------------------------- #
 # MILP build + solve
 # --------------------------------------------------------------------------- #
-def build_and_solve_milp(c, durations, segments, T, c_max=P.C_MAX):
+def build_and_solve_milp(c, durations, segments, T, c_max=P.C_MAX, y_prev=None, gamma=0.0):
     """Build and solve the start-time MILP for the fixed coefficients c: choose exactly one start slot
     per segment to maximize total accessibility gain, encoded as minimizing -sum c[j,k] y[j,k], subject
     to the start-once, crew-capacity, and horizon-bound constraints with y binary. Returns the chosen
-    schedule as {edge_id: start_slot}."""
+    schedule as {edge_id: start_slot}.
+
+    When y_prev (the previous iteration's schedule) and gamma > 0 are given, a proximal penalty
+    gamma * ||y - y_prev||_1 is added to the objective. Under the start-once constraint this L1 distance
+    equals 2 * (number of segments that changed start slot), so it stays linear; it is applied by
+    rewarding each segment for keeping its previous start slot (coefficient -2*gamma there)."""
     E = len(segments)
     n = E * T
 
     def idx(j, k):                                      # flatten (segment j, 1-based slot k) to a decision-vector index
         return j * T + (k - 1)
 
-    obj = -c.reshape(-1)                                # minimize -sum c y  ==  maximize sum c y
+    obj = (-c.reshape(-1)).astype(float).copy()         # minimize -sum c y  ==  maximize sum c y
+    if y_prev is not None and gamma > 0:                # proximal penalty: reward staying at the previous start slot
+        for j, e in enumerate(segments):
+            kp = int(y_prev[e])
+            if 1 <= kp <= T:
+                obj[idx(j, kp)] += -2.0 * gamma
 
     ub = np.ones(n)                                     # horizon bound: force to 0 any start whose repair would overrun T
     for j, e in enumerate(segments):
@@ -154,20 +171,39 @@ def _surrogate_value(start, c, segments, T):
     return float(sum(c[j, start[e] - 1] for j, e in enumerate(segments) if 1 <= start[e] <= T))
 
 
+def _prox_gamma0(c, durations, segments, T):
+    """Base strength of the proximal schedule penalty: MILP_PROX_SCALE times the median, over segments,
+    of the across-slot spread (peak-to-peak) of the coefficients c on that segment's feasible start slots
+    (k = 1..T-d). Putting gamma0 on the same scale as the gains the MILP trades off makes the penalty
+    bite consistently. Returns 0 when the penalty is disabled (MILP_PROX_SCALE == 0)."""
+    if P.MILP_PROX_SCALE <= 0:
+        return 0.0
+    spreads = [float(np.ptp(c[j, : max(1, T - int(durations[e]))])) for j, e in enumerate(segments)]
+    return P.MILP_PROX_SCALE * float(np.median(spreads)) if spreads else 0.0
+
+
 # --------------------------------------------------------------------------- #
 # Alternating optimization (Steps 1-4) with guards
 # --------------------------------------------------------------------------- #
 def alternating_optimize(ctx, durations, segments, T, damping=None):
     """Run the alternating loop for one scenario: fix travel times -> solve the MILP -> refresh the UE
     travel times, repeating until the schedule stops changing (or a cycle/iteration guard fires).
-    Returns (best_start, best_result, n_iter, converged, trace). The returned best is the iterate with
-    the lowest TRUE objective F across ALL iterations, not just the final one, so even a loop that never
-    settles still yields the best schedule it visited. `trace` is a per-iteration list of dicts
-    (iter, F, F1, F2, surrogate, elapsed_s, is_best, start_<e>...) kept for later analysis.
-    `damping` in (0,1] is the method-of-successive-averages (MSA) step size: instead of replacing the
-    travel times with the new UE result, blend the two, so the coefficients (and hence the MILP choice)
-    drift gradually across iterations; a smaller value smooths the updates and makes descent more monotone."""
-    damping = P.MILP_DAMPING if damping is None else damping
+    Returns (best_start, best_result, n_iter, converged, outcome, trace). The returned best is the
+    iterate with the lowest TRUE objective F across ALL iterations, not just the final one, so even a
+    loop that never settles still yields the best schedule it visited. `outcome` is one of "fixed_point"
+    (the schedule stopped changing), "cycle" (a schedule recurred MILP_CYCLE_TOL times), or "iter_cap"
+    (hit MILP_MAX_ITER); `converged` is True only for "fixed_point". `trace` is a per-iteration list of
+    dicts (iter, F, F1, F2, surrogate, elapsed_s, is_best, start_<e>...) kept for later analysis.
+
+    Two coupled stabilizers keep the loop from oscillating between mutually-best-response schedules
+    (each schedule's induced traffic makes a different schedule look optimal, a congestion-feedback
+    cobweb). (1) The travel-time relaxation: under MILP_DAMPING_MODE == "decay" it uses a DIMINISHING
+    step lambda_n = 1/(n+1), whose vanishing size drives the travel-time oscillation to zero (a constant
+    step only shrinks it and leaves a persistent cycle). (2) A decaying proximal penalty
+    gamma_n * ||y - y_prev||_1 on the MILP (strength MILP_PROX_SCALE, gamma_n = gamma0/(n+1)) that
+    discourages needless schedule flips. The damping settles the continuous traffic state; the penalty
+    settles the discrete schedule; together they take a loop that used to cycle to a fixed point. The
+    `damping` argument overrides MILP_DAMPING only in the "const" mode (kept for experiments)."""
     t0 = time.perf_counter()
 
     def _row(it, res, surr, start):
@@ -182,32 +218,40 @@ def alternating_optimize(ctx, durations, segments, T, damping=None):
     trace = [_row(0, res, float("nan"), start)]                       # iteration 0 is the initial evaluation, before any MILP, so it has no surrogate value
     seen = {frozenset(start.items()): 1}                              # per-schedule occurrence counts, feeding the relaxed cycle guard below
     u_tilde = res["u_tilde"]
+    # Base proximal strength gamma0, fixed from the first iteration's coefficient spread (see _prox_gamma0).
+    c0, _ = precompute_c(ctx, u_tilde, durations, segments, T)
+    gamma0 = _prox_gamma0(c0, durations, segments, T)
     converged = False
+    outcome = "iter_cap"
     n_iter = 0
     for _ in range(P.MILP_MAX_ITER):
         n_iter += 1
         c, _ = precompute_c(ctx, u_tilde, durations, segments, T)
-        new_start = build_and_solve_milp(c, durations, segments, T)
+        new_start = build_and_solve_milp(c, durations, segments, T,       # decaying proximal penalty toward the previous schedule
+                                         y_prev=start, gamma=gamma0 / (n_iter + 1))
         new_res = evaluate_schedule(new_start, durations, T, ctx, return_u=True)
         history.append((dict(new_start), new_res))
         trace.append(_row(n_iter, new_res, _surrogate_value(new_start, c, segments, T), new_start))
         if new_start == start:                          # schedule identical to last iteration -> fixed point reached, converged
-            converged = True
+            converged, outcome = True, "fixed_point"
             break
         h = frozenset(new_start.items())
         seen[h] = seen.get(h, 0) + 1
         if seen[h] >= P.MILP_CYCLE_TOL:                 # cycle guard: the loop is oscillating, so stop once one schedule has recurred enough times
+            outcome = "cycle"
             break
-        # MSA-damped travel-time update: blend toward the new UE rather than replacing outright, so the
-        # coefficients c_e^k (and thus the MILP solution) shift gradually -> smaller swings, more monotone descent
-        u_tilde = damping * new_res["u_tilde"] + (1.0 - damping) * u_tilde
+        # Travel-time relaxation. "decay" uses a diminishing step lambda_n = 1/(n+1), whose vanishing size
+        # drives the oscillation of u to zero; "const" keeps the earlier fixed-weight blend.
+        lam = 1.0 / (n_iter + 1) if P.MILP_DAMPING_MODE == "decay" \
+            else (P.MILP_DAMPING if damping is None else damping)
+        u_tilde = lam * new_res["u_tilde"] + (1.0 - lam) * u_tilde
         start = new_start
 
     best_idx = int(np.argmin([h[1]["F"] for h in history]))           # pick the iterate with the lowest TRUE objective F
     for i, tr in enumerate(trace):
         tr["is_best"] = (i == best_idx)
     best_start, best_res = history[best_idx]
-    return best_start, best_res, n_iter, converged, trace
+    return best_start, best_res, n_iter, converged, outcome, trace
 
 
 # --------------------------------------------------------------------------- #
@@ -232,7 +276,8 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     # on restart, reuse a scenario's saved result only when its fingerprint still matches the current run.
     from util.oracle import _param_fingerprint
     _, base_fp = _param_fingerprint()
-    fp = hashlib.sha1(f"{base_fp}|damp={P.MILP_DAMPING}|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}".encode()).hexdigest()
+    fp = hashlib.sha1(f"{base_fp}|mode={P.MILP_DAMPING_MODE}|damp={P.MILP_DAMPING}|prox={P.MILP_PROX_SCALE}"
+                      f"|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}".encode()).hexdigest()
     opt_path, trace_path = out_dir / "milp_optima.csv", out_dir / "milp_trace.csv"
     prog_path = out_dir / "milp_progress.json"
     rows, trace_rows, done = [], [], set()
@@ -248,10 +293,11 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         if m in done:
             continue
         t_s = time.perf_counter()
-        best_start, best_res, n_iter, converged, trace = alternating_optimize(ctx, dur, segments, T)
+        best_start, best_res, n_iter, converged, outcome, trace = alternating_optimize(ctx, dur, segments, T)
         scen_s = time.perf_counter() - t_s
         row = dict(scenario=m, F_milp=best_res["F"], F1=best_res["F1"], F2=best_res["F2"],
-                   n_iter=n_iter, converged=converged, time_s=scen_s, ue_solves=(n_iter + 1) * T,
+                   n_iter=n_iter, converged=converged, outcome=outcome, time_s=scen_s,
+                   ue_solves=(n_iter + 1) * T,
                    durations="-".join(str(int(dur[e])) for e in segments))
         for e in segments:
             row[f"start_{e}"] = best_start[e]
@@ -263,7 +309,7 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         pd.DataFrame(trace_rows).to_csv(trace_path, index=False)                  # checkpoint the per-iteration trace alongside it
         prog_path.write_text(json.dumps({"hash": fp, "done": sorted(done)}), encoding="utf-8")
         print(f"  scenario {m+1}/{M}: F_milp={best_res['F']:.4f}  iters={n_iter}  "
-              f"converged={converged}  {scen_s:.1f}s", flush=True)
+              f"outcome={outcome}  {scen_s:.1f}s", flush=True)
     total_s = time.perf_counter() - t_all
 
     milp_opt = pd.DataFrame(rows)

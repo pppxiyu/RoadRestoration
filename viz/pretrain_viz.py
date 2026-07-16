@@ -27,6 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 from viz.style import C, panel_label, save_pub, use_pub
 
@@ -140,10 +141,12 @@ def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
 
     The solver alternates two steps until the schedule stops changing: solve the linear surrogate
     for a start-time schedule, then recompute the true objective F. This function produces:
-      03_optimization_process.png -- how the true objective F and the surrogate value evolve over
-                                      the iterations (one line per scenario; the marked point is
-                                      the best-by-true-F iterate, which is the one actually
-                                      returned).
+      03_optimization_process.png -- three panels, one line per scenario: (a) the returned
+                                      best-so-far true F, with the actually-returned iterate marked;
+                                      (b) the RAW per-iteration true F, which shows whether F
+                                      settles (solid = reached a fixed point, dashed = stopped by
+                                      the cycle guard and still oscillating); (c) the surrogate
+                                      value the MILP maximizes.
       04_runtime.png              -- per-scenario wall-clock time and the number of iterations
                                       needed to converge.
     Returns the figures directory. `trace_df` carries the per-iteration records; `milp_opt` holds
@@ -155,8 +158,8 @@ def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
     cmap = plt.get_cmap("viridis")
     colors = {m: cmap(i / max(1, len(scen_ids) - 1)) for i, m in enumerate(scen_ids)}
 
-    # Panel 03: how the true objective and the linear surrogate move over the alternating steps.
-    fig, ax = plt.subplots(1, 2, figsize=(7.4, 3.2))
+    # Panel 03: the returned best-so-far F, whether the raw F actually settles, and the surrogate.
+    fig, ax = plt.subplots(1, 3, figsize=(10.8, 3.2))
     a = ax[0]
     for m in scen_ids:
         g = trace_df[trace_df["scenario"] == m].sort_values("iter")
@@ -165,17 +168,34 @@ def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
         a.plot(g.loc[bi, "iter"], g.loc[bi, "F"], "o", color=colors[m], ms=4, mec="white", mew=0.5, zorder=5)
     a.set_xlabel("alternating iteration")
     a.set_ylabel("true objective $F$")
-    a.set_title("objective across iterations  (damped, best-so-far $\\downarrow$)")
+    a.set_title("returned value  (best-so-far $\\downarrow$)")
     panel_label(a, "a")
 
+    # Panel b: the RAW per-iteration F (NOT best-so-far), which is what actually answers "did F
+    # converge?". A scenario that reached a fixed point flattens; one stopped by the cycle guard
+    # keeps oscillating -- a distinction the best-so-far curve in panel a hides by construction.
     b = ax[1]
     for m in scen_ids:
-        g = trace_df[(trace_df["scenario"] == m) & trace_df["surrogate"].notna()].sort_values("iter")
-        b.plot(g["iter"], g["surrogate"], "-", color=colors[m], lw=1.0, alpha=0.85)
+        g = trace_df[trace_df["scenario"] == m].sort_values("iter")
+        conv = str(milp_opt.loc[milp_opt["scenario"] == m, "converged"].iloc[0]).strip().lower() == "true"
+        b.plot(g["iter"], g["F"], "-" if conv else "--", color=colors[m], lw=1.1, alpha=0.85,
+               marker="o", ms=2.4, mew=0)
     b.set_xlabel("alternating iteration")
-    b.set_ylabel(r"MILP surrogate $\sum_e c_e^{k}\,y_e^{k}$")
-    b.set_title("surrogate across iterations")
+    b.set_ylabel("true objective $F$  (raw, per iteration)")
+    b.set_title("does $F$ settle?")
+    b.legend(handles=[Line2D([0], [0], color=C["neutral_dark"], ls="-", lw=1.1, label="converged (fixed point)"),
+                      Line2D([0], [0], color=C["neutral_dark"], ls="--", lw=1.1, label="cycle-stopped")],
+             fontsize=5.6, loc="upper right", handlelength=1.8)
     panel_label(b, "b")
+
+    c = ax[2]
+    for m in scen_ids:
+        g = trace_df[(trace_df["scenario"] == m) & trace_df["surrogate"].notna()].sort_values("iter")
+        c.plot(g["iter"], g["surrogate"], "-", color=colors[m], lw=1.0, alpha=0.85)
+    c.set_xlabel("alternating iteration")
+    c.set_ylabel(r"MILP surrogate $\sum_e c_e^{k}\,y_e^{k}$")
+    c.set_title("surrogate across iterations")
+    panel_label(c, "c")
 
     fig.suptitle(f"Alternating optimization trace "
                  f"({len(scen_ids)} scenarios, {len(segments)} segments, T={T})", fontsize=9)
