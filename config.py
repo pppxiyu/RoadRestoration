@@ -77,6 +77,14 @@ MILP_PROX_SCALE = 0.1   # Strength of the proximal schedule penalty gamma_n * ||
                         # schedules, tipping a would-be cycle into a fixed point. 0 disables it; 0.1 was the
                         # smallest strength that converged every tested scenario without hurting solution
                         # quality (a larger value freezes the schedule earlier and costs more accuracy).
+MILP_WARM_START = True  # Seed iteration 0 of the alternating loop from the flow-greedy schedule -- the
+                        # strongest static baseline, with segments ordered by baseline UE two-way flow
+                        # (edge criticality) -- instead of the edge-id packing order. Because the loop
+                        # returns the best-by-true-F iterate over its whole history and iteration 0 is now
+                        # that baseline, the MILP result is GUARANTEED no worse than the flow baseline on
+                        # every scenario; the alternating refinement can only improve on it. Without it the
+                        # loop can converge to a schedule worse than the baseline (e.g. F > 1). False
+                        # restores the old edge-id cold start.
 
 # --- Base restoration-duration support sets (in slots), keyed by (road_class, severity) ---
 # Each entry lists the candidate repair durations for a road of that class and damage severity;

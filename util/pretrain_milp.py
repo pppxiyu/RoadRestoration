@@ -63,7 +63,8 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 import config as P
 from util.evaluate import (build_context, evaluate_schedule,
                            schedule_from_permutation)
-from util.oracle import compute_horizon, scale_dir, select_oracle_instance
+from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
+                         select_oracle_instance)
 from util.scenarios import sample_scenarios
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -185,12 +186,15 @@ def _prox_gamma0(c, durations, segments, T):
 # --------------------------------------------------------------------------- #
 # Alternating optimization (Steps 1-4) with guards
 # --------------------------------------------------------------------------- #
-def alternating_optimize(ctx, durations, segments, T, damping=None):
+def alternating_optimize(ctx, durations, segments, T, damping=None, warm_order=None):
     """Run the alternating loop for one scenario: fix travel times -> solve the MILP -> refresh the UE
     travel times, repeating until the schedule stops changing (or a cycle/iteration guard fires).
     Returns (best_start, best_result, n_iter, converged, outcome, trace). The returned best is the
     iterate with the lowest TRUE objective F across ALL iterations, not just the final one, so even a
-    loop that never settles still yields the best schedule it visited. `outcome` is one of "fixed_point"
+    loop that never settles still yields the best schedule it visited. When `warm_order` (a segment
+    priority order) is given, iteration 0 is seeded from that order's work-conserving schedule instead
+    of the edge-id packing order; combined with the best-by-true-F return this makes the result provably
+    no worse than the schedule that order encodes (see MILP_WARM_START). `outcome` is one of "fixed_point"
     (the schedule stopped changing), "cycle" (a schedule recurred MILP_CYCLE_TOL times), or "iter_cap"
     (hit MILP_MAX_ITER); `converged` is True only for "fixed_point". `trace` is a per-iteration list of
     dicts (iter, F, F1, F2, surrogate, elapsed_s, is_best, start_<e>...) kept for later analysis.
@@ -212,7 +216,8 @@ def alternating_optimize(ctx, durations, segments, T, damping=None):
         d.update({f"start_{e}": start[e] for e in segments})
         return d
 
-    start = schedule_from_permutation(list(segments), durations)      # initial schedule: segments packed greedily in edge-id order (work-conserving)
+    seed_order = list(warm_order) if warm_order is not None else list(segments)  # warm start: flow-greedy order if given, else edge-id packing order
+    start = schedule_from_permutation(seed_order, durations)           # initial (iteration 0) work-conserving schedule
     res = evaluate_schedule(start, durations, T, ctx, return_u=True)
     history = [(dict(start), res)]
     trace = [_row(0, res, float("nan"), start)]                       # iteration 0 is the initial evaluation, before any MILP, so it has no surrogate value
@@ -271,13 +276,23 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     T = compute_horizon(segments, scenarios)
     print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}")
 
+    # Warm start: order the segments by their baseline UE two-way flow (edge criticality); this is the
+    # flow-greedy baseline's priority order, and seeding iteration 0 from it makes each scenario's result
+    # provably no worse than that baseline (see alternating_optimize / MILP_WARM_START).
+    warm_order = None
+    if P.MILP_WARM_START:
+        flow = _baseline_twoway_flow(toy_dir)
+        fscore = {int(eid): flow.get((min(u, v), max(u, v)), 0.0) for (eid, u, v, s) in ctx["disrupted"]}
+        warm_order = sorted(segments, key=lambda e: (-fscore[e], e))
+        print(f"warm start from flow-greedy order: {warm_order}", flush=True)
+
     # --- resume support: a scenario's result is reusable only if the parameters that produced it match ---
     # fp is a fingerprint (a short hash of the solver settings). We stash it beside the checkpoints and,
     # on restart, reuse a scenario's saved result only when its fingerprint still matches the current run.
     from util.oracle import _param_fingerprint
     _, base_fp = _param_fingerprint()
     fp = hashlib.sha1(f"{base_fp}|mode={P.MILP_DAMPING_MODE}|damp={P.MILP_DAMPING}|prox={P.MILP_PROX_SCALE}"
-                      f"|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}".encode()).hexdigest()
+                      f"|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}|warm={P.MILP_WARM_START}".encode()).hexdigest()
     opt_path, trace_path = out_dir / "milp_optima.csv", out_dir / "milp_trace.csv"
     prog_path = out_dir / "milp_progress.json"
     rows, trace_rows, done = [], [], set()
@@ -293,7 +308,8 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         if m in done:
             continue
         t_s = time.perf_counter()
-        best_start, best_res, n_iter, converged, outcome, trace = alternating_optimize(ctx, dur, segments, T)
+        best_start, best_res, n_iter, converged, outcome, trace = alternating_optimize(
+            ctx, dur, segments, T, warm_order=warm_order)
         scen_s = time.perf_counter() - t_s
         row = dict(scenario=m, F_milp=best_res["F"], F1=best_res["F1"], F2=best_res["F2"],
                    n_iter=n_iter, converged=converged, outcome=outcome, time_s=scen_s,
