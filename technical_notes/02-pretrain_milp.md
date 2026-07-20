@@ -114,7 +114,7 @@ $$\max \sum_e \sum_k c_e^k\, y_e^k$$
 
 (the implementation negates the coefficients and minimizes, because scipy.optimize.milp's interface accepts only minimization). Inside the alternating loop, build_and_solve_milp also receives the previous round's schedule $y_{\text{prev}}$ and a penalty strength $\gamma$, so the objective actually solved in round $n$ carries one more, likewise linear, term
 
-$$\max \; \sum_e \sum_k c_e^k\, y_e^k \;-\; \gamma_n \, \lVert y - y_{\text{prev}} \rVert_1, \qquad \gamma_n = \frac{\gamma_0}{n+1}, \quad \gamma_0 = \texttt{MILP\_PROX\_SCALE} \cdot \operatorname{median}_e \big(\text{the across-slot range (max − min) of } c \text{ on } e\text{'s feasible slots}\big)$$
+$$\max \; \sum_e \sum_k c_e^k\, y_e^k \;-\; \gamma_n \, \lVert y - y_{\text{prev}} \rVert_1, \qquad \gamma_n = \frac{\gamma_0}{n+1}, \quad \gamma_0 = \texttt{MILP\_PROX\_SCALE} \cdot \mathrm{median}_e \big(\text{the across-slot range (max − min) of } c \text{ on } e\text{'s feasible slots}\big)$$
 
 Term by term: the first sum is the surrogate above; $\lVert y - y_{\text{prev}} \rVert_1$ measures how far the new schedule $y$ moves from the previous round's $y_{\text{prev}}$, and it enters with a negative sign because the objective is maximized; $\gamma_n$ is the penalty strength, decaying as $1/(n+1)$; $\gamma_0$ puts the penalty on the same scale as the coefficients $c$, and in the code it is computed once before the main loop begins, right after Step 2's initial evaluation, from the coefficient spectrum of the first frozen travel times, never updated afterwards (util/pretrain_milp.py:226-228 for $\gamma_0$; util/pretrain_milp.py:235-236 for the per-round $\gamma_n$; config.py:72-79 for MILP_PROX_SCALE).
 
