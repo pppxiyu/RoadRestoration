@@ -51,7 +51,7 @@ and left at 0 otherwise. This is one third of that OD's normal demand, scaled by
 ### 1f · The severity vector (not used by the oracle itself)
 
 At the end, build_context also stores a severity vector in damaged-segment order. It should be made clear that neither run_oracle nor the `evaluate_schedule` it calls ever reads this vector: the real-time severity used at each slot is taken directly from the damaged-segment records (each damaged segment's record already carries its own severity). This vector remains in the context only because the context is the same static background shared by two pipelines — this oracle and the pretraining MILP — and the latter does use it; for the oracle logic traced in this note, it is a side product that has no effect.
-(util/evaluate.py:183; the actual consumer is at util/pretrain_milp.py:85)
+(util/evaluate.py:183; the actual consumer is at util/pretrain_milp.py:93)
 
 ---
 
@@ -184,7 +184,7 @@ All values below are the **current** defaults in config.py (the single source of
 | N_DISRUPTED_ORACLE | 4 | the damaged-set size ($4!=24$ schedules) | 47 |
 | UE_RGAP | 1e-6 | the relative-gap target of the per-slot UE | 54 |
 | UE_MAX_ITER | 100 | the per-slot UE iteration cap | 55 |
-| DURATION_SUPPORT | by (road_class, severity) | the base-duration support sets | 71-75 |
-| ETA | [0.8, 1.0, 1.2] (given) | the crew-efficiency multiplier sample set | 76 |
+| DURATION_SUPPORT | by (road_class, severity) | the base-duration support sets | 92-96 |
+| ETA | [0.8, 1.0, 1.2] (given) | the crew-efficiency multiplier sample set | 97 |
 
-**config items not involved in the oracle** (used by the pretraining MILP pipeline): MILP_MAX_ITER=20, MILP_CYCLE_TOL=3, MILP_DAMPING=0.5 (config.py:61, 62, 64).
+**config items not involved in the oracle** (used by the pretraining-MILP pipeline, see note 02): MILP_MAX_ITER=20, MILP_CYCLE_TOL=3, MILP_DAMPING_MODE="decay", MILP_DAMPING=0.5, MILP_PROX_SCALE=0.1, MILP_WARM_START=True (config.py:61-88).
