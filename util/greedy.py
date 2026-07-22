@@ -12,19 +12,15 @@ in how they rank the disrupted segments:
              benefit per unit of repair effort. Scenario-dependent (durations vary).
   flow     : STATIC -- rank by the segment's baseline user-equilibrium two-way flow (edge
              criticality); one shared baseline UE solve feeds every scenario.
-  stepwise : FAITHFUL -- build the order front-to-back, at each step keeping the segment whose
-             repair-next lowers the exact objective F the most (real UE at every candidate). Costs
-             N*(N+1)/2 full evaluations per scenario, so it is far slower and is not run by default.
 
 The three static rankers never run UE to decide the order, so each costs a single F evaluation per
-scenario (one UE per slot) -- about an order of magnitude cheaper than the stepwise greedy. All
-variants share the same instance / scenarios / horizon / real evaluator as the oracle and the MILP,
-so their objective values are directly comparable. Each variant writes
-outputs/greedy/n{N}/{variant}_optima.csv.
+scenario (one UE per slot). All variants share the same instance / scenarios / horizon / real
+evaluator as the oracle and the MILP, so their objective values are directly comparable. Each
+variant writes outputs/greedy/n{N}/{variant}_optima.csv.
 
 Run inside the road_restore conda env (PYTHONPATH = project root):
   python -m util.greedy                    # the three static variants (default)
-  python -m util.greedy demand ratio flow stepwise   # choose variants explicitly
+  python -m util.greedy demand ratio flow   # choose variants explicitly
 """
 import sys
 import time
@@ -69,24 +65,6 @@ def score_flow(ctx, durations, flow):
 STATIC = {"demand": score_demand, "ratio": score_ratio, "flow": score_flow}
 
 
-def greedy_stepwise(ctx, durations, segments, T):
-    """Faithful greedy: build the order front-to-back, each step keeping the segment whose
-    repair-next gives the lowest exact F (real UE at every candidate). Returns (order, start, res)."""
-    remaining = sorted(int(e) for e in segments)
-    prefix, best_res, best_start = [], None, None
-    while remaining:
-        best_seg = best_res = best_start = None
-        for seg in remaining:
-            tail = [s for s in remaining if s != seg]
-            start = schedule_from_permutation(prefix + [seg] + tail, durations)
-            res = evaluate_schedule(start, durations, T, ctx)
-            if best_res is None or res["F"] < best_res["F"]:
-                best_seg, best_res, best_start = seg, res, start
-        prefix.append(best_seg)
-        remaining.remove(best_seg)
-    return prefix, best_start, best_res
-
-
 # --------------------------------------------------------------------------- #
 # Run
 # --------------------------------------------------------------------------- #
@@ -110,13 +88,10 @@ def run_greedy(variants=("demand", "ratio", "flow"), toy_dir=TOY, out_dir=OUT,
     for m, dur in enumerate(scenarios):
         for v in variants:
             t0 = time.perf_counter()                                     # time each variant honestly (its own F evaluation)
-            if v == "stepwise":
-                order, start, res = greedy_stepwise(ctx, dur, segments, T)
-            else:
-                scores = STATIC[v](ctx, dur, flow)
-                order = sorted(segments, key=lambda e: (-scores[e], e))  # highest score first, edge-id tiebreak
-                start = schedule_from_permutation(order, dur)
-                res = evaluate_schedule(start, dur, T, ctx)
+            scores = STATIC[v](ctx, dur, flow)
+            order = sorted(segments, key=lambda e: (-scores[e], e))      # highest score first, edge-id tiebreak
+            start = schedule_from_permutation(order, dur)
+            res = evaluate_schedule(start, dur, T, ctx)
             row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],
                        time_s=time.perf_counter() - t0,
                        order="-".join(map(str, order)),
