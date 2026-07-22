@@ -46,6 +46,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
 OUT = ROOT / "outputs" / "oracle"
 
+# The exact horizon walks all N! permutations. 8! = 40320 is still a subsecond sweep, but the
+# factorial makes every further segment ~10x dearer, so larger instances switch to the Graham
+# bound inside compute_horizon.
+HORIZON_ENUM_MAX = 8
+
 # Every parameter that affects the objective F is listed here. A short hashed "fingerprint" of
 # these values (see _param_fingerprint) is stored with each cached result and re-checked on the
 # next run: the problem SIZE (N_DISRUPTED_ORACLE) alone names the cache folder — one folder per
@@ -141,7 +146,21 @@ def compute_horizon(segments, scenarios):
     slot at which the last segment finishes — taken over every schedule and every scenario.
     Setting T to this maximum guarantees that every enumerated schedule finishes within the
     horizon, and that all schedules are scored over one identical time window so their objectives
-    are directly comparable."""
+    are directly comparable.
+
+    Up to HORIZON_ENUM_MAX segments this is exact: enumerate every permutation and take the
+    largest makespan. Beyond that the N! enumeration is infeasible, so the classical Graham
+    list-scheduling bound stands in: with m crews, any work-conserving list schedule completes
+    within (sum_e d_e + (m-1) max_e d_e) / m, plus one slot because repairs here start at slot 1
+    rather than time zero. The bound is never below the exact horizon, so no schedule is ever
+    truncated; the shared scoring window is merely somewhat longer than strictly necessary."""
+    if len(segments) > HORIZON_ENUM_MAX:
+        m = P.C_MAX
+        T = 0
+        for dur in scenarios:
+            d = [int(dur[e]) for e in segments]
+            T = max(T, 1 + -(-(sum(d) + (m - 1) * max(d)) // m))   # 1 + ceil(.../m), integer-exact
+        return T
     T = 0
     for perm in itertools.permutations(segments):
         for dur in scenarios:
