@@ -418,8 +418,8 @@ def level_a(toy_dir=TOY, seed=P.SEED, scenario=0):
 
 def render_landscape(out_dir=OUT):
     """Regenerate the MILP-vs-oracle comparison figure and the cross-scenario landscape figure from the
-    already-saved CSVs, without re-running any UE solves. Run this once the oracle for this scale has
-    finished, so the comparison has an oracle optimum to plot against."""
+    already-saved CSVs; only the instance selection re-solves one baseline UE, and no per-slot evaluation
+    UE is re-run. Run this once the oracle for this scale has an oracle optimum to plot against."""
     out_dir = scale_dir(out_dir)
     oracle_dir = scale_dir(ROOT / "outputs" / "oracle")
     disrupted = select_oracle_instance(TOY, P.N_DISRUPTED_ORACLE)

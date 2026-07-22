@@ -13,7 +13,7 @@ so their results are directly comparable to the other methods.
         [0,1]^n; its permutation is read off by argsort (smallest key repaired first), which keeps the
         standard continuous velocity/position update valid while always decoding to a legal order.
 
-Because one F evaluation is expensive (n user-equilibrium solves, and badly congested schedules drive
+Because one F evaluation is expensive (T user-equilibrium solves, one per slot, and congested schedules drive
 the solver to its iteration cap), two things make the search affordable:
   * PARALLEL evaluation across a process pool -- each worker builds the fixed context once and evaluates
     whole batches of candidate orders concurrently (UE is solved fully in memory, so there is no shared
@@ -31,8 +31,8 @@ making it a meaningful "can search improve on the heuristic?" baseline rather th
 Each variant writes outputs/greedy/n{N}/{variant}_optima.csv, the same schema and directory the static
 greedy solvers use, so util/compare.py discovers them automatically.
 
-Run inside the road_restore conda env (PYTHONPATH = project root); n=13 needs the horizon-bound and
-N-override wrapper (see the n=13 runner) because compute_horizon enumerates N! permutations:
+Run inside the road_restore conda env (PYTHONPATH = project root); above 8 segments compute_horizon
+switches to the Graham bound by itself, so a large-n run only needs the N_DISRUPTED_ORACLE override:
   python -m util.metaheuristic                 # ga and pso at the configured scale
   python -m util.metaheuristic ga pso
 """

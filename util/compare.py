@@ -1,8 +1,8 @@
 """
-Compare the road-restoration solvers on a common instance: every greedy variant found under
-outputs/greedy/n{N}/, the pretraining MILP, and -- when its results exist for this scale -- the
-brute-force oracle. Aligns them by scenario, computes each method's gap to the oracle (the true
-hindsight optimum), and writes a comparison table + figure to outputs/comparison/n{N}/.
+Compare the road-restoration solvers on a common instance: every baseline found under
+outputs/greedy/n{N}/ (the static greedy variants plus the GA/PSO metaheuristics, which share that
+directory), the pretraining MILP, and -- when its results exist for this scale -- the brute-force
+oracle. Aligns them by scenario, computes gaps to the oracle, and writes to outputs/comparison/n{N}/.
 
 The oracle is included only if oracle_optima.csv is present for this scale (it is infeasible at
 larger sizes); greedy-vs-MILP is always reported.
@@ -21,8 +21,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def run_compare(N=None):
-    """Align all greedy variants + MILP + (optional) oracle for scale N, write
-    outputs/comparison/n{N}/comparison.csv + figure, and print a summary sorted best-first."""
+    """Align every baseline + MILP + (optional) oracle for scale N, write
+    outputs/comparison/n{N}/comparison.csv + figures, and print a summary sorted best-first."""
     N = P.N_DISRUPTED_ORACLE if N is None else N
     base = ROOT / "outputs"
     gdir = scale_dir(base / "greedy", N)
@@ -65,16 +65,16 @@ def run_compare(N=None):
         print(f"  MILP beats {c} in {wins}/{len(df)} scenarios", flush=True)
 
     from viz.compare_viz import make_final_performance_all, make_gap_to_oracle
-    make_final_performance_all(out, df, N, methods)                  # per-scenario final F, all methods
+    make_final_performance_all(out, df, methods)                    # per-scenario final F, all methods
     if have_oracle:                                                 # gap to the true optimum, small scales only
-        make_gap_to_oracle(out, df, N, methods)
+        make_gap_to_oracle(out, df, methods)
     print(f"Wrote {out / 'comparison.csv'} and figures", flush=True)
     return df
 
 
 def run_baseline_figures(N=None):
     """Generate the baselines-vs-MILP figures into outputs/comparison/n{N}/figures/:
-    'optimization_process' (the MILP iteration trajectory with each baseline's final level) and
+    'optimization_process' (each scenario's best-so-far MILP trajectory, no baseline levels) and
     'accuracy_vs_compute' (mean final F vs serial-equivalent UE solves per scenario, a
     parallelism-neutral compute axis). Then calls run_compare, which adds 'final_performance_all'
     (per-scenario final F for every method) and, where the oracle exists, 'gap_to_oracle'. Reads
@@ -93,7 +93,7 @@ def run_baseline_figures(N=None):
     milp_trace = pd.read_csv(mdir / "milp_trace.csv")
 
     from viz.compare_viz import make_accuracy_compute, make_process
-    make_process(out, N, milp_trace)
+    make_process(out, milp_trace)
 
     # Serial-equivalent compute: one full true-F evaluation costs T UE solves (one per slot of the
     # horizon), so this axis is parallelism-neutral. Recover T exactly from the MILP, whose ue_solves
@@ -110,7 +110,7 @@ def run_baseline_figures(N=None):
             stats.append(dict(method=v, mean_F=float(d["F"].mean()), mean_ue=float(T), kind="greedy"))
     stats.append(dict(method="milp", mean_F=float(milp_opt["F_milp"].mean()),
                       mean_ue=float(milp_opt["ue_solves"].mean()), kind="milp"))
-    make_accuracy_compute(out, N, stats)
+    make_accuracy_compute(out, stats)
 
     print(f"=== baselines vs MILP, n={N} (M={len(milp_opt)}, T={T}) ===", flush=True)
     for s in sorted(stats, key=lambda s: s["mean_F"]):

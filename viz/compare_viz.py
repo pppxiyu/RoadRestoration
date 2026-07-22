@@ -14,8 +14,8 @@ import numpy as np
 
 from viz.style import C, CMAP_SEQ, save_pub, use_pub
 
-# greedy variants share a darkening grey ramp (context); MILP is the emphasis blue (method under
-# test); oracle is the signal red (the target the others are measured against).
+# The darkening grey ramp is reserved for the static greedy variants; the full per-method mapping
+# (grey ramp / GA red / PSO green / MILP blue / oracle red) lives in _method_colors below.
 _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 
 
@@ -25,8 +25,9 @@ def _label(c):
 
 def _method_colors(cols):
     """Static greedy rules share a darkening grey ramp (context); GA and PSO, being population
-    metaheuristics rather than static rankers, get their own colors; the MILP is the emphasis blue
-    (method under test); the oracle is the signal red (the target the others are measured against)."""
+    metaheuristics rather than static rankers, get their own colors (GA reuses the signal red,
+    which cannot collide because the oracle is never drawn in the same figure as GA); the MILP is
+    the emphasis blue (method under test); the oracle keeps the signal red where it appears."""
     out, gi = {}, 0
     for c in cols:
         v = _label(c)
@@ -44,7 +45,7 @@ def _method_colors(cols):
     return out
 
 
-def make_final_performance_all(out_dir, df, N, methods):
+def make_final_performance_all(out_dir, df, methods):
     """The single home of the per-scenario final-objective comparison: the final $F$ of every
     method (static greedy, MILP, GA, PSO) as grouped bars, one group per scenario, with the
     pre-disaster level $F=1$ marked. The process figure and the gap figure do not repeat it."""
@@ -74,7 +75,7 @@ def make_final_performance_all(out_dir, df, N, methods):
     plt.close(fig)
 
 
-def make_gap_to_oracle(out_dir, df, N, methods):
+def make_gap_to_oracle(out_dir, df, methods):
     """Per-scenario gap to the brute-force oracle, $F - F^{*}$, for every method, as grouped bars.
     Only produced at scales where the oracle was enumerated, so it carries information that the
     per-scenario final-F figure cannot (the true optimum is unavailable at large scale)."""
@@ -102,7 +103,7 @@ def make_gap_to_oracle(out_dir, df, N, methods):
     plt.close(fig)
 
 
-def make_process(out_dir, N, milp_trace):
+def make_process(out_dir, milp_trace):
     """The MILP's optimization process: its best-so-far true $F$ over the alternating iterations,
     one curve per scenario, each labelled at its right end with the scenario number so the curves
     carry the same scenario numbering as make_final_performance_all. No baseline levels and no
@@ -140,8 +141,8 @@ def make_process(out_dir, N, milp_trace):
     plt.close(fig)
 
 
-def make_accuracy_compute(out_dir, N, stats):
-    """Figure 2: accuracy vs COMPUTE. One point per method at (serial-equivalent UE solves per
+def make_accuracy_compute(out_dir, stats):
+    """Accuracy vs COMPUTE. One point per method at (serial-equivalent UE solves per
     scenario, mean final F). The compute axis counts UE solves rather than wall-clock, so it is
     neutral to how many worker processes a method was parallelized over and a method spread across
     many workers is not made to look cheaper than it is (see Caveats C1). Lower-left is better,

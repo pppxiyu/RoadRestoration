@@ -55,7 +55,7 @@ def _graph_pos(nodes, edges):
 # reference. A parity plot puts modeled values on one axis and reference values on the other;
 # points landing on the y = x diagonal mean the two agree exactly, so tight clustering on the
 # diagonal is the pass criterion.
-def _overview(cmp, report, m, path):
+def _overview(cmp, m, path):
     # Per-link absolute discrepancy in congested travel time between the UE and the reference.
     cost_err = (cmp["cost_ue"] - cmp["cost_ref"]).abs()
     fig, ax = plt.subplots(1, 2, figsize=(7.0, 3.1))
@@ -189,7 +189,7 @@ def save_validation(out_dir, toy_dir, cmp, report, metrics):
                "cost_ue", "cost_ref", "cost_abs_err"]].sort_values("flow_abs_err", ascending=False)
     tbl.to_csv(out / "ue_vs_ref_links.csv", index=False)
 
-    _overview(cmp, report, metrics, out / "00_overview")
+    _overview(cmp, metrics, out / "00_overview")
     _flow_map(cmp, nodes, edges, out / "01_flow_map")
 
     # Headline agreement numbers written as a plain-text summary for a quick pass/fail read.

@@ -11,7 +11,7 @@ Each candidate schedule is scored by a combined objective F = mu*F1 + (1-mu)*F2,
        (lower is better). The "makespan" is the slot at which the last repair finishes,
        so F2 rewards crews that complete the work sooner relative to how much there is.
 
-Writes three figures to outputs/oracle/figures/ (PNG at 600 dpi):
+Writes three figures to outputs/oracle/n{N}/figures/ (PNG at 600 dpi):
   01_F_landscape    - F for every schedule sorted best->worst, showing how far the worst
                       choice sits above the optimum and how that spread varies by scenario.
   02_F1_F2_tradeoff - every schedule placed in (F2, F1) space and colored by F, exposing
@@ -28,7 +28,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 import config as P
 from util.evaluate import evaluate_schedule
@@ -42,7 +41,7 @@ def make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted, rep
     #   opt       : the optimal schedule per scenario (start slots plus its F, F1, F2).
     #   ctx       : static problem context (network, OD demand, baseline travel times).
     #   segments  : the disrupted edge ids being scheduled for repair.
-    #   scenarios : per-scenario repair durations, {scenario: {edge_id: duration_in_slots}}.
+    #   scenarios : list of per-scenario duration dicts; scenarios[m][edge_id] = duration in slots.
     #   T         : recovery horizon in slots.
     #   disrupted : DataFrame of the disrupted edges, carrying each edge's damage severity.
     #   rep       : the representative scenario used for the single-scenario figures (02 and 03).

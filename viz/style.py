@@ -1,6 +1,6 @@
 """
 Shared, journal-quality figure styling for every plot the project produces
-(toy-data experiments, traffic-equilibrium validation, and the oracle solver).
+(toy-data experiments, traffic-equilibrium validation, and every solver's figures).
 Centralizing the fonts, colors, and sizing here is the single source of truth:
 because all figures pull from the same settings, they read as one coherent set
 rather than a patchwork of matplotlib defaults.
