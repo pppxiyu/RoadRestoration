@@ -36,7 +36,7 @@ run_pretrain_milp defines the problem with exactly the same building blocks as r
 - Unifying the global horizon $`T`$: see **note 01, Step 4**;
 - The true-objective evaluator evaluate_schedule (one UE per slot, computing exactly $`F=\mu F_1+(1-\mu)F_2`$; $`\mu`$ is the blending weight of the two components and defaults to 1.0, so in this project $`F`$ equals $`F_1`$, while $`F_2`$ — the component measuring repair-timeline efficiency — carries zero weight yet is still computed and recorded): see **note 01, Step 5 (5a–5f)**.
 
-(util/pretrain_milp.py:272-276 invoking the shared building blocks; util/pretrain_milp.py:347-358 oracle solutions read only at the end; util/pretrain_milp.py:269 and util/oracle.py:77-82 per-scale output directories)
+(util/pretrain_milp.py:272-276 invoking the shared building blocks; util/pretrain_milp.py:347-358 oracle solutions read only at the end; util/pretrain_milp.py:269 and util/oracle.py:82-87 per-scale output directories)
 
 ---
 
@@ -214,4 +214,4 @@ where $`\text{gap} \le 0`$ means the MILP matched or beat the oracle's best work
 If the oracle is not ready, the comparison is skipped, and `python -m util.pretrain_milp --landscape` re-renders it later from the saved CSVs. That command still runs one baseline UE to rebuild the instance, but none of the expensive per-slot evaluation UEs.
 
 Why the gap can be negative. The oracle's optimum is only the best **work-conserving** schedule, whereas Step 4's MILP may leave crews idle, so its feasible set is a strict superset and it can find a better schedule outside that set. This is not a bug but the effect of a larger search space. The level_a check (run manually via --level-a) guards against an encoding error. With the proximal penalty off ($`\gamma = 0`$), the MILP's surrogate optimum must be at least the best surrogate value over all work-conserving schedules, and the crew-cap and horizon constraints are re-checked independently.
-(util/pretrain_milp.py:347-365, util/pretrain_milp.py:375-416, util/pretrain_milp.py:419-438, viz/pretrain_viz.py:35-137; the one baseline UE inside `--landscape` is triggered by the instance selection at util/pretrain_milp.py:425, see util/oracle.py:120 and util/oracle.py:99-100)
+(util/pretrain_milp.py:347-365, util/pretrain_milp.py:375-416, util/pretrain_milp.py:419-438, viz/pretrain_viz.py:35-137; the one baseline UE inside `--landscape` is triggered by the instance selection at util/pretrain_milp.py:425, see util/oracle.py:125 and util/oracle.py:104-105)
