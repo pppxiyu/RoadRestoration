@@ -1,7 +1,9 @@
-"""Comparison figure for the road-restoration solvers: the greedy baseline variants vs the
-pretraining MILP vs (optional) the brute-force oracle. Panel a shows the per-scenario objective F
-for every method; when the oracle is available, panel b shows each method's gap to that true
-optimum. Styling follows viz/style.py so it matches the rest of the project's figures."""
+"""Comparison figures for the road-restoration solvers: the greedy baseline variants vs the
+pretraining MILP vs (optional) the brute-force oracle. Each fact has one home: per-scenario final
+objective F lives in make_final_performance_all, the MILP optimization trajectory in make_process,
+accuracy against compute in make_accuracy_compute, and the gap to the true optimum (only where the
+oracle exists) in make_gap_to_oracle. Styling follows viz/style.py so it matches the rest of the
+project's figures."""
 from pathlib import Path
 
 import matplotlib
@@ -10,180 +12,179 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from viz.style import C, panel_label, save_pub, use_pub
+from viz.style import C, CMAP_SEQ, save_pub, use_pub
 
 # greedy variants share a darkening grey ramp (context); MILP is the emphasis blue (method under
 # test); oracle is the signal red (the target the others are measured against).
 _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 
 
-def _colors(cols):
+def _label(c):
+    return c[len("greedy_"):] if c.startswith("greedy_") else c
+
+
+def _method_colors(cols):
+    """Static greedy rules share a darkening grey ramp (context); GA and PSO, being population
+    metaheuristics rather than static rankers, get their own colors; the MILP is the emphasis blue
+    (method under test); the oracle is the signal red (the target the others are measured against)."""
     out, gi = {}, 0
     for c in cols:
-        if c == "milp":
+        v = _label(c)
+        if v == "milp":
             out[c] = C["accent"]
-        elif c == "oracle":
+        elif v == "oracle":
             out[c] = C["signal"]
-        else:                                              # a greedy_<variant> column
+        elif v == "ga":
+            out[c] = C["signal"]
+        elif v == "pso":
+            out[c] = C["good"]
+        else:                                              # a static greedy variant
             out[c] = _GREY_RAMP[gi % len(_GREY_RAMP)]
             gi += 1
     return out
 
 
-def _label(c):
-    return c[len("greedy_"):] if c.startswith("greedy_") else c
-
-
-def make_comparison_figure(out_dir, df, N, methods, have_oracle):
+def make_final_performance_all(out_dir, df, N, methods):
+    """The single home of the per-scenario final-objective comparison: the final $F$ of every
+    method (static greedy, MILP, GA, PSO) as grouped bars, one group per scenario, with the
+    pre-disaster level $F=1$ marked. The process figure and the gap figure do not repeat it."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
     scen = df["scenario"].to_numpy()
     x = np.arange(len(scen))
+    col = _method_colors(methods)
+    w = 0.85 / len(methods)
 
-    plot_cols = methods + (["oracle"] if have_oracle else [])
-    col = _colors(plot_cols)
-    w = 0.85 / len(plot_cols)
-
-    ncol = 2 if have_oracle else 1
-    fig, ax = plt.subplots(1, ncol, figsize=(8.2 if have_oracle else 4.6, 3.3), squeeze=False)
-
-    # ---- panel a: per-scenario objective F for each solver ----
-    a = ax[0][0]
-    for i, c in enumerate(plot_cols):
-        a.bar(x + (i - (len(plot_cols) - 1) / 2) * w, df[c], width=w, label=_label(c), color=col[c])
-    vals = df[plot_cols].to_numpy()
+    fig, ax = plt.subplots(figsize=(8.6, 3.2))
+    ax.axhline(1.0, ls=":", lw=0.7, color="0.75", zorder=1)             # pre-disaster level
+    for i, c in enumerate(methods):
+        ax.bar(x + (i - (len(methods) - 1) / 2) * w, df[c], width=w, label=_label(c), color=col[c])
+    vals = df[methods].to_numpy()
     lo, hi = float(vals.min()), float(vals.max())
-    a.set_ylim(lo - 0.04 * (hi - lo), hi + 0.06 * (hi - lo))            # zoom: the F values sit near 1
-    a.set_xlabel("scenario")
-    a.set_ylabel("objective  F")
-    a.set_xticks(x)
-    a.set_xticklabels(scen)
-    a.set_title(f"per-scenario F  (n={N})")
-    a.legend(loc="upper right", ncol=2, fontsize=5.8, handlelength=1.1, columnspacing=1.0)
-    panel_label(a, "a")
-
-    # ---- panel b: gap to the true optimum (oracle only) ----
-    if have_oracle:
-        b = ax[0][1]
-        gcols = list(methods)                                          # every non-oracle method has a gap
-        wb = 0.85 / len(gcols)
-        for i, c in enumerate(gcols):
-            b.bar(x + (i - (len(gcols) - 1) / 2) * wb, df[f"gap_{c}"], width=wb,
-                  label=_label(c), color=col[c])
-        b.axhline(0.0, color=C["neutral_dark"], lw=0.8)
-        b.set_xlabel("scenario")
-        b.set_ylabel("gap to oracle  (F − F*)")
-        b.set_xticks(x)
-        b.set_xticklabels(scen)
-        b.set_title("shortfall vs true optimum")
-        b.legend(loc="upper right", ncol=2, fontsize=5.8, handlelength=1.1, columnspacing=1.0)
-        panel_label(b, "b")
-
-    fig.suptitle(f"Solver comparison (n={N}): greedy variants vs MILP" +
-                 (" vs oracle" if have_oracle else ""), fontsize=9)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
-    save_pub(fig, figs / "comparison")
+    ax.set_ylim(lo - 0.04 * (hi - lo), hi + 0.06 * (hi - lo))           # zoom: the F values sit near 1
+    ax.set_xlabel("scenario")
+    ax.set_ylabel("objective  $F$")
+    ax.set_xticks(x)
+    ax.set_xticklabels(scen)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.005), ncol=len(methods),
+              fontsize=6, handlelength=1.1, columnspacing=1.2, frameon=False)
+    fig.tight_layout()
+    save_pub(fig, figs / "final_performance_all")
     plt.close(fig)
 
 
-def make_process_and_final(out_dir, N, milp_trace, greedy_finals, rep=None):
-    """Figure 1: optimization PROCESS and final performance, baselines vs the MILP.
-    Panel a: the MILP's best-so-far true F over its alternating iterations (one curve per scenario,
-    the representative scenario `rep` highlighted), with each greedy variant's mean final F drawn as a
-    horizontal line -- a one-shot static ranker has no iterative process, so its result is a level to
-    reach. Panel b: the final F of every method, per scenario. `greedy_finals` maps variant -> DataFrame
-    with columns [scenario, F, time_s]. When `rep` is None the highlighted scenario is chosen
-    automatically as the one whose best-so-far F descends the most over the iterations (the most
-    illustrative optimization trajectory); a hardcoded rep could land on a scenario that barely moves."""
+def make_gap_to_oracle(out_dir, df, N, methods):
+    """Per-scenario gap to the brute-force oracle, $F - F^{*}$, for every method, as grouped bars.
+    Only produced at scales where the oracle was enumerated, so it carries information that the
+    per-scenario final-F figure cannot (the true optimum is unavailable at large scale)."""
+    use_pub()
+    figs = Path(out_dir) / "figures"
+    figs.mkdir(parents=True, exist_ok=True)
+    scen = df["scenario"].to_numpy()
+    x = np.arange(len(scen))
+    col = _method_colors(methods)
+    w = 0.85 / len(methods)
+
+    fig, ax = plt.subplots(figsize=(5.4, 3.2))
+    for i, c in enumerate(methods):
+        ax.bar(x + (i - (len(methods) - 1) / 2) * w, df[f"gap_{c}"], width=w,
+               label=_label(c), color=col[c])
+    ax.axhline(0.0, color=C["neutral_dark"], lw=0.8)
+    ax.set_xlabel("scenario")
+    ax.set_ylabel("gap to oracle  ($F - F^{*}$)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(scen)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.005), ncol=len(methods),
+              fontsize=6, handlelength=1.1, columnspacing=1.2, frameon=False)
+    fig.tight_layout()
+    save_pub(fig, figs / "gap_to_oracle")
+    plt.close(fig)
+
+
+def make_process(out_dir, N, milp_trace):
+    """The MILP's optimization process: its best-so-far true $F$ over the alternating iterations,
+    one curve per scenario, each labelled at its right end with the scenario number so the curves
+    carry the same scenario numbering as make_final_performance_all. No baseline levels and no
+    highlighted scenario are drawn, because comparing methods and comparing scenarios both belong to
+    make_final_performance_all; this figure shows only how each scenario's MILP trajectory descends."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
     scen_ids = sorted(milp_trace["scenario"].unique())
-    if rep is None:                                                    # pick the scenario with the largest best-so-far descent
-        descents = {m: (lambda s: float(s.iloc[0] - s.cummin().iloc[-1]))(
-            milp_trace[milp_trace["scenario"] == m].sort_values("iter")["F"]) for m in scen_ids}
-        rep = max(descents, key=descents.get)
+    cmap = plt.get_cmap(CMAP_SEQ)
+    n = len(scen_ids)
 
-    fig, ax = plt.subplots(1, 2, figsize=(8.2, 3.3))
-
-    # ---- panel a: MILP best-so-far F over iterations + greedy final levels ----
-    a = ax[0]
-    for m in scen_ids:
+    fig, a = plt.subplots(figsize=(4.8, 3.4))
+    ends = []
+    for i, m in enumerate(scen_ids):
         g = milp_trace[milp_trace["scenario"] == m].sort_values("iter")
-        a.plot(g["iter"], g["F"].cummin(), lw=(1.8 if m == rep else 0.8),
-               color=(C["accent"] if m == rep else C["neutral_light"]),
-               alpha=(1.0 if m == rep else 0.8), zorder=(3 if m == rep else 1),
-               label=("MILP (best-so-far)" if m == rep else None))
-    gi = 0
-    for v, d in greedy_finals.items():
-        a.axhline(float(d["F"].mean()), ls="--", lw=1.1, color=_GREY_RAMP[gi % len(_GREY_RAMP)],
-                  label=f"{v} (final)")
-        gi += 1
+        it = g["iter"].to_numpy()
+        f = g["F"].cummin().to_numpy()
+        color = cmap(0.05 + 0.75 * (i / max(1, n - 1)))                # keep off the palest end so numbers stay legible
+        a.plot(it, f, lw=1.1, color=color, alpha=0.9, zorder=2)
+        ends.append((float(it[-1]), float(f[-1]), color, int(m)))
+
+    yspan = (max(e[1] for e in ends) - min(e[1] for e in ends)) or 1.0
+    placed = []                                                        # nudge apart numbers whose curve-ends coincide
+    for x_end, y_end, color, m in ends:
+        k = sum(1 for px, py in placed if abs(px - x_end) <= 0.8 and abs(py - y_end) <= 0.03 * yspan)
+        placed.append((x_end, y_end))
+        a.annotate(str(m), (x_end, y_end), textcoords="offset points", xytext=(4, 2 + 9 * k),
+                   fontsize=6, fontweight="bold", color=color, va="center", zorder=4)
+
     a.set_xlabel("MILP alternating iteration")
-    a.set_ylabel("true objective  F")
-    a.set_title(f"optimization process  (n={N})")
-    a.legend(loc="upper right", fontsize=5.8, handlelength=1.4)
-    panel_label(a, "a")
-
-    # ---- panel b: final F per scenario, all methods ----
-    b = ax[1]
-    milp_final = milp_trace[milp_trace["is_best"] == True][["scenario", "F"]] if "is_best" in milp_trace \
-        else milp_trace.groupby("scenario")["F"].min().reset_index()
-    x = np.arange(len(scen_ids))
-    cols = list(greedy_finals) + ["milp"]
-    w = 0.85 / len(cols)
-    for i, v in enumerate(cols):
-        if v == "milp":
-            vals = [float(milp_final[milp_final["scenario"] == m]["F"].min()) for m in scen_ids]
-            color = C["accent"]
-        else:
-            d = greedy_finals[v]
-            vals = [float(d[d["scenario"] == m]["F"].iloc[0]) for m in scen_ids]
-            color = _GREY_RAMP[list(greedy_finals).index(v) % len(_GREY_RAMP)]
-        b.bar(x + (i - (len(cols) - 1) / 2) * w, vals, width=w, label=v, color=color)
-    allv = np.array([[float(greedy_finals[v][greedy_finals[v]["scenario"] == m]["F"].iloc[0])
-                      for v in greedy_finals] +
-                     [float(milp_final[milp_final["scenario"] == m]["F"].min())] for m in scen_ids])
-    lo, hi = float(allv.min()), float(allv.max())
-    b.set_ylim(lo - 0.04 * (hi - lo), hi + 0.06 * (hi - lo))
-    b.set_xlabel("scenario")
-    b.set_ylabel("final objective  F")
-    b.set_xticks(x)
-    b.set_xticklabels(scen_ids)
-    b.set_title("final performance")
-    b.legend(loc="upper right", ncol=2, fontsize=5.8, handlelength=1.1)
-    panel_label(b, "b")
-
-    fig.suptitle(f"Optimization process & final performance (n={N}): baselines vs MILP", fontsize=9)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
-    save_pub(fig, figs / "process_and_final")
+    a.set_ylabel("true objective  $F$  (best-so-far)")
+    fig.tight_layout()
+    save_pub(fig, figs / "optimization_process")
     plt.close(fig)
 
 
-def make_accuracy_time(out_dir, N, stats):
-    """Figure 2: accuracy vs computation time. One point per method at (mean wall-clock seconds,
-    mean final F). Lower-left is better (fast AND accurate). `stats` is a list of dicts
-    {method, mean_F, mean_time_s, kind} where kind in {'greedy','milp'} sets the color."""
+def make_accuracy_compute(out_dir, N, stats):
+    """Figure 2: accuracy vs COMPUTE. One point per method at (serial-equivalent UE solves per
+    scenario, mean final F). The compute axis counts UE solves rather than wall-clock, so it is
+    neutral to how many worker processes a method was parallelized over and a method spread across
+    many workers is not made to look cheaper than it is (see Caveats C1). Lower-left is better,
+    meaning little compute together with high accuracy. `stats` is a list of dicts
+    {method, mean_F, mean_ue, kind} where kind is 'greedy' (static rule, grey circle), 'meta'
+    (budgeted population search, green square) or 'milp' (blue diamond)."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(4.4, 3.3))
+    fig, ax = plt.subplots(figsize=(3.6, 2.6))
+
+    xs = [s["mean_ue"] for s in stats]
+    ys = [s["mean_F"] for s in stats]
+    xmax = max(xs)
+    yspan = (max(ys) - min(ys)) or 1.0
+
+    ax.axhline(1.0, ls=":", lw=0.7, color="0.75", zorder=1)     # pre-disaster level
+
     gi = 0
+    placed = []                                                 # data coords of labels already placed
     for s in stats:
-        color = C["accent"] if s["kind"] == "milp" else _GREY_RAMP[gi % len(_GREY_RAMP)]
-        marker = "D" if s["kind"] == "milp" else "o"
-        if s["kind"] == "greedy":
+        if s["kind"] == "milp":
+            color, marker = C["accent"], "D"
+        elif s["kind"] == "meta":
+            color, marker = C["good"], "s"
+        else:
+            color, marker = _GREY_RAMP[gi % len(_GREY_RAMP)], "o"
             gi += 1
-        ax.scatter(s["mean_time_s"], s["mean_F"], s=55, color=color, marker=marker,
-                   edgecolor="white", lw=0.5, zorder=3)
-        ax.annotate(s["method"], (s["mean_time_s"], s["mean_F"]), textcoords="offset points",
-                    xytext=(6, 3), fontsize=6.5, color=C["neutral_dark"])
-    ax.set_xscale("log")
-    ax.set_xlabel("mean wall-clock time per scenario  (s, log scale)")
-    ax.set_ylabel("mean final objective  F  (lower = more accurate)")
-    ax.set_title(f"accuracy vs computation time  (n={N})")
-    ax.margins(0.18)
+        x, y = s["mean_ue"], s["mean_F"]
+        ax.scatter(x, y, s=50, color=color, marker=marker, edgecolor="white", lw=0.5, zorder=3)
+        # stack a label upward when its point sits on top of one already labelled (linear axis puts
+        # the same-compute greedy rules, and the same-compute GA/PSO, at coincident x)
+        k = sum(1 for px, py in placed if abs(px - x) <= 0.04 * xmax and abs(py - y) <= 0.05 * yspan)
+        placed.append((x, y))
+        left = x >= xmax - 1e-9                                 # rightmost points label leftward so text never clips
+        ax.annotate(s["method"], (x, y), textcoords="offset points",
+                    xytext=(-7 if left else 7, 3 + 11 * k), ha="right" if left else "left",
+                    fontsize=6.5, color=C["neutral_dark"])
+
+    ax.set_xlim(-0.04 * xmax, xmax * 1.12)
+    ax.set_ylim(min(ys) - 0.06 * yspan, max(ys) + 0.16 * yspan)
+    ax.set_xlabel("serial-equivalent UE solves / scenario")
+    ax.set_ylabel("mean objective  $F$")
     fig.tight_layout()
-    save_pub(fig, figs / "accuracy_vs_time")
+    save_pub(fig, figs / "accuracy_vs_compute")
     plt.close(fig)

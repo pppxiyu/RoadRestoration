@@ -64,18 +64,21 @@ def run_compare(N=None):
         wins = int((df[c] > df["milp"] + 1e-9).sum())
         print(f"  MILP beats {c} in {wins}/{len(df)} scenarios", flush=True)
 
-    from viz.compare_viz import make_comparison_figure
-    make_comparison_figure(out, df, N, methods, have_oracle)
-    print(f"Wrote {out / 'comparison.csv'} and its figure", flush=True)
+    from viz.compare_viz import make_final_performance_all, make_gap_to_oracle
+    make_final_performance_all(out, df, N, methods)                  # per-scenario final F, all methods
+    if have_oracle:                                                 # gap to the true optimum, small scales only
+        make_gap_to_oracle(out, df, N, methods)
+    print(f"Wrote {out / 'comparison.csv'} and figures", flush=True)
     return df
 
 
 def run_baseline_figures(N=None):
-    """Generate the two baselines-vs-MILP figures into outputs/comparison/n{N}/figures/:
-    'process_and_final' (MILP iteration trajectory + each greedy variant's final level, plus a
-    per-scenario final-F bar panel) and 'accuracy_vs_time' (mean final F vs mean wall-clock per
-    method). Also (re)makes the plain bar comparison if the inputs are present. Reads each greedy
-    variant's {variant}_optima.csv (with time_s) and the MILP's milp_optima.csv + milp_trace.csv."""
+    """Generate the baselines-vs-MILP figures into outputs/comparison/n{N}/figures/:
+    'optimization_process' (the MILP iteration trajectory with each baseline's final level) and
+    'accuracy_vs_compute' (mean final F vs serial-equivalent UE solves per scenario, a
+    parallelism-neutral compute axis). Then calls run_compare, which adds 'final_performance_all'
+    (per-scenario final F for every method) and, where the oracle exists, 'gap_to_oracle'. Reads
+    each greedy variant's {variant}_optima.csv and the MILP's milp_optima.csv + milp_trace.csv."""
     N = P.N_DISRUPTED_ORACLE if N is None else N
     base = ROOT / "outputs"
     gdir = scale_dir(base / "greedy", N)
@@ -85,22 +88,34 @@ def run_baseline_figures(N=None):
 
     greedy_finals = {}
     for f in sorted(gdir.glob("*_optima.csv")):
-        greedy_finals[f.stem[: -len("_optima")]] = pd.read_csv(f)[["scenario", "F", "time_s"]]
+        greedy_finals[f.stem[: -len("_optima")]] = pd.read_csv(f)
     milp_opt = pd.read_csv(mdir / "milp_optima.csv")
     milp_trace = pd.read_csv(mdir / "milp_trace.csv")
 
-    from viz.compare_viz import make_accuracy_time, make_process_and_final
-    make_process_and_final(out, N, milp_trace, greedy_finals)
+    from viz.compare_viz import make_accuracy_compute, make_process
+    make_process(out, N, milp_trace)
 
-    stats = [dict(method=v, mean_F=float(d["F"].mean()), mean_time_s=float(d["time_s"].mean()),
-                  kind="greedy") for v, d in greedy_finals.items()]
+    # Serial-equivalent compute: one full true-F evaluation costs T UE solves (one per slot of the
+    # horizon), so this axis is parallelism-neutral. Recover T exactly from the MILP, whose ue_solves
+    # column equals (n_iter + 1) * T. A static greedy rule then spends T per scenario (a single
+    # evaluation), a metaheuristic spends n_evals * T (its unique-evaluation budget), and the MILP
+    # spends its own ue_solves.
+    T = int(round((milp_opt["ue_solves"] / (milp_opt["n_iter"] + 1)).median()))
+    stats = []
+    for v, d in greedy_finals.items():
+        if "n_evals" in d.columns:                                     # a metaheuristic (GA / PSO)
+            stats.append(dict(method=v, mean_F=float(d["F"].mean()),
+                              mean_ue=float(d["n_evals"].mean()) * T, kind="meta"))
+        else:                                                          # a static greedy rule
+            stats.append(dict(method=v, mean_F=float(d["F"].mean()), mean_ue=float(T), kind="greedy"))
     stats.append(dict(method="milp", mean_F=float(milp_opt["F_milp"].mean()),
-                      mean_time_s=float(milp_opt["time_s"].mean()), kind="milp"))
-    make_accuracy_time(out, N, stats)
+                      mean_ue=float(milp_opt["ue_solves"].mean()), kind="milp"))
+    make_accuracy_compute(out, N, stats)
 
-    print(f"=== baselines vs MILP, n={N} (M={len(milp_opt)}) ===", flush=True)
+    print(f"=== baselines vs MILP, n={N} (M={len(milp_opt)}, T={T}) ===", flush=True)
     for s in sorted(stats, key=lambda s: s["mean_F"]):
-        print(f"  {s['method']:8s}  mean F = {s['mean_F']:.4f}   mean time = {s['mean_time_s']:.1f}s", flush=True)
+        print(f"  {s['method']:8s}  mean F = {s['mean_F']:.4f}   serial-equiv compute = {s['mean_ue']:.0f} UE/scenario",
+              flush=True)
     try:
         run_compare(N)                                              # also the per-scenario bar figure
     except FileNotFoundError:
