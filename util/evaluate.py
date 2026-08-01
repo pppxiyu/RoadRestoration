@@ -124,14 +124,15 @@ def f2_value(start, durations):
 # --------------------------------------------------------------------------- #
 # Static context, built once: network, OD structure, baseline times, B, u_pen
 # --------------------------------------------------------------------------- #
-def build_context(toy_dir, disrupted):
+def build_context(toy_dir, disrupted, ue_cores=None):
     """Assemble the context that stays fixed across every schedule and scenario.
 
     This bundles the network, the OD structure, the baseline (pre-disaster) travel times
     that F1 measures degradation against, the demand-shortfall matrix B, and the
     disconnection penalty u_pen. `disrupted` is a DataFrame with columns edge_id, u, v,
     severity listing the damaged segments to be scheduled, where u and v are a segment's
-    two endpoint nodes."""
+    two endpoint nodes. `ue_cores` pins the baseline UE solve's thread pool (None keeps
+    the engine default; see util.ue.solve_ue on why bit-reproducible callers pass 1)."""
     edges, od, zone_ids = load_toy_network(toy_dir)
     zone_pos = {int(z): i for i, z in enumerate(zone_ids)}
     od_pairs = [(int(r.origin), int(r.destination)) for r in od.itertuples(index=False)]
@@ -149,7 +150,7 @@ def build_context(toy_dir, disrupted):
     # Baseline OD travel times at onset: solve UE on the intact network under normal demand
     # H0. These serve as the reference times against which F1 later scores degradation.
     base_links, _ = solve_ue(edges, _matrix_from_H(H0, ctx), zone_ids,
-                             rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
+                             rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True, cores=ue_cores)
     ctx["baseline_u"] = od_travel_times(base_links, ctx)
     # Penalty travel time for disconnected OD pairs: a multiple of the worst finite baseline
     # time, so a lost connection is charged a large but bounded cost rather than infinity.

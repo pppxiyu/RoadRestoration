@@ -91,7 +91,8 @@ def _build_matrix(M, zone_ids):
     return mat
 
 
-def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e-10, quiet=False):
+def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e-10, quiet=False,
+             cores=None):
     """Solve static user equilibrium and return (flows_df, assignment).
 
     `flows_df` is a DataFrame[from, to, volume, cost] with one row per directed link,
@@ -105,6 +106,13 @@ def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e
     bi-conjugate Frank-Wolfe), `max_iter` caps the number of iterations, and `rgap`
     is the relative-gap tolerance at which the solver is considered converged. Set
     `quiet=True` to suppress AequilibraE's logging and progress output.
+
+    `cores` pins the engine's own thread pool (None keeps AequilibraE's default).
+    The default multi-threaded assignment is NOT bit-reproducible run to run (the
+    cross-thread reduction order varies, leaving ~1e-10 flow noise); callers that
+    need bit-identical repeats (e.g. the RL solver, whose argmax amplifies such
+    noise into different schedules) pass cores=1, which on this small network is
+    also slightly faster than threading.
     """
     graph, net = _build_graph(edges, zone_ids)        # turn the network table into a routable graph
     mat = _build_matrix(od_matrix, zone_ids)          # wrap the OD demand as an AequilibraE matrix
@@ -119,6 +127,8 @@ def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e
     assig.set_algorithm(algorithm)                             # e.g. "bfw" = bi-conjugate Frank-Wolfe
     assig.max_iter = max_iter
     assig.rgap_target = rgap
+    if cores is not None:
+        assig.set_cores(cores)                                 # pin the engine's thread pool (bit-reproducibility)
     if quiet:                                                  # route logging and progress bars to null
         logging.getLogger("aequilibrae").setLevel(logging.CRITICAL)
         with open(os.devnull, "w") as _dn, contextlib.redirect_stdout(_dn), \

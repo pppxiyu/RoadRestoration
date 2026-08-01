@@ -87,7 +87,7 @@ def scale_dir(base=OUT, n=None):
     return Path(base) / f"n{n}"
 
 
-def _baseline_twoway_flow(toy_dir):
+def _baseline_twoway_flow(toy_dir, cores=None):
     """Compute the baseline traffic flow on each undirected edge, used only to rank edges by
     importance when choosing which ones to disrupt.
 
@@ -95,6 +95,8 @@ def _baseline_twoway_flow(toy_dir):
     lower their own travel time by unilaterally switching route — run by our own UE engine on the
     UNDAMAGED network under the base origin-destination (OD) demand H0. The two directed volumes on
     an edge are summed into a single undirected flow. Returns {(min(u,v), max(u,v)): flow}.
+    `cores` pins the solve's thread pool (None keeps the engine default; the RL solver passes 1
+    for bit-reproducibility, see util.ue.solve_ue).
 
     Computing the flow here rather than reading a shipped reference solution keeps the pipeline
     self-contained: swapping in a different network or OD dataset needs no external reference-flow
@@ -102,7 +104,7 @@ def _baseline_twoway_flow(toy_dir):
     solution, and is left untouched."""
     edges, od, zone_ids = load_toy_network(toy_dir)
     flows, _ = solve_ue(edges, od_to_matrix(od, zone_ids), zone_ids,
-                        rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
+                        rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True, cores=cores)
     f = {}
     fa, ta, vol = (flows["from"].to_numpy(), flows["to"].to_numpy(), flows["volume"].to_numpy())
     for a, b, v in zip(fa, ta, vol):
