@@ -116,6 +116,51 @@ class FitnessCache:
 
 
 # --------------------------------------------------------------------------- #
+# Plateau-based stopping (shared by GA and PSO)
+# --------------------------------------------------------------------------- #
+class PlateauStop:
+    """Stop a population search once it has visibly levelled off, rather than when a preset amount
+    of compute is spent. Two plateau signals must hold together, plus a warm-up floor:
+
+      (a) gen >= gen_min      -- do not judge a plateau in the first few generations;
+      (b) stall >= stall_K    -- stall_K consecutive generations produced NO candidate the search
+                                 had not already evaluated, i.e. the population has collapsed onto
+                                 orders it already knows;
+      (c) since_improve >= patience_P -- patience_P consecutive generations without improving the
+                                 incumbent best F.
+
+    Either signal alone misreads the search. Novelty can dry up for a stretch while the incumbent
+    is still being improved by recombining known material, and the incumbent can sit unchanged for
+    a long stretch while the population is still exploring productively -- on the n=10 RL run the
+    longest gap between two incumbent improvements reached 55 iterations. Requiring both keeps the
+    search alive exactly while either the population or the incumbent is still moving.
+
+    The counters are in GENERATIONS, which is the natural iteration of these methods; note one
+    generation costs up to pop_size evaluations early on but almost none after convergence, since
+    the fitness cache serves repeated orders for free. The evaluation budget remains as a hard
+    ceiling for the case where nothing ever settles."""
+
+    def __init__(self, gen_min, stall_K, patience_P):
+        self.gen_min, self.stall_K, self.patience_P = gen_min, stall_K, patience_P
+        self.gen = self.stall = self.since_improve = 0
+        self.best = float("inf")
+
+    def update(self, evals_before, evals_after, best_F):
+        """Advance one generation. `evals_before/after` are the cache's unique-evaluation counts
+        around this generation; `best_F` is the incumbent objective after it."""
+        self.gen += 1
+        self.stall = 0 if evals_after > evals_before else self.stall + 1
+        if best_F < self.best - 1e-12:
+            self.best, self.since_improve = best_F, 0
+        else:
+            self.since_improve += 1
+
+    def done(self):
+        return (self.gen >= self.gen_min and self.stall >= self.stall_K
+                and self.since_improve >= self.patience_P)
+
+
+# --------------------------------------------------------------------------- #
 # Seeds: the static greedy priority orders (shared initialization)
 # --------------------------------------------------------------------------- #
 def _greedy_seed_orders(ctx, segments, durations, flow):
@@ -157,17 +202,20 @@ def _swap_mutation(perm, rng, n_swaps):
     return tuple(p)
 
 
-def _ga(fit, segments, seeds, rng, pop_size, elite, tour_k, p_cross, p_mut, max_swaps):
-    """Run the order-based GA against the budgeted fitness cache `fit` until its evaluation budget is
-    spent. Returns nothing; the best order is read back from the cache afterwards."""
+def _ga(fit, segments, seeds, rng, pop_size, elite, tour_k, p_cross, p_mut, max_swaps,
+        gen_min, stall_K, patience_P):
+    """Run the order-based GA against the fitness cache `fit` until the search levels off (see
+    PlateauStop) or the evaluation budget runs out, whichever comes first. Returns the stopping
+    state so the caller can record which condition ended the run; the best order is read back from
+    the cache afterwards."""
     seg = list(segments)
     pop = [tuple(s) for s in seeds][:pop_size]
     while len(pop) < pop_size:                                          # random fills
         pop.append(tuple(rng.sample(seg, len(seg))))
     F = fit.evaluate(pop)
 
-    stall = 0
-    while fit.n_evals < fit.budget and stall < 40:                     # stall guard: a fully converged population can only recycle cached orders
+    stop = PlateauStop(gen_min, stall_K, patience_P)
+    while fit.n_evals < fit.budget and not stop.done():
         prev = fit.n_evals
         ranked = sorted(set(pop), key=lambda p: F[p])                 # dedup so elitism keeps DISTINCT best orders, not copies of one
         nxt = list(ranked[:elite])                                     # elitism: carry the best forward unchanged
@@ -182,7 +230,8 @@ def _ga(fit, segments, seeds, rng, pop_size, elite, tour_k, p_cross, p_mut, max_
             nxt.append(child)
         pop = nxt
         F = fit.evaluate(pop)                                          # cached survivors are free; only novel children cost budget
-        stall = 0 if fit.n_evals > prev else stall + 1
+        stop.update(prev, fit.n_evals, fit.best()[1][0])
+    return stop
 
 
 # --------------------------------------------------------------------------- #
@@ -203,11 +252,12 @@ def _keys_for_order(order, segments):
     return keys
 
 
-def _pso(fit, segments, seeds, rng, swarm, w, c1, c2):
-    """Run random-key PSO against the budgeted fitness cache `fit` until the budget is spent. Particles
-    are real vectors in [0,1]^n decoded to orders by argsort; velocity/position use the standard gbest
-    update. Fitness is memoized on the DECODED order, so distinct keys mapping to the same order are
-    free."""
+def _pso(fit, segments, seeds, rng, swarm, w, c1, c2, gen_min, stall_K, patience_P):
+    """Run random-key PSO against the fitness cache `fit` until the search levels off (see
+    PlateauStop) or the evaluation budget runs out, whichever comes first. Particles are real
+    vectors in [0,1]^n decoded to orders by argsort; velocity/position use the standard gbest
+    update. Fitness is memoized on the DECODED order, so distinct keys mapping to the same order
+    are free. Returns the stopping state."""
     seg = list(segments)
     n = len(seg)
     npr = np.random.RandomState(rng.randint(0, 2 ** 31 - 1))
@@ -226,8 +276,8 @@ def _pso(fit, segments, seeds, rng, swarm, w, c1, c2):
     g = int(np.argmin(pbestF))
     gbest, gbestF = pbest[g].copy(), float(pbestF[g])
 
-    stall = 0
-    while fit.n_evals < fit.budget and stall < 40:                     # stall guard: a converged swarm can decode to only cached orders
+    stop = PlateauStop(gen_min, stall_K, patience_P)
+    while fit.n_evals < fit.budget and not stop.done():
         prev = fit.n_evals
         r1, r2 = npr.rand(swarm, n), npr.rand(swarm, n)
         V = w * V + c1 * r1 * (pbest - X) + c2 * r2 * (gbest[None, :] - X)
@@ -238,22 +288,35 @@ def _pso(fit, segments, seeds, rng, swarm, w, c1, c2):
         g = int(np.argmin(pbestF))
         if pbestF[g] < gbestF:
             gbest, gbestF = pbest[g].copy(), float(pbestF[g])
-        stall = 0 if fit.n_evals > prev else stall + 1
+        stop.update(prev, fit.n_evals, gbestF)
+    return stop
 
 
 # --------------------------------------------------------------------------- #
 # Run over M scenarios
 # --------------------------------------------------------------------------- #
 # Default hyperparameters (tuned lightly on the n=13 instance under the eval budget; see the writeup).
-GA_PARAMS = dict(pop_size=16, elite=4, tour_k=3, p_cross=0.9, p_mut=0.5, max_swaps=2)
-PSO_PARAMS = dict(swarm=16, w=0.7, c1=1.5, c2=1.5)
+# The three stopping counters are shared by both methods and are in GENERATIONS; PlateauStop
+# documents why both the novelty and the improvement signal are required.
+_STOP_PARAMS = dict(gen_min=10, stall_K=12, patience_P=15)
+GA_PARAMS = dict(pop_size=16, elite=4, tour_k=3, p_cross=0.9, p_mut=0.5, max_swaps=2, **_STOP_PARAMS)
+PSO_PARAMS = dict(swarm=16, w=0.7, c1=1.5, c2=1.5, **_STOP_PARAMS)
+
+# Ceiling on unique true evaluations per scenario per variant, kept identical to the RL solver's
+# cap so all three searches are held to the same compute. The plateau rule can end a run earlier;
+# whichever condition comes first decides.
+BUDGET_CAP = 60
 
 
 def run_metaheuristic(variants=("ga", "pso"), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS,
-                      seed=P.SEED, budget=120, workers=16, seed_greedy=True):
+                      seed=P.SEED, budget=BUDGET_CAP, workers=16, seed_greedy=True):
     """Run the chosen metaheuristics over M scenarios and write outputs/greedy/n{N}/{variant}_optima.csv
-    (schema shared with the static greedy solvers; checkpointed each scenario). `budget` is the number of
-    UNIQUE F evaluations per scenario per variant; `workers` sizes the evaluation pool."""
+    (schema shared with the static greedy solvers; checkpointed each scenario).
+
+    Each run ends when its search levels off (PlateauStop) or when `budget` unique F evaluations
+    have been spent, whichever comes first, so compute is normally an OUTCOME of the run rather
+    than an input to it. `workers` sizes the evaluation pool. The recorded `n_evals` and `outcome`
+    columns say how much each scenario actually cost and which condition ended it."""
     from multiprocessing import Pool
     import random as _random
 
@@ -292,13 +355,15 @@ def run_metaheuristic(variants=("ga", "pso"), toy_dir=TOY, out_dir=OUT, M=P.M_SC
                 fit = FitnessCache(pool, dur, T, budget)
                 t0 = time.perf_counter()
                 if v == "ga":
-                    _ga(fit, segments, seeds, rng, **GA_PARAMS)
+                    stop = _ga(fit, segments, seeds, rng, **GA_PARAMS)
                 else:
-                    _pso(fit, segments, seeds, rng, **PSO_PARAMS)
+                    stop = _pso(fit, segments, seeds, rng, **PSO_PARAMS)
                 perm, (F, F1, F2) = fit.best()
                 start = schedule_from_permutation(list(perm), dur)
                 row = dict(scenario=m, F=F, F1=F1, F2=F2, time_s=time.perf_counter() - t0,
-                           n_evals=fit.n_evals, order="-".join(map(str, perm)),
+                           n_evals=fit.n_evals, generations=stop.gen,
+                           outcome="plateau" if stop.done() else "budget_cap",
+                           order="-".join(map(str, perm)),
                            durations="-".join(str(int(dur[e])) for e in segments))
                 for e in segments:
                     row[f"start_{e}"] = start[e]
