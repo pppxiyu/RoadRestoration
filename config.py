@@ -77,6 +77,14 @@ MILP_PROX_SCALE = 0.1   # Strength of the proximal schedule penalty gamma_n * ||
                         # schedules, tipping a would-be cycle into a fixed point. 0 disables it; 0.1 was the
                         # smallest strength that converged every tested scenario without hurting solution
                         # quality (a larger value freezes the schedule earlier and costs more accuracy).
+                        # High-damage tuning note (n=19, 50% of the network, 2026-07-23): here the decaying
+                        # prox=0.1 gives MILP == flow (the frozen-traffic surrogate leaps to worse schedules
+                        # every step). A per-scenario grid of STRONGER proximals -- {2,3,5} held CONSTANT
+                        # (no 1/(n+1) decay) plus a decaying 3 -- keeping the best-by-true-F iterate, forces
+                        # small ~1-segment steps and recovers ~4% below flow (beats flow 9/10, converges by
+                        # iter 2-3). The const-proximal mode is NOT wired into the loop; this was run
+                        # out-of-repo (scratchpad run_n19_tuned.py). Wire in a MILP_PROX_MODE knob to make it
+                        # reproducible here.
 MILP_WARM_START = True  # Seed iteration 0 of the alternating loop from the flow-greedy schedule -- the
                         # strongest static baseline, with segments ordered by baseline UE two-way flow
                         # (edge criticality) -- instead of the edge-id packing order. Because the loop
