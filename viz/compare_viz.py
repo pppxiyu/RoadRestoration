@@ -1,8 +1,9 @@
-"""Comparison figures for the road-restoration solvers: the greedy baseline variants vs the
-pretraining MILP vs (optional) the brute-force oracle. Each fact has one home: per-scenario final
-objective F lives in make_final_performance_all, the MILP optimization trajectory in make_process,
-accuracy against compute in make_accuracy_compute, and the gap to the true optimum (only where the
-oracle exists) in make_gap_to_oracle. Styling follows viz/style.py so it matches the rest of the
+"""Comparison figures for the road-restoration solvers: the greedy baseline variants, GA/PSO and
+the RL DQN vs the pretraining MILP vs (optional) the brute-force oracle. Each fact has one home:
+per-scenario final objective F lives in make_final_performance_all, the MILP optimization
+trajectory in make_process, accuracy against compute in make_accuracy_compute, and the gap to the
+true optimum (only where the oracle exists) in make_gap_to_oracle. (The RL learning curve lives
+with its solver, in viz/rl_viz.py.) Styling follows viz/style.py so it matches the rest of the
 project's figures."""
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import numpy as np
 from viz.style import C, CMAP_SEQ, save_pub, use_pub
 
 # The darkening grey ramp is reserved for the static greedy variants; the full per-method mapping
-# (grey ramp / GA red / PSO green / MILP blue / oracle red) lives in _method_colors below.
+# (grey ramp / GA red / PSO green / RL teal / MILP blue / oracle red) lives in _method_colors below.
 _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 
 
@@ -26,8 +27,9 @@ def _label(c):
 def _method_colors(cols):
     """Static greedy rules share a darkening grey ramp (context); GA and PSO, being population
     metaheuristics rather than static rankers, get their own colors (GA reuses the signal red,
-    which cannot collide because the oracle is never drawn in the same figure as GA); the MILP is
-    the emphasis blue (method under test); the oracle keeps the signal red where it appears."""
+    which cannot collide because the oracle is never drawn in the same figure as GA); the RL DQN
+    takes the remaining distinct accent (teal); the MILP is the emphasis blue (method under
+    test); the oracle keeps the signal red where it appears."""
     out, gi = {}, 0
     for c in cols:
         v = _label(c)
@@ -37,8 +39,15 @@ def _method_colors(cols):
             out[c] = C["signal"]
         elif v == "ga":
             out[c] = C["signal"]
+        elif v == "ga_milpcost":
+            # A GA run given the MILP's compute instead of the shared 60-evaluation budget. It is
+            # drawn in the secondary blue rather than the GA red because what it is there to be
+            # read against is the MILP, not the full-budget GA.
+            out[c] = C["accent2"]
         elif v == "pso":
             out[c] = C["good"]
+        elif v == "rl":
+            out[c] = C["teal"]
         else:                                              # a static greedy variant
             out[c] = _GREY_RAMP[gi % len(_GREY_RAMP)]
             gi += 1
@@ -148,7 +157,8 @@ def make_accuracy_compute(out_dir, stats):
     many workers is not made to look cheaper than it is (see Caveats C1). Lower-left is better,
     meaning little compute together with high accuracy. `stats` is a list of dicts
     {method, mean_F, mean_ue, kind} where kind is 'greedy' (static rule, grey circle), 'meta'
-    (budgeted population search, green square) or 'milp' (blue diamond)."""
+    (budgeted population search, green square), 'rl' (budgeted DQN, teal triangle) or 'milp'
+    (blue diamond)."""
     use_pub()
     figs = Path(out_dir) / "figures"
     figs.mkdir(parents=True, exist_ok=True)
@@ -168,14 +178,17 @@ def make_accuracy_compute(out_dir, stats):
             color, marker = C["accent"], "D"
         elif s["kind"] == "meta":
             color, marker = C["good"], "s"
+        elif s["kind"] == "rl":
+            color, marker = C["teal"], "^"
         else:
             color, marker = _GREY_RAMP[gi % len(_GREY_RAMP)], "o"
             gi += 1
         x, y = s["mean_ue"], s["mean_F"]
         ax.scatter(x, y, s=50, color=color, marker=marker, edgecolor="white", lw=0.5, zorder=3)
         # stack a label upward when its point sits on top of one already labelled (linear axis puts
-        # the same-compute greedy rules, and the same-compute GA/PSO, at coincident x)
-        k = sum(1 for px, py in placed if abs(px - x) <= 0.04 * xmax and abs(py - y) <= 0.05 * yspan)
+        # the same-compute greedy rules, and the same-budget GA/PSO/RL, at coincident x; the 9%
+        # vertical window is what keeps labels of near-tied methods from colliding)
+        k = sum(1 for px, py in placed if abs(px - x) <= 0.04 * xmax and abs(py - y) <= 0.09 * yspan)
         placed.append((x, y))
         left = x >= xmax - 1e-9                                 # rightmost points label leftward so text never clips
         ax.annotate(s["method"], (x, y), textcoords="offset points",

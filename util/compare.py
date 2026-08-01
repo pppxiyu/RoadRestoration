@@ -1,8 +1,9 @@
 """
 Compare the road-restoration solvers on a common instance: every baseline found under
-outputs/greedy/n{N}/ (the static greedy variants plus the GA/PSO metaheuristics, which share that
-directory), the pretraining MILP, and -- when its results exist for this scale -- the brute-force
-oracle. Aligns them by scenario, computes gaps to the oracle, and writes to outputs/comparison/n{N}/.
+outputs/greedy/n{N}/ (the static greedy variants plus the GA/PSO metaheuristics and the RL DQN,
+which share that directory), the pretraining MILP, and -- when its results exist for this scale --
+the brute-force oracle. Aligns them by scenario, computes gaps to the oracle, and writes to
+outputs/comparison/n{N}/.
 
 The oracle is included only if oracle_optima.csv is present for this scale (it is infeasible at
 larger sizes); greedy-vs-MILP is always reported.
@@ -103,7 +104,19 @@ def run_baseline_figures(N=None):
     T = int(round((milp_opt["ue_solves"] / (milp_opt["n_iter"] + 1)).median()))
     stats = []
     for v, d in greedy_finals.items():
-        if "n_evals" in d.columns:                                     # a metaheuristic (GA / PSO)
+        if v == "rl":
+            # The RL run stops on a plateau rather than on a budget, so its compute is an outcome
+            # and n_evals * T would only be an upper bound: the per-slot prefix cache means two
+            # schedules sharing a head share those slots' UE solves. Use the MEASURED solve count
+            # the trace recorded (ue_total), falling back to the bound if the trace is absent.
+            ue_path = scale_dir(base / "rl", N) / "rl_trace.csv"
+            if ue_path.exists():
+                tr = pd.read_csv(ue_path)
+                mean_ue = float(tr.groupby("scenario")["cum_ue"].max().mean())
+            else:
+                mean_ue = float(d["n_evals"].mean()) * T
+            stats.append(dict(method=v, mean_F=float(d["F"].mean()), mean_ue=mean_ue, kind="rl"))
+        elif "n_evals" in d.columns:                                   # a metaheuristic (GA / PSO)
             stats.append(dict(method=v, mean_F=float(d["F"].mean()),
                               mean_ue=float(d["n_evals"].mean()) * T, kind="meta"))
         else:                                                          # a static greedy rule
@@ -114,8 +127,9 @@ def run_baseline_figures(N=None):
 
     print(f"=== baselines vs MILP, n={N} (M={len(milp_opt)}, T={T}) ===", flush=True)
     for s in sorted(stats, key=lambda s: s["mean_F"]):
-        print(f"  {s['method']:8s}  mean F = {s['mean_F']:.4f}   serial-equiv compute = {s['mean_ue']:.0f} UE/scenario",
-              flush=True)
+        note = "  (measured, plateau-terminated)" if s["kind"] == "rl" else ""
+        print(f"  {s['method']:8s}  mean F = {s['mean_F']:.4f}   "
+              f"serial-equiv compute = {s['mean_ue']:.0f} UE/scenario{note}", flush=True)
     try:
         run_compare(N)                                              # also the per-scenario bar figure
     except FileNotFoundError:
