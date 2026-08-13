@@ -1,17 +1,19 @@
 """
-Metaheuristic baseline solvers for the road-restoration scheduling problem: a genetic algorithm (GA)
-and particle-swarm optimization (PSO). Both search the same space the greedy and MILP solvers do -- a
+Metaheuristic baseline solvers for the road-restoration scheduling problem: a genetic algorithm (GA).
+It searches the same space the greedy and MILP solvers do -- a
 repair PRIORITY ORDER over the disrupted segments, turned into start times by the work-conserving list
 schedule -- and are scored by the identical true objective F (a real user-equilibrium solve per slot),
 so their results are directly comparable to the other methods.
+
+Each search runs ONCE, against a nominal instance whose durations are the expected repair times
+rounded to whole slots, and the single order it returns is then evaluated on every sampled
+scenario. The decision is therefore committed before any duration is observed, which is what makes
+the reported mean the value of a rule rather than an average of hindsight-optimal answers.
 
   ga  : order-based genetic algorithm. Individuals are permutations of the segments; selection is
         tournament, recombination is order crossover (OX, which preserves relative order and produces a
         valid permutation), mutation is a small number of random swaps, and the best few individuals
         survive unchanged each generation (elitism).
-  pso : particle-swarm optimization with a random-key encoding. Each particle is a real vector in
-        [0,1]^n; its permutation is read off by argsort (smallest key repaired first), which keeps the
-        standard continuous velocity/position update valid while always decoding to a legal order.
 
 Because one F evaluation is expensive (T user-equilibrium solves, one per slot, and congested schedules drive
 the solver to its iteration cap), two things make the search affordable:
@@ -29,13 +31,17 @@ making it a meaningful "can search improve on the heuristic?" baseline rather th
 13!-sized space. Set seed_greedy=False for pure random initialization.
 
 Each variant writes outputs/greedy/n{N}/{variant}_optima.csv, the same schema and directory the static
-greedy solvers use, so util/compare.py discovers them automatically.
+greedy solvers use, so util/compare.py discovers them automatically, beside {variant}_slots.csv
+holding the per-slot accessibility of those same evaluations, so a recovery curve costs no extra UE
+solve. The search's own record stays in outputs/{variant}/n{N}/: {variant}_trace.csv, the
+search-process figure drawn from it, and a run_meta.json naming the instance, hyperparameters,
+delivered order and stopping condition.
 
 Run inside the road_restore conda env (PYTHONPATH = project root); above 8 segments compute_horizon
 switches to the Graham bound by itself, so a large-n run only needs the N_DISRUPTED_ORACLE override:
-  python -m util.metaheuristic                 # ga and pso at the configured scale
-  python -m util.metaheuristic ga pso
+  python -m util.metaheuristic                 # ga at the configured scale
 """
+import json
 import os
 import sys
 import time
@@ -48,11 +54,14 @@ import config as P
 from util.evaluate import build_context, evaluate_schedule, schedule_from_permutation
 from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
                          select_oracle_instance)
-from util.scenarios import sample_scenarios
+from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
+                             write_run_meta)
+from util.scenarios import nominal_durations, sample_scenarios
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "greedy"
+OUT = ROOT / "outputs" / "1-baselines" / "rule-based"   # legacy out_dir default (instance print only)
+OUT_DIAG = ROOT / "outputs" / "1-baselines"   # each variant owns outputs/1-baselines/{variant}/n{N}/
 
 
 # --------------------------------------------------------------------------- #
@@ -120,52 +129,87 @@ class FitnessCache:
 # --------------------------------------------------------------------------- #
 class PlateauStop:
     """Stop a population search once it has visibly levelled off, rather than when a preset amount
-    of compute is spent. Two plateau signals must hold together, plus a warm-up floor:
+    of compute is spent. After a warm-up floor (gen >= gen_min), EITHER plateau signal ends it:
 
-      (a) gen >= gen_min      -- do not judge a plateau in the first few generations;
+      (a) since_improve >= patience_P -- patience_P consecutive generations without a MEANINGFUL
+                                 improvement to the best F found so far (an improvement counts
+                                 only if
+                                 it exceeds a relative tolerance `tol`, so a trickle of negligible
+                                 gains does not keep the search alive);
       (b) stall >= stall_K    -- stall_K consecutive generations produced NO candidate the search
                                  had not already evaluated, i.e. the population has collapsed onto
-                                 orders it already knows;
-      (c) since_improve >= patience_P -- patience_P consecutive generations without improving the
-                                 incumbent best F.
+                                 orders it already knows.
 
-    Either signal alone misreads the search. Novelty can dry up for a stretch while the incumbent
-    is still being improved by recombining known material, and the incumbent can sit unchanged for
-    a long stretch while the population is still exploring productively -- on the n=10 RL run the
-    longest gap between two incumbent improvements reached 55 iterations. Requiring both keeps the
-    search alive exactly while either the population or the incumbent is still moving.
+    These are OR-ed, not AND-ed. An earlier version required BOTH, which never stopped a mutating
+    GA: crossover/mutation almost always emits at least one unseen order per generation, so `stall`
+    resets to 0 forever and the run only ended at the evaluation cap -- on the n=10 GA the best F
+    converged by generation ~50 but the search ground on to generation 309 (since_improve=259)
+    before it was killed. The best-F plateau signal (a) is the true convergence test; patience_P
+    is set well above the largest real gap between improvements so a slow search is not cut short.
 
     The counters are in GENERATIONS, which is the natural iteration of these methods; note one
     generation costs up to pop_size evaluations early on but almost none after convergence, since
     the fitness cache serves repeated orders for free. The evaluation budget remains as a hard
     ceiling for the case where nothing ever settles."""
 
-    def __init__(self, gen_min, stall_K, patience_P):
+    def __init__(self, gen_min, stall_K, patience_P, tol=1e-3):
         self.gen_min, self.stall_K, self.patience_P = gen_min, stall_K, patience_P
+        self.tol = tol                       # relative size an improvement must exceed to reset patience
         self.gen = self.stall = self.since_improve = 0
         self.best = float("inf")
 
     def update(self, evals_before, evals_after, best_F):
         """Advance one generation. `evals_before/after` are the cache's unique-evaluation counts
-        around this generation; `best_F` is the incumbent objective after it."""
+        around this generation; `best_F` is the best objective found so far, after it."""
         self.gen += 1
         self.stall = 0 if evals_after > evals_before else self.stall + 1
-        if best_F < self.best - 1e-12:
+        # Only a MEANINGFUL improvement (beyond a relative tolerance) resets patience, so a run
+        # creeping by negligible amounts is still recognized as converged.
+        if self.best == float("inf") or best_F < self.best - self.tol * abs(self.best):
             self.best, self.since_improve = best_F, 0
         else:
             self.since_improve += 1
 
     def done(self):
-        return (self.gen >= self.gen_min and self.stall >= self.stall_K
-                and self.since_improve >= self.patience_P)
+        return (self.gen >= self.gen_min
+                and (self.since_improve >= self.patience_P or self.stall >= self.stall_K))
+
+
+def _gen_row(gen, fit, pop, F, stop):
+    """One row of the optimization trace, describing where a generation stood.
+
+    Both halves of the stopping rule are recorded alongside the objective, because the two things
+    a reader wants from a search trace are whether the best solution so far is still improving
+    and whether
+    the population is still producing anything new. `cum_evals` flattening is precisely what the
+    novelty half of PlateauStop is counting, and the spread between the generation's best and
+    worst shows whether the population has collapsed onto one order.
+
+    Candidates that arrive after the budget is spent score +inf, so the population statistics are
+    taken over the finite entries only; `n_scored` says how many that was."""
+    vals = [F[p] for p in pop if np.isfinite(F[p])]
+    best_perm, (best_F, _, _) = fit.best()
+    return dict(generation=gen, cum_evals=fit.n_evals, best_F=best_F,
+                gen_best_F=min(vals) if vals else float("nan"),
+                gen_mean_F=float(np.mean(vals)) if vals else float("nan"),
+                gen_worst_F=max(vals) if vals else float("nan"),
+                n_scored=len(vals), distinct=len(set(pop)),
+                stall=stop.stall, since_improve=stop.since_improve,
+                best_order="-".join(map(str, best_perm)))
 
 
 # --------------------------------------------------------------------------- #
 # Seeds: the static greedy priority orders (shared initialization)
 # --------------------------------------------------------------------------- #
 def _greedy_seed_orders(ctx, segments, durations, flow):
-    """The three static greedy priority orders (flow / demand / ratio) as permutations, used to seed
-    both metaheuristics. Mirrors util/greedy.py's scoring so the seeds match those baselines exactly."""
+    """Three static priority orders (flow / demand / ratio) as permutations, used to seed both
+    metaheuristics.
+
+    All three match the util/greedy.py baselines, because the caller passes the NOMINAL durations
+    the search itself optimizes against, and those are the same expected durations the ratio
+    baseline divides by (up to the rounding to whole slots that the scheduler requires). Seeding
+    from the static rankers is what makes each metaheuristic finish no worse than the best of
+    them."""
     B, sev, dis = ctx["B"], ctx["severity_vec"], ctx["disrupted"]
     demand = {int(dis[j][0]): float(sev[j] * B[:, j].sum()) for j in range(len(dis))}
     ratio = {e: demand[e] / max(1, int(durations[e])) for e in demand}
@@ -203,11 +247,11 @@ def _swap_mutation(perm, rng, n_swaps):
 
 
 def _ga(fit, segments, seeds, rng, pop_size, elite, tour_k, p_cross, p_mut, max_swaps,
-        gen_min, stall_K, patience_P):
+        gen_min, stall_K, patience_P, on_gen=None):
     """Run the order-based GA against the fitness cache `fit` until the search levels off (see
-    PlateauStop) or the evaluation budget runs out, whichever comes first. Returns the stopping
-    state so the caller can record which condition ended the run; the best order is read back from
-    the cache afterwards."""
+    PlateauStop) or the evaluation budget runs out, whichever comes first. Returns (stop, trace):
+    the stopping state, so the caller can record which condition ended the run, and one row per
+    generation describing how the search moved. The best order is read back from the cache."""
     seg = list(segments)
     pop = [tuple(s) for s in seeds][:pop_size]
     while len(pop) < pop_size:                                          # random fills
@@ -215,6 +259,7 @@ def _ga(fit, segments, seeds, rng, pop_size, elite, tour_k, p_cross, p_mut, max_
     F = fit.evaluate(pop)
 
     stop = PlateauStop(gen_min, stall_K, patience_P)
+    trace = [_gen_row(0, fit, pop, F, stop)]                            # generation 0 = the seeded population
     while fit.n_evals < fit.budget and not stop.done():
         prev = fit.n_evals
         ranked = sorted(set(pop), key=lambda p: F[p])                 # dedup so elitism keeps DISTINCT best orders, not copies of one
@@ -231,92 +276,155 @@ def _ga(fit, segments, seeds, rng, pop_size, elite, tour_k, p_cross, p_mut, max_
         pop = nxt
         F = fit.evaluate(pop)                                          # cached survivors are free; only novel children cost budget
         stop.update(prev, fit.n_evals, fit.best()[1][0])
-    return stop
-
-
-# --------------------------------------------------------------------------- #
-# Particle-swarm optimization (random-key encoding)
-# --------------------------------------------------------------------------- #
-def _decode(keys, segments):
-    return tuple(segments[i] for i in np.argsort(keys, kind="stable"))
-
-
-def _keys_for_order(order, segments):
-    """Random keys whose argsort reproduces `order`: give the segment repaired at rank r the key
-    (r+0.5)/n, so smaller key = earlier repair."""
-    n = len(segments)
-    pos = {e: i for i, e in enumerate(segments)}
-    keys = np.zeros(n)
-    for r, e in enumerate(order):
-        keys[pos[e]] = (r + 0.5) / n
-    return keys
-
-
-def _pso(fit, segments, seeds, rng, swarm, w, c1, c2, gen_min, stall_K, patience_P):
-    """Run random-key PSO against the fitness cache `fit` until the search levels off (see
-    PlateauStop) or the evaluation budget runs out, whichever comes first. Particles are real
-    vectors in [0,1]^n decoded to orders by argsort; velocity/position use the standard gbest
-    update. Fitness is memoized on the DECODED order, so distinct keys mapping to the same order
-    are free. Returns the stopping state."""
-    seg = list(segments)
-    n = len(seg)
-    npr = np.random.RandomState(rng.randint(0, 2 ** 31 - 1))
-    X = npr.rand(swarm, n)
-    for i, s in enumerate(seeds[:swarm]):                              # seed particles decode to the greedy orders
-        X[i] = _keys_for_order(s, seg)
-    V = 0.1 * (npr.rand(swarm, n) - 0.5)
-
-    def eval_rows(rows):
-        perms = [_decode(rows[i], seg) for i in range(rows.shape[0])]
-        Fmap = fit.evaluate(perms)
-        return np.array([Fmap[p] for p in perms]), perms
-
-    Fx, _ = eval_rows(X)
-    pbest, pbestF = X.copy(), Fx.copy()
-    g = int(np.argmin(pbestF))
-    gbest, gbestF = pbest[g].copy(), float(pbestF[g])
-
-    stop = PlateauStop(gen_min, stall_K, patience_P)
-    while fit.n_evals < fit.budget and not stop.done():
-        prev = fit.n_evals
-        r1, r2 = npr.rand(swarm, n), npr.rand(swarm, n)
-        V = w * V + c1 * r1 * (pbest - X) + c2 * r2 * (gbest[None, :] - X)
-        X = np.clip(X + V, 0.0, 1.0)
-        Fx, _ = eval_rows(X)
-        improved = Fx < pbestF
-        pbest[improved], pbestF[improved] = X[improved], Fx[improved]
-        g = int(np.argmin(pbestF))
-        if pbestF[g] < gbestF:
-            gbest, gbestF = pbest[g].copy(), float(pbestF[g])
-        stop.update(prev, fit.n_evals, gbestF)
-    return stop
+        trace.append(_gen_row(stop.gen, fit, pop, F, stop))
+        if on_gen is not None:                                          # live progress, optional
+            on_gen(stop.gen, trace)
+    return stop, trace
 
 
 # --------------------------------------------------------------------------- #
 # Run over M scenarios
 # --------------------------------------------------------------------------- #
 # Default hyperparameters (tuned lightly on the n=13 instance under the eval budget; see the writeup).
-# The three stopping counters are shared by both methods and are in GENERATIONS; PlateauStop
+# The three stopping counters are in GENERATIONS; PlateauStop
 # documents why both the novelty and the improvement signal are required.
-_STOP_PARAMS = dict(gen_min=10, stall_K=12, patience_P=15)
+_STOP_PARAMS = dict(gen_min=10, stall_K=12, patience_P=40)
 GA_PARAMS = dict(pop_size=16, elite=4, tour_k=3, p_cross=0.9, p_mut=0.5, max_swaps=2, **_STOP_PARAMS)
-PSO_PARAMS = dict(swarm=16, w=0.7, c1=1.5, c2=1.5, **_STOP_PARAMS)
 
-# Ceiling on unique true evaluations per scenario per variant, kept identical to the RL solver's
-# cap so all three searches are held to the same compute. The plateau rule can end a run earlier;
-# whichever condition comes first decides.
-BUDGET_CAP = 60
+# Ceiling on unique true evaluations per variant. Effectively OPEN: the plateau rule is what ends
+# a run, and this cap is only the runaway guard behind it. It was briefly 60 (a shared-compute
+# ceiling matched to the RL solver), but the recorded n=10 GA baseline (mean F 0.9389, run_meta
+# budget=100000) plateau-stopped at 383 unique evaluations -- under a cap of 60 the same call
+# would stop at ~6 generations and silently fail to reproduce the result on disk. The default
+# must reproduce the recorded baseline; a tighter budget is a per-call override, not a default.
+BUDGET_CAP = 100_000
 
 
-def run_metaheuristic(variants=("ga", "pso"), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS,
-                      seed=P.SEED, budget=BUDGET_CAP, workers=16, seed_greedy=True):
-    """Run the chosen metaheuristics over M scenarios and write outputs/greedy/n{N}/{variant}_optima.csv
-    (schema shared with the static greedy solvers; checkpointed each scenario).
+# Generations between redraws of the search-process figure in the variant's n{N} folder, so a long
+# open-budget search is readable as a figure while it runs instead of only at the end. Costs a
+# fraction of a second and overwrites the same file the end-of-run render produces. Nothing else is
+# written mid-run: the deliverable is written once, at the end, so results/ never holds a
+# half-finished search.
+FIGURE_REFRESH_EVERY_GEN = 3
 
-    Each run ends when its search levels off (PlateauStop) or when `budget` unique F evaluations
-    have been spent, whichever comes first, so compute is normally an OUTCOME of the run rather
-    than an input to it. `workers` sizes the evaluation pool. The recorded `n_evals` and `outcome`
-    columns say how much each scenario actually cost and which condition ended it."""
+
+def _rescore_committed(v, ctx, segments, scenarios, T, M, seed, nominal):
+    """Re-evaluate a variant's ALREADY-COMMITTED order under the CURRENT objective and UE settings,
+    without running the search again.
+
+    This exists for a change of ruler: when the evaluation tolerance or the UE engine changes, every
+    F on disk was measured with the old one and none of the methods are comparable until all are
+    re-scored. For a search whose answer is a single priority order, re-running the search is not
+    required to restore comparability -- the order is the deliverable, and re-scoring it is a few
+    seconds against a search's minutes.
+
+    WHAT IT REFUSES TO PRETEND. The search TRAJECTORY cannot be re-scored: {v}_trace.csv holds the
+    per-generation best F the search actually saw, under the old ruler, and the search-process
+    figure drawn from it is that same old measurement. Both are left untouched rather than silently
+    reinterpreted, and run_meta records the previous run's objective block under `rescored_from` so
+    the mixed provenance is visible in the file instead of living only in someone's memory. What IS
+    refreshed: the delivered per-scenario evaluations, the per-slot recovery curves, and F_nominal
+    (recomputed here, so the meta does not mix a new mean F with an old nominal one).
+
+    The per-scenario compute accounting is carried over from the original search unchanged: the
+    search really did cost that many evaluations, and a re-score does not make the answer cheaper
+    to have found.
+    """
+    diag = scale_dir(OUT_DIAG / v)
+    sol_path = results_dir(diag) / f"{v}_solution_best.json"
+    prev_meta_path = diag / "config" / "run_meta.json"
+    if not sol_path.exists():
+        raise SystemExit(f"cannot re-score {v}: no committed solution at {sol_path} "
+                         f"(run the search first)")
+    sol = json.loads(sol_path.read_text(encoding="utf-8"))
+    perm = [int(x) for x in sol["order"]]
+    if sorted(perm) != sorted(segments):
+        raise SystemExit(f"cannot re-score {v}: committed order {perm} is not a permutation of "
+                         f"this instance's segments {segments} -- the solution on disk belongs to "
+                         f"a different instance")
+    prev = json.loads(prev_meta_path.read_text(encoding="utf-8")) if prev_meta_path.exists() else {}
+    # Search provenance carried over verbatim: a re-score changes how the answer is MEASURED, never
+    # what the search spent to find it.
+    n_evals = int(prev.get("n_evals", sol.get("n_evals", 0)))
+    generations = int(prev.get("generations", 0))
+    outcome = str(prev.get("outcome", "unknown"))
+    solve_ue = n_evals * T
+
+    # F_nominal under the current ruler, so this file holds one ruler throughout.
+    F_nom = evaluate_schedule(schedule_from_permutation(list(perm), nominal), nominal, T, ctx)["F"]
+
+    rows, slots = [], []
+    for m, dur in enumerate(scenarios):
+        t_s = time.perf_counter()
+        start = schedule_from_permutation(list(perm), dur)
+        res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
+        slots.extend(slot_rows(m, res))
+        row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],
+                   time_s=time.perf_counter() - t_s, n_evals=n_evals, generations=generations,
+                   outcome=outcome, ue_solves=solve_ue, ue_total=solve_ue / M + T,
+                   order="-".join(map(str, perm)),
+                   durations="-".join(str(int(dur[e])) for e in segments))
+        for e in segments:
+            row[f"start_{e}"] = start[e]
+        rows.append(row)
+
+    pd.DataFrame(rows).to_csv(results_dir(diag) / f"{v}_optima.csv", index=False)
+    pd.DataFrame(slots).to_csv(log_dir(diag) / f"{v}_slots.csv", index=False)
+    sol["F_nominal"] = float(F_nom)
+    sol_path.write_text(json.dumps(sol, indent=2), encoding="utf-8")
+    write_run_meta(diag, method=v, segments=segments, T=T, seed=seed, M=M, hp=GA_PARAMS,
+                   budget=int(prev.get("budget", 0)), order="-".join(map(str, perm)),
+                   n_evals=n_evals, generations=generations, outcome=outcome,
+                   nominal_durations={int(e): int(nominal[e]) for e in segments},
+                   F_nominal=float(F_nom), solve_s=float(prev.get("solve_s", float("nan"))),
+                   rescored=dict(
+                       note="delivered evaluations re-measured under the objective/UE settings in "
+                            "this file; the search itself was NOT re-run",
+                       search_from=prev.get("written_at"),
+                       stale_artifacts=[f"log/{v}_trace.csv", f"{v}_search_process.png"],
+                       rescored_from=prev.get("objective")))
+    mean_F = float(pd.DataFrame(rows)["F"].mean())
+    print(f"  [{v}] RE-SCORED committed order (search untouched: {n_evals} evals, "
+          f"{generations} generations, {outcome})\n       order: {'-'.join(map(str, perm))}\n"
+          f"       F(nominal)={F_nom:.6f}   mean F over {M} scenarios = {mean_F:.6f}", flush=True)
+    return mean_F
+
+
+def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS,
+                      seed=P.SEED, budget=BUDGET_CAP, workers=16, seed_greedy=True,
+                      rescore=False, search_seed=None):
+    """Search ONCE on a nominal instance, then evaluate the resulting priority order on all M
+    sampled scenarios, writing outputs/greedy/n{N}/{variant}_optima.csv (schema shared with the
+    static greedy solvers).
+
+    The search optimizes against a single set of NOMINAL durations, each segment's expected repair
+    time rounded to whole slots (util.scenarios.nominal_durations, the same vector the MILP uses,
+    so the two are optimizing against the same world). The order it returns is then scheduled and
+    scored separately on every sampled scenario, exactly as the static rankers are, so the reported
+    mean is the expected performance of a single decision committed before any duration is
+    observed.
+
+    This replaces the earlier arrangement, in which the search was re-run per scenario with that
+    scenario's durations already known. That produced M different orders, each chosen with
+    hindsight, so its mean was an upper bound on what any implementable rule could reach rather
+    than the value of a rule; it also cost M searches instead of one.
+
+    A search ends when it levels off (PlateauStop) or when `budget` unique F evaluations on the
+    nominal instance have been spent, whichever comes first. `workers` sizes the evaluation pool.
+
+    `rescore=True` skips the search entirely and only re-measures each variant's already-committed
+    order under the current objective/UE settings -- see _rescore_committed for what that does and
+    does not refresh. Use it to restore comparability after a change of ruler without paying for a
+    search whose answer would not change.
+
+    TWO SEPARATE SEEDS, and they must stay separate. `seed` draws the M evaluation scenarios -- the
+    frozen ruler every method in the study is scored on -- and is pinned to config.SEED; moving it
+    silently rescores the whole comparison against a different sample. `search_seed` (default: the
+    same value, i.e. the historical single-seed behavior) drives ONLY the search's own randomness,
+    so repeated runs can measure how much of a result is the method and how much is the draw. They
+    shared one parameter until 2026-08-12, which meant a multi-seed sweep would have compared five
+    runs against five different rulers and called the spread "seed variance".
+    """
     from multiprocessing import Pool
     import random as _random
 
@@ -327,63 +435,118 @@ def run_metaheuristic(variants=("ga", "pso"), toy_dir=TOY, out_dir=OUT, M=P.M_SC
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, M, seed)
     T = compute_horizon(segments, scenarios)
+
+    if rescore:
+        # No search, so no evaluation pool and no fresh_scale_dir: the search trace and its figure
+        # are the only record of a run that is deliberately not being repeated.
+        nominal = nominal_durations(disrupted, segments)
+        print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}; "
+              f"RE-SCORE ONLY (no search) for variants={list(variants)}", flush=True)
+        t_all = time.perf_counter()
+        for v in variants:
+            _rescore_committed(v, ctx, segments, scenarios, T, M, seed, nominal)
+        print(f"Re-scored in {(time.perf_counter() - t_all) / 60:.1f} min", flush=True)
+        from util.compare import refresh_comparison
+        refresh_comparison()
+        return scale_dir(OUT_DIAG / variants[0])
     flow = _baseline_twoway_flow(toy_dir)
+    nominal = nominal_durations(disrupted, segments)
     print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}; "
           f"variants={list(variants)}; budget={budget} evals; workers={workers}; "
           f"seed_greedy={seed_greedy}", flush=True)
-
-    # Resume support: a scenario already present in {variant}_optima.csv is not recomputed, and its rows
-    # are carried forward, so a relaunch after an interruption continues instead of restarting from zero.
-    rows, done = {v: [] for v in variants}, {v: set() for v in variants}
-    for v in variants:
-        p = out_dir / f"{v}_optima.csv"
-        if p.exists():
-            rows[v] = pd.read_csv(p).to_dict("records")
-            done[v] = {int(r["scenario"]) for r in rows[v]}
-    if any(done[v] for v in variants):
-        print("[resume] already done -> " +
-              ", ".join(f"{v}:{sorted(done[v])}" for v in variants), flush=True)
+    print(f"nominal durations (expected, rounded): { {e: nominal[e] for e in segments} }", flush=True)
 
     t_all = time.perf_counter()
     with Pool(workers, initializer=_worker_init, initargs=(toy_dir, disrupted)) as pool:
-        for m, dur in enumerate(scenarios):
-            seeds = _greedy_seed_orders(ctx, segments, dur, flow) if seed_greedy else []
-            for v in variants:
-                if m in done[v]:
-                    continue
-                rng = _random.Random(seed * 1000 + m * 10 + (0 if v == "ga" else 1))
-                fit = FitnessCache(pool, dur, T, budget)
-                t0 = time.perf_counter()
-                if v == "ga":
-                    stop = _ga(fit, segments, seeds, rng, **GA_PARAMS)
-                else:
-                    stop = _pso(fit, segments, seeds, rng, **PSO_PARAMS)
-                perm, (F, F1, F2) = fit.best()
+        seeds = _greedy_seed_orders(ctx, segments, nominal, flow) if seed_greedy else []
+        for v in variants:
+            # search randomness only -- the evaluation scenarios above were drawn from `seed`
+            rng = _random.Random((seed if search_seed is None else search_seed) * 1000
+                                 + (0 if v == "ga" else 1))
+            fit = FitnessCache(pool, nominal, T, budget)
+            t0 = time.perf_counter()
+            # Live per-generation progress, so a long open-budget search is watchable rather than
+            # only judged at the end (the trace is written when the run finishes). Overwrites a
+            # one-line status file each generation; costs nothing.
+            diag = scale_dir(OUT_DIAG / v)
+            fresh_scale_dir(diag)            # a rerun replaces this variant's folder, no residue
+            prog = log_dir(diag) / f"{v}_progress.txt"
+
+            def _on_gen(gn, tr, _prog=prog, _v=v, _diag=diag):
+                r = tr[-1]
+                _prog.write_text(
+                    f"generation {r['generation']}  best_F={r['best_F']:.4f}  "
+                    f"gen_best={r['gen_best_F']:.4f}  evals={r['cum_evals']}  "
+                    f"stall={r['stall']}  since_improve={r['since_improve']}\n", encoding="utf-8")
+                if gn % FIGURE_REFRESH_EVERY_GEN == 0:
+                    from viz.meta_viz import make_search_process
+                    make_search_process(_diag, pd.DataFrame(tr), prefix=_v)
+
+            if v != "ga":
+                raise ValueError(f"unknown metaheuristic variant {v!r} (only 'ga' exists)")
+            stop, trace = _ga(fit, segments, seeds, rng, on_gen=_on_gen, **GA_PARAMS)
+            perm, (F_nom, _, _) = fit.best()
+            solve_s, solve_ue = time.perf_counter() - t0, fit.n_evals * T
+            print(f"  [{v}] nominal search: F(nominal)={F_nom:.4f}  {fit.n_evals} evals, "
+                  f"{stop.gen} generations, {stop.done() and 'plateau' or 'budget_cap'}, "
+                  f"{solve_s / 60:.1f} min\n       order: {'-'.join(map(str, perm))}", flush=True)
+
+            # --- evaluate that one order on every sampled scenario ---
+            rows, slots = [], []
+            for m, dur in enumerate(scenarios):
+                t_s = time.perf_counter()
                 start = schedule_from_permutation(list(perm), dur)
-                row = dict(scenario=m, F=F, F1=F1, F2=F2, time_s=time.perf_counter() - t0,
+                res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
+                slots.extend(slot_rows(m, res))         # recovery curve, at no extra UE cost
+                row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],
+                           time_s=time.perf_counter() - t_s,
                            n_evals=fit.n_evals, generations=stop.gen,
                            outcome="plateau" if stop.done() else "budget_cap",
+                           # ue_total is the honest per-scenario compute: the one-off nominal
+                           # search shared across the M scenarios it serves, plus this scenario's
+                           # single evaluation.
+                           ue_solves=solve_ue, ue_total=solve_ue / M + T,
                            order="-".join(map(str, perm)),
                            durations="-".join(str(int(dur[e])) for e in segments))
                 for e in segments:
                     row[f"start_{e}"] = start[e]
-                rows[v].append(row)
-                done[v].add(m)
-                pd.DataFrame(rows[v]).to_csv(out_dir / f"{v}_optima.csv", index=False)
-            msg = []
-            for v in variants:
-                r = next((x for x in rows[v] if int(x["scenario"]) == m), None)
-                if r is not None:
-                    msg.append(f"{v}={r['F']:.4f}({r['n_evals']}ev)")
-            if msg:
-                print(f"  scenario {m + 1}/{M}:  " + "  ".join(msg), flush=True)
+                rows.append(row)
+            # Optima + per-slot slots now live in the variant's OWN tree, outputs/{v}/n{N}/ (+ raw/),
+            # beside its diagnostics -- mirroring outputs/pretrain_milp, outputs/rl and
+            # outputs/rl_stoch. compare.py discovers each method's optima from its own folder, so
+            # nothing has to sit in the shared greedy pool any more.
+            diag = scale_dir(OUT_DIAG / v)
+            diag.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows).to_csv(results_dir(diag) / f"{v}_optima.csv", index=False)
+            pd.DataFrame(slots).to_csv(log_dir(diag) / f"{v}_slots.csv", index=False)
+            tr = pd.DataFrame(trace)
+            tr.to_csv(log_dir(diag) / f"{v}_trace.csv", index=False)
+            from viz.meta_viz import make_search_process
+            make_search_process(diag, tr, prefix=v)
+            # The committed solution as one small self-describing file: enough to reproduce
+            # every delivered schedule (order + realized durations -> list schedule) without
+            # touching the search again.
+            (results_dir(diag) / f"{v}_solution_best.json").write_text(json.dumps(dict(
+                order=[int(x) for x in perm], F_nominal=float(F_nom),
+                found_generation=int(tr.loc[tr["best_F"] <= tr["best_F"].min() + 1e-12,
+                                            "generation"].iloc[0]),
+                n_evals=int(fit.n_evals)), indent=2), encoding="utf-8")
+            write_run_meta(diag, method=v, segments=segments, T=T, seed=seed, M=M,
+                           hp=GA_PARAMS, search_seed=int(seed if search_seed is None
+                                                         else search_seed),
+                           budget=budget, order="-".join(map(str, perm)),
+                           n_evals=fit.n_evals, generations=stop.gen,
+                           outcome="plateau" if stop.done() else "budget_cap",
+                           nominal_durations={int(e): int(nominal[e]) for e in segments},
+                           F_nominal=float(F_nom), solve_s=solve_s)
+            print(f"  mean F [{v}] = {pd.DataFrame(rows)['F'].mean():.4f}", flush=True)
 
-    for v in variants:
-        print(f"  mean F [{v}] = {pd.DataFrame(rows[v])['F'].mean():.4f}", flush=True)
     print(f"Wrote {out_dir}  ({(time.perf_counter() - t_all) / 60:.1f} min)", flush=True)
+    from util.compare import refresh_comparison
+    refresh_comparison()                     # every solver run leaves the comparison current
     return out_dir
 
 
 if __name__ == "__main__":
-    vs = tuple(a for a in sys.argv[1:] if not a.startswith("-")) or ("ga", "pso")
+    vs = tuple(a for a in sys.argv[1:] if not a.startswith("-")) or ("ga",)
     run_metaheuristic(variants=vs)

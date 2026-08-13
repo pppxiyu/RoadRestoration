@@ -44,6 +44,11 @@ for logging but never enters the MILP objective.
 
 Solver: scipy.optimize.milp (the HiGHS backend) -- ships with scipy, so no external license is needed.
 
+Outputs land in outputs/pretrain_milp/n{N}/: milp_optima.csv (the delivered order scored on every
+scenario), milp_trace.csv (the alternating run's own trajectory), milp_slots.csv (the per-slot
+accessibility of those evaluations, so a recovery curve needs no extra UE solve) and run_meta.json
+(instance, objective and solver parameters, delivered order, stopping condition, code revision).
+
 Run inside the road_restore conda env (PYTHONPATH = project root):
   python -m util.pretrain_milp --level-a   # encoding sanity check (MILP surrogate >= best work-conserving one)
   python -m util.pretrain_milp             # full alternating run over M scenarios + comparison figure
@@ -63,13 +68,15 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 import config as P
 from util.evaluate import (build_context, evaluate_schedule,
                            schedule_from_permutation)
+from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
+                             write_run_meta)
 from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
                          select_oracle_instance)
-from util.scenarios import sample_scenarios
+from util.scenarios import nominal_durations, sample_scenarios
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "pretrain_milp"
+OUT = ROOT / "outputs" / "1-baselines" / "pretrain_milp"
 
 
 # --------------------------------------------------------------------------- #
@@ -263,18 +270,39 @@ def alternating_optimize(ctx, durations, segments, T, damping=None, warm_order=N
 # Full run over M scenarios
 # --------------------------------------------------------------------------- #
 def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
-    # Run the full alternating solver over M sampled demand scenarios and write the results. Each
-    # scenario is solved independently, checkpointed to CSV as it finishes (so an interrupted run can
-    # resume), and finally compared against the oracle optimum once that oracle output is available.
+    """Solve ONCE on a nominal instance, then evaluate the resulting priority order on all M
+    sampled scenarios.
+
+    The alternating solver is run against a single set of NOMINAL durations, each segment's
+    expected repair time under the full duration model rounded to whole slots (see
+    _nominal_durations). Its solution is then projected onto the repair ORDER it implies, and that
+    one order is scheduled and scored separately on every sampled scenario, exactly as the static
+    rankers are. The reported mean is therefore the expected performance of a single decision that
+    is committed before any duration is observed.
+
+    This replaces the earlier arrangement, in which the solver was re-run per scenario with that
+    scenario's durations already known. That gave M different schedules, each optimized with
+    hindsight, so its mean was an upper bound on what any implementable rule could achieve rather
+    than the value of a rule. It also cost M alternating runs instead of one.
+
+    Two things are given up by the projection. The MILP may place a segment later than a
+    work-conserving schedule would, so reading only the order discards any deliberate idling it
+    chose, which is where the earlier negative gaps against the work-conserving oracle came from.
+    And the nominal instance is solved as if durations were certain, so the coefficients it
+    linearizes around are those of an average world, not of any world that actually occurs.
+    """
     out_dir = scale_dir(out_dir)                     # outputs/pretrain_milp/n{N}/, mirroring the oracle's per-scale directory layout
-    (out_dir / "figures").mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, M, seed)
     T = compute_horizon(segments, scenarios)
+    nominal = nominal_durations(disrupted, segments)
     print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}")
+    print(f"nominal durations (expected, rounded): "
+          f"{ {e: nominal[e] for e in segments} }", flush=True)
 
     # Warm start: order the segments by their baseline UE two-way flow (edge criticality); this is the
     # flow-greedy baseline's priority order, and seeding iteration 0 from it makes each scenario's result
@@ -291,61 +319,117 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     # on restart, reuse a scenario's saved result only when its fingerprint still matches the current run.
     from util.oracle import _param_fingerprint
     _, base_fp = _param_fingerprint()
+    # "|nominal=1" marks the once-on-a-nominal-instance semantics: results written by the earlier
+    # per-scenario arrangement carry a fingerprint without it and are therefore never mistaken for
+    # reusable, even though every individual solver setting matches.
     fp = hashlib.sha1(f"{base_fp}|mode={P.MILP_DAMPING_MODE}|damp={P.MILP_DAMPING}|prox={P.MILP_PROX_SCALE}"
-                      f"|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}|warm={P.MILP_WARM_START}".encode()).hexdigest()
-    opt_path, trace_path = out_dir / "milp_optima.csv", out_dir / "milp_trace.csv"
-    prog_path = out_dir / "milp_progress.json"
-    rows, trace_rows, done = [], [], set()
+                      f"|maxit={P.MILP_MAX_ITER}|cyc={P.MILP_CYCLE_TOL}|warm={P.MILP_WARM_START}"
+                      f"|nominal=1".encode()).hexdigest()
+    opt_path = results_dir(out_dir) / "milp_optima.csv"
+    trace_path = log_dir(out_dir) / "milp_trace.csv"
+    prog_path = log_dir(out_dir) / "milp_progress.json"
+    # There is a single alternating solve now, so there is nothing partial to resume into: either
+    # the saved result was produced by these settings and is reusable whole (in which case the
+    # solve and the evaluations are skipped and only the figures are re-rendered), or it is
+    # discarded and everything below runs fresh.
+    rows, trace_rows = [], []
+    cached = False
     if opt_path.exists() and trace_path.exists() and prog_path.exists():
         if json.loads(prog_path.read_text(encoding="utf-8")).get("hash") == fp:
-            rows = pd.read_csv(opt_path).to_dict("records")
-            trace_rows = pd.read_csv(trace_path).to_dict("records")
-            done = {int(r["scenario"]) for r in rows}
-            print(f"[resume] {len(done)}/{M} MILP scenarios already done; continuing", flush=True)
+            saved = pd.read_csv(opt_path)
+            if len(saved) == M:
+                print(f"[cache] MILP result for these settings is already complete; reusing it "
+                      f"and re-rendering figures only", flush=True)
+                rows = saved.to_dict("records")
+                trace_rows = pd.read_csv(trace_path).to_dict("records")
+                cached = True
 
     t_all = time.perf_counter()
+    if cached:
+        return _finish_pretrain_milp(out_dir, rows, trace_rows, segments, T, M, seed,
+                                     time.perf_counter() - t_all)
+    # Running fresh: clear the folder first so no residue of a previous run survives beside the
+    # new results. Done only AFTER the cache check -- clearing first would defeat the reuse.
+    fresh_scale_dir(out_dir)
+    # --- one alternating solve, on the nominal instance ---
+    t_solve = time.perf_counter()
+    best_start, nominal_res, n_iter, converged, outcome, trace = alternating_optimize(
+        ctx, nominal, segments, T, warm_order=warm_order)
+    solve_s = time.perf_counter() - t_solve
+    # Project the schedule onto the priority order it implies: earliest start first, ties broken by
+    # edge id. The order is what survives into every scenario, because the start slots themselves
+    # are only valid for the nominal durations the solver assumed.
+    order = sorted(segments, key=lambda e: (best_start[e], e))
+    print(f"  nominal solve: F(nominal)={nominal_res['F']:.4f}  iters={n_iter}  outcome={outcome}  "
+          f"{solve_s:.1f}s\n  projected order: {'-'.join(map(str, order))}", flush=True)
+
+    # --- evaluate that one order on every sampled scenario ---
+    slots = []
+    solve_ue = (n_iter + 1) * T                      # UE solves the nominal alternating run cost
     for m, dur in enumerate(scenarios):
-        if m in done:
-            continue
         t_s = time.perf_counter()
-        best_start, best_res, n_iter, converged, outcome, trace = alternating_optimize(
-            ctx, dur, segments, T, warm_order=warm_order)
-        scen_s = time.perf_counter() - t_s
-        row = dict(scenario=m, F_milp=best_res["F"], F1=best_res["F1"], F2=best_res["F2"],
-                   n_iter=n_iter, converged=converged, outcome=outcome, time_s=scen_s,
-                   ue_solves=(n_iter + 1) * T,
+        start = schedule_from_permutation(order, dur)
+        res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
+        slots.extend(slot_rows(m, res))                 # recovery curve, at no extra UE cost
+        row = dict(scenario=m, F_milp=res["F"], F1=res["F1"], F2=res["F2"],
+                   n_iter=n_iter, converged=converged, outcome=outcome,
+                   time_s=time.perf_counter() - t_s,
+                   # ue_solves keeps the nominal solve's own cost, so the (n_iter + 1) * T identity
+                   # that util/compare.py uses to recover T from this file still holds. ue_total is
+                   # the honest per-scenario compute: the one-off solve shared across the M
+                   # scenarios it serves, plus this scenario's single evaluation.
+                   ue_solves=solve_ue, ue_total=solve_ue / M + T,
+                   order="-".join(map(str, order)),
                    durations="-".join(str(int(dur[e])) for e in segments))
         for e in segments:
-            row[f"start_{e}"] = best_start[e]
+            row[f"start_{e}"] = start[e]
         rows.append(row)
-        for tr in trace:
-            trace_rows.append(dict(scenario=m, **tr))
-        done.add(m)
-        pd.DataFrame(rows).to_csv(opt_path, index=False)                          # checkpoint after each scenario so progress survives an interruption
-        pd.DataFrame(trace_rows).to_csv(trace_path, index=False)                  # checkpoint the per-iteration trace alongside it
-        prog_path.write_text(json.dumps({"hash": fp, "done": sorted(done)}), encoding="utf-8")
-        print(f"  scenario {m+1}/{M}: F_milp={best_res['F']:.4f}  iters={n_iter}  "
-              f"outcome={outcome}  {scen_s:.1f}s", flush=True)
-    total_s = time.perf_counter() - t_all
+        print(f"  scenario {m+1}/{M}: F_milp={res['F']:.4f}", flush=True)
+    for tr in trace:                                 # one trajectory now, that of the nominal solve
+        trace_rows.append(dict(scenario=0, **tr))
+    pd.DataFrame(rows).to_csv(opt_path, index=False)
+    pd.DataFrame(slots).to_csv(log_dir(out_dir) / "milp_slots.csv", index=False)
+    pd.DataFrame(trace_rows).to_csv(trace_path, index=False)
+    prog_path.write_text(json.dumps({"hash": fp, "done": sorted(range(M))}), encoding="utf-8")
+    return _finish_pretrain_milp(out_dir, rows, trace_rows, segments, T, M, seed,
+                                 time.perf_counter() - t_all)
 
+
+def _finish_pretrain_milp(out_dir, rows, trace_rows, segments, T, M, seed, total_s):
+    """Shared tail of run_pretrain_milp: metadata, the process figures, and (where the oracle
+    exists at this scale) the gap comparison. Runs identically whether the rows were just computed
+    or reloaded whole from a fingerprint-matched cache, so a cached rerun re-renders every figure
+    without re-solving anything."""
     milp_opt = pd.DataFrame(rows)
-    milp_opt.to_csv(out_dir / "milp_optima.csv", index=False)
-    pd.DataFrame(trace_rows).to_csv(out_dir / "milp_trace.csv", index=False)   # full per-iteration trace across all scenarios
     total_ue = int(milp_opt["ue_solves"].sum())
-    meta = dict(N=len(segments), M=M, T=T, segments=segments, seed=seed,
-                total_time_s=total_s, mean_scenario_time_s=float(milp_opt["time_s"].mean()),
-                total_ue_solves=total_ue, s_per_ue=total_s / max(1, total_ue),
-                mean_iters=float(milp_opt["n_iter"].mean()),
-                mean_F_milp=float(milp_opt["F_milp"].mean()))
-    (out_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (results_dir(out_dir) / "milp_solution_best.json").write_text(json.dumps(dict(
+        order=([int(x) for x in str(milp_opt["order"].iloc[0]).split("-")]
+               if "order" in milp_opt.columns else None),
+        mean_F=float(milp_opt["F_milp"].mean()),
+        outcome=(str(milp_opt["outcome"].iloc[0]) if "outcome" in milp_opt.columns else None)),
+        indent=2), encoding="utf-8")
+    meta = write_run_meta(
+        out_dir, method="milp", segments=segments, T=T, seed=seed, M=M,
+        solver=dict(damping_mode=P.MILP_DAMPING_MODE, damping=P.MILP_DAMPING,
+                    prox_scale=P.MILP_PROX_SCALE, max_iter=P.MILP_MAX_ITER,
+                    cycle_tol=P.MILP_CYCLE_TOL, warm_start=P.MILP_WARM_START),
+        # Columns added over the life of the code: a cached rerun may be finishing an optima file
+        # written before they existed, and re-solving just to fill in metadata would defeat the
+        # cache. Report what the file actually has.
+        order=str(milp_opt["order"].iloc[0]) if "order" in milp_opt.columns else None,
+        outcome=str(milp_opt["outcome"].iloc[0]) if "outcome" in milp_opt.columns else None,
+        mean_iters=float(milp_opt["n_iter"].mean()),
+        total_time_s=total_s, mean_scenario_time_s=float(milp_opt["time_s"].mean()),
+        total_ue_solves=total_ue, s_per_ue=total_s / max(1, total_ue),
+        mean_F_milp=float(milp_opt["F_milp"].mean()))
     print(f"\ntotal MILP wall-clock: {total_s/60:.1f} min  "
           f"({total_ue} UE solves, {meta['s_per_ue']*1000:.0f} ms/UE)")
 
     from viz.pretrain_viz import make_process_figures
     make_process_figures(out_dir, pd.DataFrame(trace_rows), milp_opt, segments, T)
 
-    oracle_dir = scale_dir(ROOT / "outputs" / "oracle")
-    oracle_opt_path = oracle_dir / "oracle_optima.csv"
+    oracle_dir = scale_dir(ROOT / "outputs" / "1-baselines" / "brute-force")
+    oracle_opt_path = results_dir(oracle_dir) / "oracle_optima.csv"
     if oracle_opt_path.exists():
         from viz.pretrain_viz import make_comparison, make_landscape
         oracle_opt = pd.read_csv(oracle_opt_path)
@@ -354,7 +438,7 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         merged["gap"] = merged["F_milp"] - merged["F_oracle"]
         merged.to_csv(out_dir / "milp_vs_oracle.csv", index=False)
         make_comparison(out_dir, merged, segments, T)
-        make_landscape(out_dir, pd.read_csv(oracle_dir / "oracle_landscape.csv"),
+        make_landscape(out_dir, pd.read_csv(log_dir(oracle_dir) / "oracle_landscape.csv"),
                        milp_opt, oracle_opt, segments, T)
         print(f"mean F_milp={milp_opt['F_milp'].mean():.4f}  "
               f"mean F_oracle={merged['F_oracle'].mean():.4f}  "
@@ -364,6 +448,8 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         print("(oracle result for this scale not ready yet; comparison + landscape figures deferred "
               "-- run `python -m util.pretrain_milp --landscape` once the oracle finishes)")
     print(f"Wrote {out_dir}")
+    from util.compare import refresh_comparison
+    refresh_comparison()                     # every solver run leaves the comparison current
 
 
 # --------------------------------------------------------------------------- #
@@ -421,14 +507,14 @@ def render_landscape(out_dir=OUT):
     already-saved CSVs; only the instance selection re-solves one baseline UE, and no per-slot evaluation
     UE is re-run. Run this once the oracle for this scale has an oracle optimum to plot against."""
     out_dir = scale_dir(out_dir)
-    oracle_dir = scale_dir(ROOT / "outputs" / "oracle")
+    oracle_dir = scale_dir(ROOT / "outputs" / "1-baselines" / "brute-force")
     disrupted = select_oracle_instance(TOY, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     scenarios = sample_scenarios(disrupted, P.M_SCENARIOS, P.SEED)
     T = compute_horizon(segments, scenarios)
-    land = pd.read_csv(oracle_dir / "oracle_landscape.csv")
-    o_opt = pd.read_csv(oracle_dir / "oracle_optima.csv")
-    m_opt = pd.read_csv(out_dir / "milp_optima.csv")
+    land = pd.read_csv(log_dir(oracle_dir) / "oracle_landscape.csv")
+    o_opt = pd.read_csv(results_dir(oracle_dir) / "oracle_optima.csv")
+    m_opt = pd.read_csv(results_dir(out_dir) / "milp_optima.csv")
     from viz.pretrain_viz import make_comparison, make_landscape
     merged = m_opt.merge(o_opt[["scenario", "F"]].rename(columns={"F": "F_oracle"}),
                          on="scenario", how="left")
