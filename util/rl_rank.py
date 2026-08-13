@@ -119,6 +119,26 @@ FEAT_COLS = ["phi", "sev", "dur", "dem_hat", "t_frac", "crew_gap", "demand_short
 # configuration), which exceeds the gap between competing methods. Single-seed numbers from this
 # module are not evidence; report a multi-seed mean and spread.
 RANK_PARAMS_NOMINAL = dict(
+    # ARCHITECTURE (adopted 2026-08-13, replacing the row architecture as the default).
+    # Classic DQN wiring after Mnih et al. (2015): the STATE goes in and one Q comes out per
+    # action, instead of scoring one (state, candidate) PAIR per network call. The action set here
+    # shrinks as segments are repaired while a head has fixed width, so the head spans all n
+    # segments and a LEGALITY MASK selects the live ones -- implemented by gathering, so an illegal
+    # action never reaches any consumer. Dueling (Wang et al., 2016) splits the trunk into a scalar
+    # V(s) and a per-segment advantage, aggregated over the LEGAL actions only; trunk_rescale is
+    # that paper's 1/sqrt(2) correction for the two streams' gradients summing in the shared trunk.
+    #
+    # Measured on n10, five paired seeds, against the row architecture it replaces (medians):
+    # row 0.955483 (spread 0.0133) -> dqn 0.952152 (0.0065) -> dqn+dueling+rescale 0.949892
+    # (0.0066), against GA's 0.949234. The two dueling switches only work TOGETHER: dueling alone
+    # left the median unmoved and inflated the spread to 0.0109, because the shared trunk receives
+    # both streams' gradients and is effectively over-stepped without the rescale.
+    #
+    # The row architecture is NOT deleted -- arch="rows" still selects it, so earlier results stay
+    # reproducible.
+    arch="dqn",
+    dueling=True,
+    trunk_rescale=True,
     loss="margin",       # TD regression + large-margin hinge (the only supported loss)
     hidden=(32, 32),     # widths of the MLP hidden layers (tanh); the output layer starts at zero
     n_lag=1,             # append the base features of the last n_lag REPAIRED segments: an explicit
@@ -194,28 +214,6 @@ RANK_PARAMS_NOMINAL = dict(
     target_sync=25,      # gradient steps between target-network copies
 )
 
-# CLASSIC-DQN ARCHITECTURE VARIANT (Mnih et al. 2015): state in, one Q per action out.
-#
-# The base architecture scores one (state, candidate) PAIR per network call: every candidate
-# contributes a feature row and the net maps each row to a scalar. Classic DQN instead maps the
-# STATE to a fixed vector of Q-values, one per action, in a single forward pass. The obstacle here
-# is that the action set SHRINKS as segments get repaired, while a network head has a fixed width.
-# The standard resolution, used verbatim: a head over ALL n segments plus a LEGALITY MASK. It is
-# implemented by gathering -- the Q vector handed to every consumer contains exactly the remaining
-# segments' entries, in candidate order, so an illegal action can never be selected, bootstrapped
-# from, or penalized by the hinge, because it never appears.
-#
-# Same information, different wiring: the state vector is the per-segment feature blocks laid out
-# in fixed segment order (repaired segments zeroed; a block is nonzero exactly while its segment
-# is still damaged, so presence is readable) plus the same lag block, and the flow prior enters as
-# an additive per-segment vector with a zero-initialized head, so episode 0 still plays the flow
-# order. Every hyperparameter is inherited from RANK_PARAMS_NOMINAL unchanged -- the comparison is
-# about the FUNCTION APPROXIMATOR, and retuning would confound it. Two consequences are inherent
-# to the architecture and are part of what is being compared, not confounds to remove: the input
-# is n_seg blocks wide instead of one (more parameters at the same hidden widths), and one forward
-# scores all candidates at once instead of one row each.
-RANK_PARAMS_NOMINAL_DQN = {**RANK_PARAMS_NOMINAL, "arch": "dqn"}
-
 # Search-coverage screen (run with `python main.py --solve tune-search`). The nominal variant
 # plateaus having evaluated ~113 DISTINCT orders where the GA evaluates 423, and its shortfall
 # against the GA on the scenario mean equals its shortfall on the NOMINAL objective, four
@@ -279,6 +277,12 @@ RANK_PARAMS_STOCH = dict(
     #   sil_buffer  the top-K good-trajectory buffer the ranking loss imitates from
     #   reveal      progressive duration revelation during a rollout
     #   saa_n       the sample-average size (see below); the nominal variant rejects saa_n > 1
+    # Same architecture as the nominal variant (see RANK_PARAMS_NOMINAL for the evidence): a
+    # change of training world is no reason for a different function approximator, and letting the
+    # two drift apart would make them incomparable for a reason unrelated to what they differ in.
+    arch="dqn",
+    dueling=True,
+    trunk_rescale=True,
     loss="margin",
     hidden=(32, 32),
     n_lag=1,
@@ -365,8 +369,6 @@ STOP_PARAMS = dict(
 # was stopped.
 STOP_OVERRIDES = {
     "rl_nominal": dict(patience_P=75, stable_K=75),
-    "rl_nominal_dqn": dict(patience_P=75, stable_K=75),   # same budget: the comparison is the
-                                                          # architecture, never the stopping rule
 }
 EP_CAP = 1000            # outer guard only; the plateau rule is what should end a run. Deliberately
                          # far above where the plateau fires, so a run that hits this cap is a
@@ -516,19 +518,48 @@ def _build_net(hidden, n_lag, torch, nn, dueling=False):
     return _Dueling()
 
 
-def _build_dqn_net(hidden, n_seg, n_lag, torch, nn):
+def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False):
     """State-to-vector Q network for the classic-DQN variant: input is the fixed-order state
     vector (n_seg per-segment blocks + the lag block), output is one Q residual per segment.
     The head is zero-initialized for the same reason as the row architecture's: Q then starts
-    at the flow prior exactly, and episode 0 plays the flow order."""
+    at the flow prior exactly, and episode 0 plays the flow order.
+
+    With dueling=True (Wang et al., ICML 2016) the trunk splits into a scalar state-value stream
+    V(s) and a per-segment advantage stream A(s, e). This is the architecture the paper actually
+    describes, and it is only expressible HERE: the row architecture had no state-level input, so
+    its V had to be faked as the mean over candidate rows -- which is a plausible reason it lost
+    there (0.9447 / 0.9524 against 0.9396).
+
+    Returns the two streams SEPARATELY rather than a combined Q, because the paper's aggregator
+    subtracts the mean advantage over the LEGAL action set and this module cannot see which
+    actions are legal -- the legality mask lives in the caller's gather. Combining here would
+    average over repaired segments too and shift every Q by a garbage constant. The caller
+    aggregates after gathering; see Qf in train()."""
     dims = [_N_FEAT * (n_seg + n_lag)] + list(hidden)
     layers = []
     for a, b in zip(dims[:-1], dims[1:]):
         layers += [nn.Linear(a, b), nn.Tanh()]
-    head = nn.Linear(dims[-1], n_seg)
-    nn.init.zeros_(head.weight)
-    nn.init.zeros_(head.bias)
-    return nn.Sequential(*layers, head)
+    trunk = nn.Sequential(*layers)
+    if not dueling:
+        head = nn.Linear(dims[-1], n_seg)
+        nn.init.zeros_(head.weight)
+        nn.init.zeros_(head.bias)
+        return nn.Sequential(*list(trunk), head)
+
+    class _DuelDQN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.trunk = trunk
+            self.val = nn.Linear(dims[-1], 1)          # V(s)
+            self.adv = nn.Linear(dims[-1], n_seg)      # A(s, e) for every segment
+            for h in (self.val, self.adv):
+                nn.init.zeros_(h.weight)
+                nn.init.zeros_(h.bias)
+
+        def forward(self, sv):                         # -> (V scalar, A vector over all segments)
+            z = self.trunk(sv)
+            return self.val(z).squeeze(-1), self.adv(z)
+    return _DuelDQN()
 
 
 def _augment(base_X, chosen_base, n_lag):
@@ -641,13 +672,20 @@ class _Recorder:
         self.dir, self.v, self.PS = str(rec_dir), variant, prior_scale
         self.torch = torch
         self.snap_every, self.flush_every = max(1, snap_every), max(1, flush_every)
-        self.probe_X = np.asarray(probe_X, dtype=np.float32)
+        # probe_X=None disables the representation/Q snapshots while keeping the trace. The probe
+        # feeds a CANDIDATE MATRIX through the net and reads its last hidden layer, which only
+        # means something for the row architecture -- the DQN architecture has one representation
+        # per STATE, not one per candidate. The per-episode trace is architecture-agnostic, so it
+        # is recorded either way and every figure drawn from it survives.
+        self.probe_X = None if probe_X is None else np.asarray(probe_X, dtype=np.float32)
         self.probe_meta = probe_meta
-        self.probe_groups = np.array([m["step"] for m in probe_meta])   # state label per probe row
+        self.probe_groups = (None if probe_meta is None
+                             else np.array([m["step"] for m in probe_meta]))
         self.trace, self.snaps, self.snap_eps = [], [], []
         os.makedirs(self.dir, exist_ok=True)
-        pd.DataFrame(probe_meta).to_csv(os.path.join(self.dir, f"{variant}_probe_meta.csv"),
-                                        index=False)
+        if probe_meta is not None:
+            pd.DataFrame(probe_meta).to_csv(os.path.join(self.dir, f"{variant}_probe_meta.csv"),
+                                            index=False)
 
     def repr_q(self, net, Xnp):
         return repr_q(net, Xnp, self.PS, self.torch, groups=self.probe_groups)
@@ -661,6 +699,8 @@ class _Recorder:
             self.flush()
 
     def maybe_snapshot(self, ep, net):
+        if self.probe_X is None:
+            return
         if ep == 0 or ep % self.snap_every == 0:
             rep, q = self.repr_q(net, self.probe_X)
             self.snaps.append((rep, q))
@@ -688,9 +728,10 @@ class _Recorder:
             print(f"  [{self.v}] figure refresh failed ({type(exc).__name__}: {exc})", flush=True)
 
     def finish(self, net):
-        rep, q = self.repr_q(net, self.probe_X)        # always snapshot the DELIVERED network
-        self.snaps.append((rep, q))
-        self.snap_eps.append(-1)                       # -1 marks the delivered net
+        if self.probe_X is not None:
+            rep, q = self.repr_q(net, self.probe_X)    # always snapshot the DELIVERED network
+            self.snaps.append((rep, q))
+            self.snap_eps.append(-1)                   # -1 marks the delivered net
         self.flush()
 
 
@@ -763,8 +804,8 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     torch.set_num_threads(1)
 
     stoch = variant.startswith("rl_stoch")
-    base = {"rl_nominal": RANK_PARAMS_NOMINAL, "rl_nominal_dqn": RANK_PARAMS_NOMINAL_DQN,
-            "rl_stoch": RANK_PARAMS_STOCH, "rl_stoch_per": RANK_PARAMS_STOCH_PER}[variant]
+    base = {"rl_nominal": RANK_PARAMS_NOMINAL, "rl_stoch": RANK_PARAMS_STOCH,
+            "rl_stoch_per": RANK_PARAMS_STOCH_PER}[variant]
     hp = dict(base, **(hp or {}))
     prioritized = bool(hp.get("prioritized", False))
     sp = _merge_stop(variant, stop_params)
@@ -786,12 +827,10 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
 
     dueling = bool(hp.get("dueling", False))
     dqn_arch = str(hp.get("arch", "rows")) == "dqn"
-    if dqn_arch and dueling:
-        raise ValueError("arch='dqn' has no dueling implementation; use one or the other")
     if dqn_arch:
         n_seg_all = len(env["segs"])
-        net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn)
-        tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn)
+        net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling)
+        tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling)
     else:
         net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
         tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
@@ -862,8 +901,16 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                 heads.append(j)
             if n_lag > 0:                              # lag block is state-wide: same on every row
                 sv[len(segs_sorted) * _N_FEAT:] = X[0, _N_FEAT:]
-            q_full = PS * _phi_vec + model(torch.tensor(sv, dtype=torch.float32))
-            return q_full[heads]
+            out = model(torch.tensor(sv, dtype=torch.float32))
+            if dueling:
+                # Wang et al. aggregation, applied to the LEGAL actions only: gather the advantage
+                # stream first, then subtract ITS mean. Subtracting the mean over all n segments
+                # would fold repaired segments' advantages into every remaining Q as a shared
+                # offset that drifts as the episode proceeds.
+                v, a_full = out
+                a = a_full[heads]
+                return PS * _phi_vec[heads] + v + a - a.mean()
+            return (PS * _phi_vec + out)[heads]
     else:
         def Qf(model, Xnp):
             """Q for ONE state's candidate matrix. The dueling head aggregates across the matrix's
@@ -886,15 +933,10 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         return f, p
 
     rec = None
-    if rec_dir is not None and dqn_arch:
-        # The recorder's probe and representation machinery assumes the row architecture (it feeds
-        # probe candidate matrices straight through the net). Skipping it loses diagnostics only;
-        # the run still trains, delivers and writes its trace.
-        print(f"  [{variant}] recorder skipped: probe machinery is row-architecture-specific",
-              flush=True)
-        rec_dir = None
     if rec_dir is not None:
-        pX, pmeta = _build_probe(env, n_lag)
+        # The DQN architecture keeps the TRACE (and so every figure drawn from it) but drops the
+        # probe snapshots, whose representation-per-candidate notion is row-architecture-specific.
+        pX, pmeta = (None, None) if dqn_arch else _build_probe(env, n_lag)
         rec = _Recorder(rec_dir, variant, pX, pmeta, PS, torch,
                         snap_every=max(1, ep_cap // 50),
                         flush_every=FIGURE_REFRESH_EVERY)

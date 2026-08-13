@@ -155,7 +155,7 @@ def solve(names, seed=None, seeds=None):
         elif name == "oracle":
             from util.oracle import run_oracle
             run_oracle()
-        elif name in ("rl_nominal", "rl_nominal_dqn", "rl_stoch", "rl_stoch_per"):
+        elif name in ("rl_nominal", "rl_stoch", "rl_stoch_per"):
             from util.rl_rank import run_rank
             run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
         elif name == "tune-search":
@@ -166,8 +166,8 @@ def solve(names, seed=None, seeds=None):
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_nominal, rl_nominal_dqn, rl_stoch, rl_stoch_per, "
-                             f"tune-search, compare")
+                             f"milp, oracle, rl_nominal, rl_stoch, rl_stoch_per, tune-search, "
+                             f"compare")
 
 
 if __name__ == "__main__":
