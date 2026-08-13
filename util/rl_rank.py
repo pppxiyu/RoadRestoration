@@ -194,6 +194,28 @@ RANK_PARAMS_NOMINAL = dict(
     target_sync=25,      # gradient steps between target-network copies
 )
 
+# CLASSIC-DQN ARCHITECTURE VARIANT (Mnih et al. 2015): state in, one Q per action out.
+#
+# The base architecture scores one (state, candidate) PAIR per network call: every candidate
+# contributes a feature row and the net maps each row to a scalar. Classic DQN instead maps the
+# STATE to a fixed vector of Q-values, one per action, in a single forward pass. The obstacle here
+# is that the action set SHRINKS as segments get repaired, while a network head has a fixed width.
+# The standard resolution, used verbatim: a head over ALL n segments plus a LEGALITY MASK. It is
+# implemented by gathering -- the Q vector handed to every consumer contains exactly the remaining
+# segments' entries, in candidate order, so an illegal action can never be selected, bootstrapped
+# from, or penalized by the hinge, because it never appears.
+#
+# Same information, different wiring: the state vector is the per-segment feature blocks laid out
+# in fixed segment order (repaired segments zeroed; a block is nonzero exactly while its segment
+# is still damaged, so presence is readable) plus the same lag block, and the flow prior enters as
+# an additive per-segment vector with a zero-initialized head, so episode 0 still plays the flow
+# order. Every hyperparameter is inherited from RANK_PARAMS_NOMINAL unchanged -- the comparison is
+# about the FUNCTION APPROXIMATOR, and retuning would confound it. Two consequences are inherent
+# to the architecture and are part of what is being compared, not confounds to remove: the input
+# is n_seg blocks wide instead of one (more parameters at the same hidden widths), and one forward
+# scores all candidates at once instead of one row each.
+RANK_PARAMS_NOMINAL_DQN = {**RANK_PARAMS_NOMINAL, "arch": "dqn"}
+
 # Search-coverage screen (run with `python main.py --solve tune-search`). The nominal variant
 # plateaus having evaluated ~113 DISTINCT orders where the GA evaluates 423, and its shortfall
 # against the GA on the scenario mean equals its shortfall on the NOMINAL objective, four
@@ -343,6 +365,8 @@ STOP_PARAMS = dict(
 # was stopped.
 STOP_OVERRIDES = {
     "rl_nominal": dict(patience_P=75, stable_K=75),
+    "rl_nominal_dqn": dict(patience_P=75, stable_K=75),   # same budget: the comparison is the
+                                                          # architecture, never the stopping rule
 }
 EP_CAP = 1000            # outer guard only; the plateau rule is what should end a run. Deliberately
                          # far above where the plateau fires, so a run that hits this cap is a
@@ -490,6 +514,21 @@ def _build_net(hidden, n_lag, torch, nn, dueling=False):
             a = self.adv(z).squeeze(-1)
             return v.mean() + a - a.mean()
     return _Dueling()
+
+
+def _build_dqn_net(hidden, n_seg, n_lag, torch, nn):
+    """State-to-vector Q network for the classic-DQN variant: input is the fixed-order state
+    vector (n_seg per-segment blocks + the lag block), output is one Q residual per segment.
+    The head is zero-initialized for the same reason as the row architecture's: Q then starts
+    at the flow prior exactly, and episode 0 plays the flow order."""
+    dims = [_N_FEAT * (n_seg + n_lag)] + list(hidden)
+    layers = []
+    for a, b in zip(dims[:-1], dims[1:]):
+        layers += [nn.Linear(a, b), nn.Tanh()]
+    head = nn.Linear(dims[-1], n_seg)
+    nn.init.zeros_(head.weight)
+    nn.init.zeros_(head.bias)
+    return nn.Sequential(*layers, head)
 
 
 def _augment(base_X, chosen_base, n_lag):
@@ -724,8 +763,8 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     torch.set_num_threads(1)
 
     stoch = variant.startswith("rl_stoch")
-    base = {"rl_nominal": RANK_PARAMS_NOMINAL, "rl_stoch": RANK_PARAMS_STOCH,
-            "rl_stoch_per": RANK_PARAMS_STOCH_PER}[variant]
+    base = {"rl_nominal": RANK_PARAMS_NOMINAL, "rl_nominal_dqn": RANK_PARAMS_NOMINAL_DQN,
+            "rl_stoch": RANK_PARAMS_STOCH, "rl_stoch_per": RANK_PARAMS_STOCH_PER}[variant]
     hp = dict(base, **(hp or {}))
     prioritized = bool(hp.get("prioritized", False))
     sp = _merge_stop(variant, stop_params)
@@ -746,8 +785,16 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     Ttr = env["T_train"] if stoch else env["T"]
 
     dueling = bool(hp.get("dueling", False))
-    net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
-    tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
+    dqn_arch = str(hp.get("arch", "rows")) == "dqn"
+    if dqn_arch and dueling:
+        raise ValueError("arch='dqn' has no dueling implementation; use one or the other")
+    if dqn_arch:
+        n_seg_all = len(env["segs"])
+        net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn)
+        tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn)
+    else:
+        net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
+        tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
     tgt.load_state_dict(net.state_dict())
     opt = torch.optim.Adam(net.parameters(), lr=float(hp["lr"]))
     # Wang et al. (2016) training recommendations, both off unless the hp asks: clip the global
@@ -779,13 +826,52 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         raise ValueError("saa_n > 1 is meaningless for the nominal variant: it trains in one fixed "
                          "world, so there is no world distribution to average over")
 
-    def Qf(model, Xnp):
-        """Q for ONE state's candidate matrix. The dueling head aggregates across the matrix's
-        rows, which is why every caller passes a full state, never rows from mixed states."""
-        Xt = torch.tensor(np.asarray(Xnp), dtype=torch.float32)
-        if Xt.dim() == 1:
-            Xt = Xt.unsqueeze(0)
-        return PS * Xt[:, 0] + model(Xt).squeeze(-1)
+    if dqn_arch:
+        # Everything downstream -- greedy and eps policies, the TD target, the hinge, the plateau
+        # probes and the delivery rollouts -- consumes "the Q vector aligned with this state's
+        # candidate rows" through this one function. The DQN architecture therefore plugs in HERE
+        # and nowhere else: convert the candidate matrix to the fixed-order state vector, run the
+        # single forward pass, and GATHER the head's outputs back into candidate-row order. The
+        # legality mask falls out of the gathering -- a repaired segment's entry is simply never in
+        # the returned vector, so no consumer can select it, bootstrap from it, or penalize it.
+        #
+        # Row identity comes from the phi column: column 0 of every candidate row is that segment's
+        # normalized flow prior, a per-segment constant copied from one dict, so exact float
+        # equality identifies the segment. Asserted unique at setup; an unknown value raises
+        # KeyError rather than mis-assigning a row.
+        segs_sorted = list(env["segs"])
+        _phi_to_head = {float(env["st"]["phi_hat"][e]): j for j, e in enumerate(segs_sorted)}
+        if len(_phi_to_head) != len(segs_sorted):
+            raise ValueError("phi values are not distinct across segments; the DQN row-identity "
+                             "lookup cannot work on this instance")
+        _phi_vec = torch.tensor([float(env["st"]["phi_hat"][e]) for e in segs_sorted],
+                                dtype=torch.float32)
+        _sdim = _N_FEAT * (len(segs_sorted) + n_lag)
+
+        def Qf(model, Xnp):
+            """Q for ONE state's candidate matrix, DQN wiring: one forward on the state vector,
+            outputs gathered into candidate-row order."""
+            X = np.asarray(Xnp, dtype=float)
+            if X.ndim == 1:
+                X = X[None, :]
+            sv = np.zeros(_sdim)
+            heads = []
+            for row in X:
+                j = _phi_to_head[float(row[0])]        # KeyError = loud, never silent
+                sv[j * _N_FEAT:(j + 1) * _N_FEAT] = row[:_N_FEAT]
+                heads.append(j)
+            if n_lag > 0:                              # lag block is state-wide: same on every row
+                sv[len(segs_sorted) * _N_FEAT:] = X[0, _N_FEAT:]
+            q_full = PS * _phi_vec + model(torch.tensor(sv, dtype=torch.float32))
+            return q_full[heads]
+    else:
+        def Qf(model, Xnp):
+            """Q for ONE state's candidate matrix. The dueling head aggregates across the matrix's
+            rows, which is why every caller passes a full state, never rows from mixed states."""
+            Xt = torch.tensor(np.asarray(Xnp), dtype=torch.float32)
+            if Xt.dim() == 1:
+                Xt = Xt.unsqueeze(0)
+            return PS * Xt[:, 0] + model(Xt).squeeze(-1)
 
     def greedy(rem, X):
         with torch.no_grad():
@@ -800,6 +886,13 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         return f, p
 
     rec = None
+    if rec_dir is not None and dqn_arch:
+        # The recorder's probe and representation machinery assumes the row architecture (it feeds
+        # probe candidate matrices straight through the net). Skipping it loses diagnostics only;
+        # the run still trains, delivers and writes its trace.
+        print(f"  [{variant}] recorder skipped: probe machinery is row-architecture-specific",
+              flush=True)
+        rec_dir = None
     if rec_dir is not None:
         pX, pmeta = _build_probe(env, n_lag)
         rec = _Recorder(rec_dir, variant, pX, pmeta, PS, torch,
@@ -1200,10 +1293,14 @@ def run_rank(variants=("rl_nominal", "rl_stoch"), toy_dir=TOY, N=None, M=P.M_SCE
         pd.DataFrame(rows).to_csv(results_dir(vdir) / f"{v}_optima.csv", index=False)
         pd.DataFrame(slots).to_csv(rdir / f"{v}_slots.csv", index=False)
         torch.save(r["net"].state_dict(), results_dir(vdir) / "model_best.pt")
-        _deliver_analysis(env, v, r["net"], r["per_scenario"], int(r["hp"]["n_lag"]),
-                          float(r["hp"]["prior_scale"]), str(rdir), torch)
-        if not v.startswith("rl_stoch"):
-            _value_est_record(vdir, variant=v)
+        if str(r["hp"].get("arch", "rows")) == "dqn":
+            print(f"  [{v}] deliver-analysis skipped: repr/qmc probes are row-architecture-"
+                  f"specific", flush=True)
+        else:
+            _deliver_analysis(env, v, r["net"], r["per_scenario"], int(r["hp"]["n_lag"]),
+                              float(r["hp"]["prior_scale"]), str(rdir), torch)
+            if not v.startswith("rl_stoch"):
+                _value_est_record(vdir, variant=v)
         meanF = float(np.mean([x["F"] for x in rows]))
         write_run_meta(vdir, method=v, segments=env["segs"], T=env["T"], seed=seed, M=M,
                        hp={k: (list(x) if isinstance(x, tuple) else x) for k, x in r["hp"].items()},
