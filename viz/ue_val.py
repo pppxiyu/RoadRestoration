@@ -9,7 +9,7 @@ reference is the widely used open-source Sioux Falls flow pattern distributed in
 Transportation Networks test-problem format (SiouxFalls_flow.tntp), taken here as ground
 truth: if the engine is correct, its equilibrium flows and travel times must match it.
 
-`save_validation(...)` renders the comparison into outputs/UE_val/ as 600-dpi PNGs:
+`save_validation(...)` renders the comparison into outputs/0-UE_val/ as 600-dpi PNGs:
   00_overview          two parity scatter plots -- modeled UE vs. reference link flow, and
                        modeled UE vs. reference congested link travel time -- annotated with
                        the flow correlation, error statistics, and the Beckmann objective gap.
