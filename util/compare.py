@@ -6,7 +6,13 @@ the brute-force oracle. Aligns them by scenario, computes gaps to the oracle, an
 outputs/comparison/n{N}/.
 
 The oracle is included only if oracle_optima.csv is present for this scale (it is infeasible at
-larger sizes); greedy-vs-MILP is always reported.
+larger sizes). Greedy-vs-MILP is always reported.
+
+Everything a figure here is drawn from is written next to it: comparison.csv holds the per-scenario
+objectives, compute_accounting.csv the serial-equivalent compute axis (an accounting, not a
+measurement, so it is stored rather than re-derived), and run_meta.json names the source files and
+the run behind each of them. Any of these figures can therefore be redrawn, or audited, without
+re-running a solver.
 
 Run inside the road_restore conda env, after greedy and pretrain_milp have been run:
   python -m util.compare
@@ -16,9 +22,35 @@ from pathlib import Path
 import pandas as pd
 
 import config as P
-from util.oracle import scale_dir
+from util.oracle import scale_dir, select_oracle_instance
+from util.provenance import fresh_scale_dir, log_dir, results_dir, source_meta, write_run_meta
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+# The three static rankers, named rather than globbed. outputs/1-baselines/rule-based/n{N}/ used to
+# be the SHARED pool every method wrote into, so at scales last touched before the per-method
+# reorganisation it still holds ga_optima.csv / rl_optima.csv / rl_stoch_optima.csv. A glob picks
+# those up and silently re-admits a superseded run under a legacy name -- which is exactly how
+# `greedy_rl_stoch` was still appearing in the n6 comparison.
+RULE_BASED = ("flow", "demand", "ratio")
+
+# The searched/learned methods, each owning its own folder. rl_stoch and rl_stoch_per are
+# deliberately absent: their results on disk predate the current M, and the stochastic variant is
+# held out of the comparison until it is re-run. Re-add them here when that happens.
+SEARCHED = (("ga", "1-baselines"), ("rl_nominal", "2-RL"))
+
+
+def _discover(base, gdir, N):
+    """Every optima file the comparison is allowed to read, by NAME. Missing files are skipped;
+    nothing is admitted that is not on one of the two lists above."""
+    files = [gdir / "results" / f"{m}_optima.csv" for m in RULE_BASED]
+    files = [f for f in files if f.exists()]
+    for m, grp in SEARCHED:
+        p = scale_dir(base / grp / m, N) / "results" / f"{m}_optima.csv"
+        if p.exists():
+            files.append(p)
+    return files
 
 
 def run_compare(N=None):
@@ -26,19 +58,35 @@ def run_compare(N=None):
     outputs/comparison/n{N}/comparison.csv + figures, and print a summary sorted best-first."""
     N = P.N_DISRUPTED_ORACLE if N is None else N
     base = ROOT / "outputs"
-    gdir = scale_dir(base / "greedy", N)
-    m_path = scale_dir(base / "pretrain_milp", N) / "milp_optima.csv"
-    o_path = scale_dir(base / "oracle", N) / "oracle_optima.csv"
-    gfiles = sorted(gdir.glob("*_optima.csv"))
-    if not gfiles:
-        raise FileNotFoundError(f"no greedy results in {gdir}; run `python -m util.greedy` first")
+    gdir = scale_dir(base / "1-baselines" / "rule-based", N)
+    m_path = scale_dir(base / "1-baselines" / "pretrain_milp", N) / "results" / "milp_optima.csv"
+    o_path = scale_dir(base / "1-baselines" / "brute-force", N) / "results" / "oracle_optima.csv"
+    files = _discover(base, gdir, N)
+    if not files:
+        raise FileNotFoundError(f"no optima under {base}/*/n{N}")
     if not m_path.exists():
         raise FileNotFoundError(f"no MILP results ({m_path}); run `python -m util.pretrain_milp` first")
 
-    # each greedy variant -> a column "greedy_<variant>"; then MILP; then oracle if present
+    # Every method must be scored on the SAME scenario set, and the check has to come before the
+    # merge. Merging on "scenario" is an inner join, so one method left at an older, smaller M
+    # silently drags every other method down to that intersection: the table still builds, the
+    # figures still redraw, and every number quietly reverts to the old sample size. A stale
+    # result must announce itself, so a mismatch is refused here rather than absorbed.
+    counts = {f.stem[: -len("_optima")]: len(pd.read_csv(f)) for f in files}
+    counts["milp"] = len(pd.read_csv(m_path))
+    if len(set(counts.values())) > 1:
+        want = max(set(counts.values()), key=list(counts.values()).count)
+        stale = {k: v for k, v in counts.items() if v != want}
+        raise ValueError(
+            f"scenario counts disagree: {counts}. Most methods have M={want}; {stale} "
+            f"differ and were produced under a different M. Re-run those methods (or drop them "
+            f"from the comparison) -- merging would silently score EVERY method on the "
+            f"{min(counts.values())}-scenario intersection.")
+
+    # each method -> a column named by its bare stem (flow/demand/ratio/ga/rl/...); then MILP; then oracle if present
     methods, df = [], None
-    for f in gfiles:
-        col = "greedy_" + f.stem[: -len("_optima")]
+    for f in files:
+        col = f.stem[: -len("_optima")]
         d = pd.read_csv(f)[["scenario", "F"]].rename(columns={"F": col})
         df = d if df is None else df.merge(d, on="scenario")
         methods.append(col)
@@ -50,9 +98,10 @@ def run_compare(N=None):
         for c in methods:
             df[f"gap_{c}"] = df[c] - df["oracle"]                        # shortfall vs the true optimum
 
-    out = scale_dir(base / "comparison", N)
-    (out / "figures").mkdir(parents=True, exist_ok=True)
-    df.to_csv(out / "comparison.csv", index=False)
+    out = scale_dir(base / "3-comparison", N)
+    out.mkdir(parents=True, exist_ok=True)
+    fresh_scale_dir(out)                     # a refresh replaces the comparison, no residue
+    df.to_csv(results_dir(out) / "comparison.csv", index=False)
 
     print(f"=== solver comparison  n={N}  (M={len(df)}) ===", flush=True)
     ranked = sorted(methods + (["oracle"] if have_oracle else []), key=lambda c: df[c].mean())
@@ -65,76 +114,105 @@ def run_compare(N=None):
         wins = int((df[c] > df["milp"] + 1e-9).sum())
         print(f"  MILP beats {c} in {wins}/{len(df)} scenarios", flush=True)
 
-    from viz.compare_viz import make_final_performance_all, make_gap_to_oracle
+    # The instance the comparison is over, read from the same selection every solver used, so a
+    # comparison file names its own instance rather than inheriting whatever config says today.
+    segments = sorted(int(e) for e in select_oracle_instance(ROOT / "data" / "siouxfalls_toy", N)["edge_id"])
+    write_run_meta(out, method="comparison", segments=segments, T=0, seed=P.SEED, M=len(df),
+                   methods=methods + (["oracle"] if have_oracle else []),
+                   mean_F={c: float(df[c].mean()) for c in methods},
+                   sources=source_meta(files + [m_path] + ([o_path] if have_oracle else [])))
+
+    from viz.compare_viz import (make_final_performance_all, make_gap_to_oracle,
+                                 make_performance_distribution)
+    # Every figure that belongs in the comparison is drawn HERE, not by hand: run_compare clears
+    # this folder before rewriting it, so a figure produced outside the refresh is deleted by the
+    # next one.
     make_final_performance_all(out, df, methods)                    # per-scenario final F, all methods
+    make_performance_distribution(out, df, methods)                 # how far those F values spread
     if have_oracle:                                                 # gap to the true optimum, small scales only
         make_gap_to_oracle(out, df, methods)
-    print(f"Wrote {out / 'comparison.csv'} and figures", flush=True)
+
+    # Accuracy against compute belongs to EVERY refresh, not to a separate entry point. It used to
+    # be produced only by run_baseline_figures, so whether a scale had the figure depended on how
+    # that scale happened to be invoked last, and the n{N} folders drifted apart. Every solver's
+    # end-of-run refresh calls run_compare, so putting it here is what makes the folders uniform.
+    from viz.compare_viz import make_accuracy_compute
+    T, stats = _compute_accounting({f.stem[: -len("_optima")]: pd.read_csv(f) for f in files},
+                                   pd.read_csv(m_path), M=len(df))
+    pd.DataFrame(stats).to_csv(results_dir(out) / "compute_accounting.csv", index=False)
+    make_accuracy_compute(out, stats)
+    print(f"  compute axis (T={T} UE/evaluation, serial-equivalent UE per scenario):", flush=True)
+    for st in sorted(stats, key=lambda x: x["mean_F"]):
+        print(f"    {st['method']:8s} F={st['mean_F']:.4f}  {st['mean_ue']:.0f} UE/scenario",
+              flush=True)
+    print(f"Wrote {results_dir(out) / 'comparison.csv'} and figures", flush=True)
     return df
 
 
-def run_baseline_figures(N=None):
-    """Generate the baselines-vs-MILP figures into outputs/comparison/n{N}/figures/:
-    'optimization_process' (each scenario's best-so-far MILP trajectory, no baseline levels) and
-    'accuracy_vs_compute' (mean final F vs serial-equivalent UE solves per scenario, a
-    parallelism-neutral compute axis). Then calls run_compare, which adds 'final_performance_all'
-    (per-scenario final F for every method) and, where the oracle exists, 'gap_to_oracle'. Reads
-    each greedy variant's {variant}_optima.csv and the MILP's milp_optima.csv + milp_trace.csv."""
-    N = P.N_DISRUPTED_ORACLE if N is None else N
-    base = ROOT / "outputs"
-    gdir = scale_dir(base / "greedy", N)
-    mdir = scale_dir(base / "pretrain_milp", N)
-    out = scale_dir(base / "comparison", N)
-    (out / "figures").mkdir(parents=True, exist_ok=True)
+def refresh_comparison(N=None):
+    """Refresh the cross-method comparison after a solver run, tolerating an incomplete result set.
 
-    greedy_finals = {}
-    for f in sorted(gdir.glob("*_optima.csv")):
-        greedy_finals[f.stem[: -len("_optima")]] = pd.read_csv(f)
-    milp_opt = pd.read_csv(mdir / "milp_optima.csv")
-    milp_trace = pd.read_csv(mdir / "milp_trace.csv")
+    Every runner calls this when it finishes writing its own outputs, so the comparison table and
+    figures always reflect the latest run of every method without a separate manual step. Early in
+    a scale's life some inputs are legitimately missing (no MILP yet, no optima at all); that is a
+    reason to skip quietly, not to fail the solver run that just completed. Any other error is
+    REPORTED but still not raised: a finished multi-hour run must never be lost to a plotting
+    problem in the comparison step."""
+    try:
+        run_compare(N)
+    except FileNotFoundError as exc:
+        print(f"[compare] skipped: {exc}", flush=True)
+    except Exception as exc:
+        print(f"[compare] FAILED ({type(exc).__name__}: {exc}) -- solver outputs are unaffected",
+              flush=True)
 
-    from viz.compare_viz import make_accuracy_compute, make_process
-    make_process(out, milp_trace)
 
-    # Serial-equivalent compute: one full true-F evaluation costs T UE solves (one per slot of the
-    # horizon), so this axis is parallelism-neutral. Recover T exactly from the MILP, whose ue_solves
-    # column equals (n_iter + 1) * T. A static greedy rule then spends T per scenario (a single
-    # evaluation), a metaheuristic spends n_evals * T (its unique-evaluation budget), and the MILP
-    # spends its own ue_solves.
+def _compute_accounting(greedy_finals, milp_opt, M):
+    """Every method placed on ONE compute axis: serial-equivalent UE solves per scenario.
+
+    THE COMPUTE A METHOD REQUIRES, NOT THE COMPUTE IT HAPPENED TO SPEND. One full true-F evaluation
+    of one order costs T user-equilibrium solves, one per slot of the horizon, and that is what a
+    method is charged for every distinct order it scores. The persistent slot cache makes many of
+    those solves free in practice, but a cache is an implementation detail of this codebase, not a
+    property of the algorithm -- charging the cached price would make a method look cheaper on a
+    machine that has run it before than on one that has not, and would flatter whichever method
+    happens to revisit similar damage trajectories. Counting UE solves rather than wall-clock also
+    keeps the axis neutral to how many worker processes a method was parallelised over.
+
+    T is recovered exactly from the MILP, whose ue_solves column equals (n_iter + 1) * T.
+    A static rule spends T: one evaluation. A searched or learned method spends n_evals * T for its
+    one-off search on the nominal instance, amortised over the M scenarios that search serves, plus
+    T for this scenario's own evaluation. The MILP spends its recorded ue_solves, likewise
+    amortised, because its cost is the alternating optimisation's own solves rather than a count of
+    scored orders.
+
+    The per-method `ue_total` column is deliberately NOT read here. Each writer chose its own
+    convention for it, and one of them (util.rl_rank, before 2026-08-11) divided the ORDER count
+    rather than the UE count by M -- reporting rl_nominal at 36 UE/scenario when the honest figure is
+    140. Deriving the axis in one place from n_evals and T removes that whole class of drift.
+    """
     T = int(round((milp_opt["ue_solves"] / (milp_opt["n_iter"] + 1)).median()))
     stats = []
     for v, d in greedy_finals.items():
-        if v == "rl":
-            # The RL run stops on a plateau rather than on a budget, so its compute is an outcome
-            # and n_evals * T would only be an upper bound: the per-slot prefix cache means two
-            # schedules sharing a head share those slots' UE solves. Use the MEASURED solve count
-            # the trace recorded (ue_total), falling back to the bound if the trace is absent.
-            ue_path = scale_dir(base / "rl", N) / "rl_trace.csv"
-            if ue_path.exists():
-                tr = pd.read_csv(ue_path)
-                mean_ue = float(tr.groupby("scenario")["cum_ue"].max().mean())
-            else:
-                mean_ue = float(d["n_evals"].mean()) * T
-            stats.append(dict(method=v, mean_F=float(d["F"].mean()), mean_ue=mean_ue, kind="rl"))
-        elif "n_evals" in d.columns:                                   # a metaheuristic (GA / PSO)
-            stats.append(dict(method=v, mean_F=float(d["F"].mean()),
-                              mean_ue=float(d["n_evals"].mean()) * T, kind="meta"))
-        else:                                                          # a static greedy rule
-            stats.append(dict(method=v, mean_F=float(d["F"].mean()), mean_ue=float(T), kind="greedy"))
+        if "n_evals" not in d.columns:                                 # a static ranking rule
+            stats.append(dict(method=v, mean_F=float(d["F"].mean()), mean_ue=float(T),
+                              kind="greedy"))
+            continue
+        n_evals = float(d["n_evals"].mean())
+        kind = "rl" if v.startswith("rl_nominal") else "rl_stoch" if v.startswith("rl_stoch") else "meta"
+        stats.append(dict(method=v, mean_F=float(d["F"].mean()), n_evals=n_evals,
+                          mean_ue=n_evals * T / M + T, kind=kind))
     stats.append(dict(method="milp", mean_F=float(milp_opt["F_milp"].mean()),
-                      mean_ue=float(milp_opt["ue_solves"].mean()), kind="milp"))
-    make_accuracy_compute(out, stats)
+                      mean_ue=float(milp_opt["ue_solves"].mean()) / M + T, kind="milp"))
+    return T, stats
 
-    print(f"=== baselines vs MILP, n={N} (M={len(milp_opt)}, T={T}) ===", flush=True)
-    for s in sorted(stats, key=lambda s: s["mean_F"]):
-        note = "  (measured, plateau-terminated)" if s["kind"] == "rl" else ""
-        print(f"  {s['method']:8s}  mean F = {s['mean_F']:.4f}   "
-              f"serial-equiv compute = {s['mean_ue']:.0f} UE/scenario{note}", flush=True)
-    try:
-        run_compare(N)                                              # also the per-scenario bar figure
-    except FileNotFoundError:
-        pass
-    print(f"Wrote baseline figures to {out / 'figures'}", flush=True)
+
+def run_baseline_figures(N=None):
+    """Backwards-compatible entry point (`python main.py --solve compare`). Everything it used to
+    add on top of run_compare -- the compute accounting and the accuracy-vs-compute figure -- is
+    now part of run_compare itself, so that every scale gets the same set of files no matter which
+    runner last touched it. Kept as a name so existing invocations keep working."""
+    return run_compare(N)
 
 
 if __name__ == "__main__":

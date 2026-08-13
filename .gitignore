@@ -4,7 +4,7 @@
 /paper/
 
 # Stray local backup of results
-/outputs - Copy/
+/outputs_deterministic/
 
 # Large / generated data — kept out of the GitHub repo (files stay on disk locally)
 /outputs/
@@ -32,3 +32,6 @@ Thumbs.db
 
 /doc/
 
+
+# persistent simulation cache (regenerable; can be large)
+/cache/

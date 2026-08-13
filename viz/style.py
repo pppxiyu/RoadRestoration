@@ -56,6 +56,7 @@ C = {
     "teal": "#42949E",       # a third, distinct accent
     "signal": "#B64342",     # the standout result: optimum, highlight, or a drop
     "good": "#2E9E44",       # improvements or gains
+    "purple": "#7B5FA3",     # a fourth distinct accent (used by the stochastically-trained RL)
 }
 
 # Damage severity levels 1/2/3 map to an increasingly dark warm ramp, so a

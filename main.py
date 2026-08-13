@@ -21,9 +21,20 @@ exists for this problem size and parameter set, it is reused from cache rather t
 stage of the objective-evaluation pipeline under an explicit label, so the scoring logic can
 be inspected end to end.
 
+`python main.py --solve <names>`: run any solver(s) at the scale config.py declares
+(N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
+milp, oracle, rl_nominal, rl_stoch, compare. `ga-rescore` re-measures GA's committed order under the
+current settings without repeating the search, for use after a change of ruler (a UE tolerance or
+engine change makes every F on disk stale while leaving the order it selected valid).
+This is THE entry point for experiments: what runs is chosen
+here, and every parameter (instance size, seeds, UE tolerances, solver settings) is chosen in
+config.py or the solver's PARAMS block -- not by ad-hoc launcher scripts. Each solver clears and
+rewrites its own outputs/ folder and refreshes the comparison when it finishes.
+
 Run inside the road_restore conda env:
-  python main.py                 # full run (oracle + MILP)
-  python main.py --walkthrough   # step-by-step objective walkthrough for one example
+  python main.py                       # full run (oracle + MILP)
+  python main.py --solve ga,rl_nominal     # chosen solvers at the configured scale
+  python main.py --walkthrough         # step-by-step objective walkthrough for one example
 (Equivalent module entry points: `python -m util.oracle`, `python -m util.pretrain_milp`.)
 """
 
@@ -108,8 +119,63 @@ def walkthrough():
     print(f"    F = {P.MU}*{res['F1']:.4f} + {1 - P.MU}*{res['F2']:.4f}  =  {res['F']:.4f}")
 
 
+def solve(names, seed=None, seeds=None):
+    """Run the named solvers at the scale config.py declares. The mapping below is the single
+    place a solver name is wired to its runner; every runner reads N from config and handles its
+    own outputs and the comparison refresh. `seed` overrides the training seed for the RL solvers
+    only (the standard is config.SEED; passing one is the exception, and the frozen evaluation
+    sample is pinned to config.SEED regardless, so a seed override can never change the ruler)."""
+    for name in names:
+        # `seeds` repeats a randomized solver across that many search seeds, keeps every run under
+        # its n{N}/history/, and delivers the best -- see util.seed_sweep for why one run of a
+        # randomized method is not a measurement of it.
+        if seeds:
+            from util.seed_sweep import DEFAULT_SEEDS, run_seed_sweep
+            run_seed_sweep(name, seeds=DEFAULT_SEEDS[:seeds])
+            continue
+        print("=" * 72)
+        print(f"SOLVE {name}   N={P.N_DISRUPTED_ORACLE}, M={P.M_SCENARIOS}"
+              + (f", seed={seed}" if seed is not None else ""))
+        print("=" * 72, flush=True)
+        if name == "rule-based":
+            from util.greedy import run_greedy
+            run_greedy()
+        elif name == "ga":
+            from util.metaheuristic import run_metaheuristic
+            run_metaheuristic(variants=("ga",))
+        elif name == "ga-rescore":
+            # Re-measure GA's already-committed order under the current objective/UE settings
+            # WITHOUT re-running the search. For a change of ruler, where the order is the
+            # deliverable and only its measurement went stale.
+            from util.metaheuristic import run_metaheuristic
+            run_metaheuristic(variants=("ga",), rescore=True)
+        elif name == "milp":
+            from util.pretrain_milp import run_pretrain_milp
+            run_pretrain_milp()
+        elif name == "oracle":
+            from util.oracle import run_oracle
+            run_oracle()
+        elif name in ("rl_nominal", "rl_stoch", "rl_stoch_per"):
+            from util.rl_rank import run_rank
+            run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
+        elif name == "tune-search":
+            from util.rl_rank import run_search_sweep
+            run_search_sweep(seed=(P.SEED if seed is None else seed))
+        elif name == "compare":
+            from util.compare import run_baseline_figures
+            run_baseline_figures()
+        else:
+            raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
+                             f"milp, oracle, rl_nominal, rl_stoch, rl_stoch_per, tune-search, compare")
+
+
 if __name__ == "__main__":
     if "--walkthrough" in sys.argv:
         walkthrough()
+    elif "--solve" in sys.argv:
+        arg = sys.argv[sys.argv.index("--solve") + 1]
+        sd = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else None
+        ns = int(sys.argv[sys.argv.index("--seeds") + 1]) if "--seeds" in sys.argv else None
+        solve([x.strip() for x in arg.split(",") if x.strip()], seed=sd, seeds=ns)
     else:
         run_all()

@@ -12,7 +12,7 @@ solvers produce a schedule:
     then optimises that linearised "surrogate" objective. Fixing the travel times is called
     traffic fixation.
 
-`make_comparison(...)` writes outputs/pretrain_milp/figures/01_milp_vs_oracle.png:
+`make_comparison(...)` writes outputs/pretrain_milp/n{N}/01_milp_vs_oracle.png:
   panel a: per-scenario objective F -- the oracle optimum F* against the TRUE F of the schedule
            the MILP actually returned.
   panel b: the gap F_milp - F*. A value <= 0 means the MILP found a schedule at least as good as
@@ -40,7 +40,7 @@ def make_comparison(out_dir, merged, segments, T):
     `segments` and `T` (the repair horizon, i.e. the number of time slots) are used only for the
     figure caption. Returns the path of the written PNG."""
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
     m = merged.sort_values("scenario")
     x = m["scenario"].to_numpy()
@@ -93,7 +93,7 @@ def make_landscape(out_dir, oracle_landscape, milp_opt, oracle_opt, segments, T)
     `oracle_landscape` holds F for every (permutation, scenario) pair; `milp_opt` and `oracle_opt`
     supply the MILP and oracle per-scenario results. Returns the path of the written PNG."""
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
 
     piv = oracle_landscape.pivot_table(index="perm", columns="scenario", values="F")
@@ -152,7 +152,7 @@ def make_process_figures(out_dir, trace_df, milp_opt, segments, T):
     Returns the figures directory. `trace_df` carries the per-iteration records; `milp_opt` holds
     per-scenario timing and iteration counts."""
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
     scen_ids = sorted(trace_df["scenario"].unique())
     cmap = plt.get_cmap("viridis")

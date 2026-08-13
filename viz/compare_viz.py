@@ -1,10 +1,12 @@
 """Comparison figures for the road-restoration solvers: the greedy baseline variants, GA/PSO and
 the RL DQN vs the pretraining MILP vs (optional) the brute-force oracle. Each fact has one home:
-per-scenario final objective F lives in make_final_performance_all, the MILP optimization
-trajectory in make_process, accuracy against compute in make_accuracy_compute, and the gap to the
-true optimum (only where the oracle exists) in make_gap_to_oracle. (The RL learning curve lives
-with its solver, in viz/rl_viz.py.) Styling follows viz/style.py so it matches the rest of the
-project's figures."""
+per-scenario final objective F lives in make_final_performance_all, its spread across scenarios in
+make_performance_distribution, accuracy against compute in
+make_accuracy_compute, and the gap to the true optimum (only where the oracle exists) in
+make_gap_to_oracle. Every figure here compares METHODS; a single solver's own search trajectory
+belongs with that solver instead -- the MILP's in viz/pretrain_viz.py, the metaheuristics' in
+viz/meta_viz.py, the RL variants' in viz/rl_viz.py. Styling follows viz/style.py so it matches
+the rest of the project's figures."""
 from pathlib import Path
 
 import matplotlib
@@ -44,10 +46,13 @@ def _method_colors(cols):
             # drawn in the secondary blue rather than the GA red because what it is there to be
             # read against is the MILP, not the full-budget GA.
             out[c] = C["accent2"]
-        elif v == "pso":
-            out[c] = C["good"]
-        elif v == "rl":
+        elif v == "rl_nominal":
             out[c] = C["teal"]
+        elif v == "rl_stoch":
+            out[c] = C["purple"]
+        elif v == "rl_stoch_per":
+            out[c] = C["accent2"]
+
         else:                                              # a static greedy variant
             out[c] = _GREY_RAMP[gi % len(_GREY_RAMP)]
             gi += 1
@@ -59,7 +64,7 @@ def make_final_performance_all(out_dir, df, methods):
     method (static greedy, MILP, GA, PSO) as grouped bars, one group per scenario, with the
     pre-disaster level $F=1$ marked. The process figure and the gap figure do not repeat it."""
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
     scen = df["scenario"].to_numpy()
     x = np.arange(len(scen))
@@ -84,12 +89,61 @@ def make_final_performance_all(out_dir, df, methods):
     plt.close(fig)
 
 
+def make_performance_distribution(out_dir, df, methods):
+    """The DISTRIBUTION of each method's per-scenario F, one box per method, ranked best-first.
+
+    The bar chart beside this one shows every scenario individually and the summary table reports
+    a mean; neither answers the question this figure exists for, which is how far a method's
+    scenarios SPREAD. That matters twice over. A mean separating two methods by less than their
+    own spread is not a difference a reader should act on. And two methods with equal means are
+    not equally good if one of them occasionally lands far worse -- tail risk is a property of the
+    method, and averaging is exactly the operation that hides it.
+
+    Boxes carry the quartiles and the whiskers reach 1.5 IQR; every scenario is also drawn as a
+    jittered point, because at this sample size the points are the evidence and the box is only a
+    summary of them. The mean is marked separately from the median so a skewed method is visible
+    as the gap between the two."""
+    use_pub()
+    figs = Path(out_dir)
+    figs.mkdir(parents=True, exist_ok=True)
+    order = sorted(methods, key=lambda c: df[c].mean())            # best (lowest F) first
+    col = _method_colors(order)
+    rng = np.random.RandomState(0)                                 # fixed jitter: redraws match
+
+    fig, ax = plt.subplots(figsize=(0.85 * len(order) + 1.8, 3.2))
+    bp = ax.boxplot([df[c] for c in order], widths=0.55, patch_artist=True,
+                    medianprops=dict(color=C["neutral_dark"], lw=1.1),
+                    whiskerprops=dict(color=C["neutral_dark"], lw=0.8),
+                    capprops=dict(color=C["neutral_dark"], lw=0.8),
+                    flierprops=dict(marker="", ls="none"))         # outliers shown as points below
+    for patch, c in zip(bp["boxes"], order):
+        patch.set_facecolor(col[c])
+        patch.set_alpha(0.30)
+        patch.set_edgecolor(col[c])
+    for i, c in enumerate(order, start=1):
+        y = df[c].to_numpy()
+        ax.scatter(i + rng.uniform(-0.16, 0.16, len(y)), y, s=7, color=col[c], alpha=0.55,
+                   edgecolors="none", zorder=3)
+        ax.scatter([i], [y.mean()], marker="D", s=16, color=C["neutral_dark"], zorder=4,
+                   edgecolors="white", linewidths=0.4)
+    ax.axhline(1.0, ls=":", lw=0.7, color="0.75", zorder=1)        # pre-disaster level
+    lo, hi = float(df[order].to_numpy().min()), float(df[order].to_numpy().max())
+    ax.set_ylim(lo - 0.06 * (hi - lo), hi + 0.06 * (hi - lo))
+    ax.set_xticks(range(1, len(order) + 1))
+    ax.set_xticklabels([_label(c) for c in order], rotation=30, ha="right")
+    ax.set_ylabel("objective  $F$")
+    ax.set_title(f"per-scenario $F$ distribution  (M={len(df)}; diamond = mean)")
+    fig.tight_layout()
+    save_pub(fig, figs / "performance_distribution")
+    plt.close(fig)
+
+
 def make_gap_to_oracle(out_dir, df, methods):
     """Per-scenario gap to the brute-force oracle, $F - F^{*}$, for every method, as grouped bars.
     Only produced at scales where the oracle was enumerated, so it carries information that the
     per-scenario final-F figure cannot (the true optimum is unavailable at large scale)."""
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
     scen = df["scenario"].to_numpy()
     x = np.arange(len(scen))
@@ -112,44 +166,6 @@ def make_gap_to_oracle(out_dir, df, methods):
     plt.close(fig)
 
 
-def make_process(out_dir, milp_trace):
-    """The MILP's optimization process: its best-so-far true $F$ over the alternating iterations,
-    one curve per scenario, each labelled at its right end with the scenario number so the curves
-    carry the same scenario numbering as make_final_performance_all. No baseline levels and no
-    highlighted scenario are drawn, because comparing methods and comparing scenarios both belong to
-    make_final_performance_all; this figure shows only how each scenario's MILP trajectory descends."""
-    use_pub()
-    figs = Path(out_dir) / "figures"
-    figs.mkdir(parents=True, exist_ok=True)
-    scen_ids = sorted(milp_trace["scenario"].unique())
-    cmap = plt.get_cmap(CMAP_SEQ)
-    n = len(scen_ids)
-
-    fig, a = plt.subplots(figsize=(4.8, 3.4))
-    ends = []
-    for i, m in enumerate(scen_ids):
-        g = milp_trace[milp_trace["scenario"] == m].sort_values("iter")
-        it = g["iter"].to_numpy()
-        f = g["F"].cummin().to_numpy()
-        color = cmap(0.05 + 0.75 * (i / max(1, n - 1)))                # keep off the palest end so numbers stay legible
-        a.plot(it, f, lw=1.1, color=color, alpha=0.9, zorder=2)
-        ends.append((float(it[-1]), float(f[-1]), color, int(m)))
-
-    yspan = (max(e[1] for e in ends) - min(e[1] for e in ends)) or 1.0
-    placed = []                                                        # nudge apart numbers whose curve-ends coincide
-    for x_end, y_end, color, m in ends:
-        k = sum(1 for px, py in placed if abs(px - x_end) <= 0.8 and abs(py - y_end) <= 0.03 * yspan)
-        placed.append((x_end, y_end))
-        a.annotate(str(m), (x_end, y_end), textcoords="offset points", xytext=(4, 2 + 9 * k),
-                   fontsize=6, fontweight="bold", color=color, va="center", zorder=4)
-
-    a.set_xlabel("MILP alternating iteration")
-    a.set_ylabel("true objective  $F$  (best-so-far)")
-    fig.tight_layout()
-    save_pub(fig, figs / "optimization_process")
-    plt.close(fig)
-
-
 def make_accuracy_compute(out_dir, stats):
     """Accuracy vs COMPUTE. One point per method at (serial-equivalent UE solves per
     scenario, mean final F). The compute axis counts UE solves rather than wall-clock, so it is
@@ -160,7 +176,7 @@ def make_accuracy_compute(out_dir, stats):
     (budgeted population search, green square), 'rl' (budgeted DQN, teal triangle) or 'milp'
     (blue diamond)."""
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(3.6, 2.6))
 
@@ -169,33 +185,43 @@ def make_accuracy_compute(out_dir, stats):
     xmax = max(xs)
     yspan = (max(ys) - min(ys)) or 1.0
 
-    ax.axhline(1.0, ls=":", lw=0.7, color="0.75", zorder=1)     # pre-disaster level
-
     gi = 0
-    placed = []                                                 # data coords of labels already placed
-    for s in stats:
+    for s in stats:                                             # markers first, all labels after
         if s["kind"] == "milp":
-            color, marker = C["accent"], "D"
+            s["_c"], s["_m"] = C["accent"], "D"
         elif s["kind"] == "meta":
-            color, marker = C["good"], "s"
+            s["_c"], s["_m"] = C["good"], "s"
         elif s["kind"] == "rl":
-            color, marker = C["teal"], "^"
+            s["_c"], s["_m"] = C["teal"], "^"
+        elif s["kind"] == "rl_stoch":
+            s["_c"], s["_m"] = C["purple"], "v"
         else:
-            color, marker = _GREY_RAMP[gi % len(_GREY_RAMP)], "o"
+            s["_c"], s["_m"] = _GREY_RAMP[gi % len(_GREY_RAMP)], "o"
             gi += 1
-        x, y = s["mean_ue"], s["mean_F"]
-        ax.scatter(x, y, s=50, color=color, marker=marker, edgecolor="white", lw=0.5, zorder=3)
-        # stack a label upward when its point sits on top of one already labelled (linear axis puts
-        # the same-compute greedy rules, and the same-budget GA/PSO/RL, at coincident x; the 9%
-        # vertical window is what keeps labels of near-tied methods from colliding)
-        k = sum(1 for px, py in placed if abs(px - x) <= 0.04 * xmax and abs(py - y) <= 0.09 * yspan)
-        placed.append((x, y))
-        left = x >= xmax - 1e-9                                 # rightmost points label leftward so text never clips
-        ax.annotate(s["method"], (x, y), textcoords="offset points",
-                    xytext=(-7 if left else 7, 3 + 11 * k), ha="right" if left else "left",
-                    fontsize=6.5, color=C["neutral_dark"])
+        ax.scatter(s["mean_ue"], s["mean_F"], s=50, color=s["_c"], marker=s["_m"],
+                   edgecolor="white", lw=0.5, zorder=3)
 
-    ax.set_xlim(-0.04 * xmax, xmax * 1.12)
+    # Label placement: nudge each label off its point, then resolve residual collisions by pushing
+    # the lower-F (visually higher) label of any overlapping pair further up. Points that share an x
+    # (the greedy rules at T, or milp beside flow) would otherwise stack their text; comparing every
+    # already-placed label rather than a fixed window is what closes the milp/flow overlap.
+    dx = 0.018 * xmax
+    dy = 0.05 * yspan
+    lab = []                                                    # (x_text, y_text, ha, method)
+    for s in sorted(stats, key=lambda z: (z["mean_ue"], z["mean_F"])):
+        x, y = s["mean_ue"], s["mean_F"]
+        left = x >= xmax - 1e-9                                 # rightmost labels leftward, never clip
+        xt = x - dx if left else x + dx
+        yt = y
+        for _lx, _ly, _lha, _ in lab:                          # lift above any label too close
+            if abs(_lx - xt) <= 0.16 * xmax and abs(_ly - yt) <= dy:
+                yt = _ly + dy
+        lab.append((xt, yt, "right" if left else "left", s["method"]))
+        ax.annotate(s["method"], (x, y), xytext=(xt, yt), textcoords="data",
+                    ha="right" if left else "left", va="center", fontsize=6.5,
+                    color=C["neutral_dark"])
+
+    ax.set_xlim(-0.04 * xmax, xmax * 1.14)
     ax.set_ylim(min(ys) - 0.06 * yspan, max(ys) + 0.16 * yspan)
     ax.set_xlabel("serial-equivalent UE solves / scenario")
     ax.set_ylabel("mean objective  $F$")

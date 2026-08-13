@@ -11,7 +11,8 @@ Each candidate schedule is scored by a combined objective F = mu*F1 + (1-mu)*F2,
        (lower is better). The "makespan" is the slot at which the last repair finishes,
        so F2 rewards crews that complete the work sooner relative to how much there is.
 
-Writes three figures to outputs/oracle/n{N}/figures/ (PNG at 600 dpi):
+Writes three figures to outputs/oracle/n{N}/ (PNG at 600 dpi; the run's own records --
+the full enumeration landscape and its resume checkpoint -- stay in that folder's raw/):
   01_F_landscape    - F for every schedule sorted best->worst, showing how far the worst
                       choice sits above the optimum and how that spread varies by scenario.
   02_F1_F2_tradeoff - every schedule placed in (F2, F1) space and colored by F, exposing
@@ -36,7 +37,8 @@ from viz.style import C, CMAP_SEQ, panel_label, save_pub, severity_color, use_pu
 
 def make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted, rep=0):
     # Render the three oracle figures from the exhaustive-search results. Inputs:
-    #   out_dir   : base directory; figures are written to its "figures" subfolder.
+    #   out_dir   : the method folder; figures are written directly into it (process records
+    #               live one level down, in its raw/ subfolder).
     #   land      : the full landscape - one row per (schedule, scenario) with columns F, F1, F2.
     #   opt       : the optimal schedule per scenario (start slots plus its F, F1, F2).
     #   ctx       : static problem context (network, OD demand, baseline travel times).
@@ -46,7 +48,7 @@ def make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted, rep
     #   disrupted : DataFrame of the disrupted edges, carrying each edge's damage severity.
     #   rep       : the representative scenario used for the single-scenario figures (02 and 03).
     use_pub()
-    figs = Path(out_dir) / "figures"
+    figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
     # Severity (1..3, higher = worse damage) per disrupted edge, used later to color repair bars.
     sev = {int(r.edge_id): int(r.severity) for r in disrupted.itertuples(index=False)}
