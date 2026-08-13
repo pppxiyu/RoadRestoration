@@ -22,7 +22,8 @@ import pandas as pd
 
 import config as P
 from util.io import load_toy_network
-from util.ue import solve_ue
+from util.ue import solve_ue, warm_start_seed
+from util import sim_cache as _sim_cache
 
 
 # --------------------------------------------------------------------------- #
@@ -143,14 +144,17 @@ def build_context(toy_dir, disrupted, ue_cores=None):
     eid_of = {tuple(sorted((int(r.u), int(r.v)))): int(r.edge_id)
               for r in edges.itertuples(index=False)}
 
-    ctx = dict(edges=edges, zone_ids=zone_ids, od_pairs=od_pairs, H0=H0,
+    ctx = dict(toy_dir=str(toy_dir), edges=edges, zone_ids=zone_ids, od_pairs=od_pairs, H0=H0,
                oi=oi, di=di, nz=len(zone_ids), edge_row=edge_row,
                origins_unique=sorted({o for o, _ in od_pairs}))
 
     # Baseline OD travel times at onset: solve UE on the intact network under normal demand
-    # H0. These serve as the reference times against which F1 later scores degradation.
+    # H0. These serve as the reference times against which F1 later scores degradation, so they
+    # use the tight DEFINITION tolerance -- the reference must be stable even while the per-slot
+    # evaluation solves run loose (see config UE_RGAP_DEF vs UE_RGAP).
     base_links, _ = solve_ue(edges, _matrix_from_H(H0, ctx), zone_ids,
-                             rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True, cores=ue_cores)
+                             rgap=P.UE_RGAP_DEF, max_iter=P.UE_MAX_ITER_DEF, quiet=True,
+                             cores=ue_cores)
     ctx["baseline_u"] = od_travel_times(base_links, ctx)
     # Penalty travel time for disconnected OD pairs: a multiple of the worst finite baseline
     # time, so a lost connection is charged a large but bounded cost rather than infinity.
@@ -164,6 +168,15 @@ def build_context(toy_dir, disrupted, ue_cores=None):
     dis = [(int(r.edge_id), int(r.u), int(r.v), int(r.severity))
            for r in disrupted.itertuples(index=False)]
     ctx["disrupted"] = dis
+    # Each segment's duration LEVEL. The duration model draws once per (road_class, severity)
+    # and broadcasts to all of that level's segments (util.scenarios), so completing one segment
+    # reveals every same-level segment's realized duration; the RL rollout reads this map to know
+    # which candidates' durations have been revealed by the completions so far.
+    ctx["level"] = ({int(r.edge_id): (r.road_class, int(r.severity))
+                     for r in disrupted.itertuples(index=False)}
+                    if "road_class" in disrupted.columns else
+                    {int(r.edge_id): ("?", int(r.severity))
+                     for r in disrupted.itertuples(index=False)})
     Gff = nx.DiGraph()
     for r in edges.itertuples(index=False):
         Gff.add_edge(int(r.u), int(r.v), weight=float(r.free_flow_time), eid=int(r.edge_id))
@@ -204,6 +217,21 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
     # schedule produces and record one accessibility term for that slot.
     D = np.zeros(len(H0))
     terms, active, traces, u_rows = [], [], [], []
+    # Persistent slot-term cache (config.SIM_CACHE): the key is each segment's completion slot
+    # capped at k+1, exactly as util.rl._evaluate_prefix_cached memoizes -- see util/sim_cache.py
+    # for why that prefix is the correct invariant. Disabled when the caller needs the per-slot
+    # travel-time vectors (return_u): a cached term cannot reconstruct them.
+    comp = tuple(start[eid] + durations[eid] for (eid, _, _, _) in dis)
+    psc = None if return_u else _sim_cache.for_ctx(ctx)
+    # Warm-start chain (config.UE_WARM_START): the last SOLVED slot's equilibrium links and its
+    # routed demand (demand zeroed on OD pairs that were disconnected, whose trips went unrouted),
+    # from which the next slot's feasible seed is built. The chain premise -- per-OD demand never
+    # decreases while damage clears -- holds within a schedule because the shortfall D only decays
+    # after slot 1, and it is asserted rather than trusted. A slot served from the cache yields no
+    # links, so the chain breaks there and the next solved slot starts cold; the term it produces
+    # differs from the fully-chained one only within the solver tolerance, which is the accuracy
+    # class the cache already promises (config.UE_RGAP is part of the cache fingerprint).
+    warm = None
     for k in range(1, T + 1):
         # Damage state at slot k: a segment is still broken while k has not yet reached its
         # completion slot start+duration; v_vec carries the severity, or 0 once restored.
@@ -216,14 +244,43 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
         target = B @ v_vec
         D = np.maximum(target, P.RHO * D)
         H = np.clip(H0 - D, 0.0, None)
+        if psc is not None:
+            hit = psc.get((k, tuple(min(c, k + 1) for c in comp)))
+            if hit is not None:
+                warm = None                       # no links from a cached term: chain breaks
+                terms.append(hit)
+                active.append(len(damaged) > 0)
+                if collect_traces:
+                    traces.append(dict(k=k, n_damaged=len(damaged),
+                                       total_demand=float(H.sum()), f1_term=hit))
+                continue
         # Network as it stands at slot k, with severed and degraded links applied.
         dmg_edges = build_damaged_edges(ctx, damaged)
         # Solve UE on the damaged network under demand H to obtain congested link times, then
         # collapse them into OD travel times. Disconnected pairs (infinite time) are charged
         # the finite penalty u_pen so the objective stays well defined.
+        # cores=1: on this 24-node network the per-solve thread setup of the multi-core assignment
+        # costs more than the solve, so single-core is faster in WALL time, and it is what the RL
+        # evaluator already uses. It also removes the cross-thread reduction noise (~1e-10 in the
+        # flows). Measured to change the slot term g by at most 3.8e-15 vs the multi-core result
+        # (the ue-tolerance probe, 2026-08-11), far below any reported difference, so no method's
+        # numbers move -- this only makes the brute-force oracle and the searches faster.
+        x0 = None
+        if P.UE_WARM_START and warm is not None:
+            links_prev, H_routed_prev = warm
+            dH = H - H_routed_prev
+            if float(dH.min()) < -1e-9:
+                raise RuntimeError(f"warm-start premise violated at slot {k}: per-OD demand "
+                                   f"decreased by {-float(dH.min()):.3e} while damage was clearing")
+            x0 = warm_start_seed(dmg_edges, _matrix_from_H(np.clip(dH, 0.0, None), ctx),
+                                 ctx["zone_ids"], links_prev)
         links, _ = solve_ue(dmg_edges, _matrix_from_H(H, ctx), ctx["zone_ids"],
-                            rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True)
+                            rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True, cores=1, x0=x0)
         u = od_travel_times(links, ctx)
+        if P.UE_WARM_START:
+            # Routed demand: a pair with no route (infinite u) had its trips left unloaded, so
+            # the NEXT slot's increment must carry that pair's whole demand, not just its growth.
+            warm = (links, np.where(np.isfinite(u), H, 0.0))
         u_tilde = np.where(np.isfinite(u), u, ctx["u_pen"])
         u_rows.append(u_tilde)
         # Accessibility term for slot k: realized travel time relative to the baseline, both
@@ -231,6 +288,8 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
         # degradation, which is also the fallback when there is no demand to weight.
         den = float(np.sum(H * base_u))
         term = float(np.sum(H * u_tilde) / den) if den > 0 else 1.0
+        if psc is not None:
+            psc.put((k, tuple(min(c, k + 1) for c in comp)), term)
         terms.append(term)
         active.append(len(damaged) > 0)
         if collect_traces:

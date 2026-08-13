@@ -39,12 +39,13 @@ import config as P
 from util.evaluate import (build_context, evaluate_schedule, makespan_slot,
                            schedule_from_permutation)
 from util.io import load_toy_network, od_to_matrix
+from util.provenance import config_dir, log_dir, results_dir
 from util.scenarios import sample_scenarios
 from util.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "oracle"
+OUT = ROOT / "outputs" / "1-baselines" / "brute-force"
 
 # The exact horizon walks all N! permutations. 8! = 40320 is still a subsecond sweep, but the
 # factorial makes every further segment ~10x dearer, so larger instances switch to the Graham
@@ -103,8 +104,12 @@ def _baseline_twoway_flow(toy_dir, cores=None):
     file. A separate self-check inside the UE engine still validates our UE against that reference
     solution, and is left untouched."""
     edges, od, zone_ids = load_toy_network(toy_dir)
+    # Tight DEFINITION tolerance: this flow ranks the edges that select the instance and seeds the
+    # RL flow prior, so it must be stable regardless of the loosened per-slot evaluation tolerance
+    # (config UE_RGAP_DEF vs UE_RGAP). Loosening it once reordered the ranking and changed which
+    # segments the n=6 instance picked.
     flows, _ = solve_ue(edges, od_to_matrix(od, zone_ids), zone_ids,
-                        rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER, quiet=True, cores=cores)
+                        rgap=P.UE_RGAP_DEF, max_iter=P.UE_MAX_ITER_DEF, quiet=True, cores=cores)
     f = {}
     fa, ta, vol = (flows["from"].to_numpy(), flows["to"].to_numpy(), flows["volume"].to_numpy())
     for a, b, v in zip(fa, ta, vol):
@@ -172,7 +177,7 @@ def compute_horizon(segments, scenarios):
 
 def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=False, force=False):
     out_dir = scale_dir(out_dir)                     # per-scale cache folder outputs/oracle/n{N}/
-    (out_dir / "figures").mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
@@ -186,18 +191,18 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
     # its enumeration is still valid, so skip the expensive UE work and only re-render figures
     # (unless --force is given) ---
     values, fp = _param_fingerprint()
-    meta_path = out_dir / "meta.json"
+    meta_path = config_dir(out_dir) / "meta.json"
     if not probe and not force and meta_path.exists():
         cached = json.loads(meta_path.read_text(encoding="utf-8"))
         if cached.get("hash") == fp:
             N = P.N_DISRUPTED_ORACLE
             print(f"[cache] reusing oracle result for N={N} (params unchanged); "
                   f"skipping UE enumeration")
-            land = pd.read_csv(out_dir / "oracle_landscape.csv")
-            opt = pd.read_csv(out_dir / "oracle_optima.csv")
+            land = pd.read_csv(log_dir(out_dir) / "oracle_landscape.csv")
+            opt = pd.read_csv(results_dir(out_dir) / "oracle_optima.csv")
             from viz.oracle_viz import make_figures
             make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted)
-            print(f"Re-rendered figures in {out_dir / 'figures'} (cache hit)")
+            print(f"Re-rendered figures in {out_dir} (cache hit)")
             return
 
     # --- time one full schedule evaluation to estimate the per-UE-solve cost, then extrapolate to
@@ -214,8 +219,8 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
 
     # --- resume support: if a previous run was interrupted, reload the already-computed scenarios
     # from the on-disk checkpoint (only when its fingerprint matches) and continue from there ---
-    land_path = out_dir / "oracle_landscape.csv"
-    prog_path = out_dir / "landscape_progress.json"
+    land_path = log_dir(out_dir) / "oracle_landscape.csv"
+    prog_path = log_dir(out_dir) / "landscape_progress.json"
     rows, done = [], set()
     if not force and land_path.exists() and prog_path.exists():
         prog = json.loads(prog_path.read_text(encoding="utf-8"))
@@ -254,7 +259,7 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
     land.to_csv(land_path, index=False)
 
     opt = land.loc[land.groupby("scenario")["F"].idxmin()].reset_index(drop=True)
-    opt.to_csv(out_dir / "oracle_optima.csv", index=False)
+    opt.to_csv(results_dir(out_dir) / "oracle_optima.csv", index=False)
 
     lines = [
         "Brute-force oracle — summary",
@@ -280,7 +285,7 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
                     "this_session_s": total_time, "scenario_s": scen_times}},
         sort_keys=True, indent=2), encoding="utf-8")
     prog_path.unlink(missing_ok=True)                # run finished: remove the resume checkpoint marker
-    print(f"\nWrote {out_dir}  (meta.json hash={fp[:12]}…)")
+    print(f"\nWrote {out_dir}  (cache/meta.json hash={fp[:12]}…)")
 
 
 def render_figs(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
@@ -294,10 +299,10 @@ def render_figs(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     ctx = build_context(toy_dir, disrupted)
     scenarios = sample_scenarios(disrupted, M, seed)
     T = compute_horizon(segments, scenarios)
-    land = pd.read_csv(out_dir / "oracle_landscape.csv")
-    opt = pd.read_csv(out_dir / "oracle_optima.csv")
+    land = pd.read_csv(log_dir(out_dir) / "oracle_landscape.csv")
+    opt = pd.read_csv(results_dir(out_dir) / "oracle_optima.csv")
     make_figures(out_dir, land, opt, ctx, segments, scenarios, T, disrupted)
-    print(f"Re-rendered figures in {out_dir / 'figures'}")
+    print(f"Re-rendered figures in {out_dir}")
 
 
 if __name__ == "__main__":

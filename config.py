@@ -42,17 +42,71 @@ UPEN_FACTOR = 10.0      # u_pen = UPEN_FACTOR * (largest baseline OD travel time
                         # assigned when no route exists, so disconnection is strongly discouraged.
 
 # --- Random scenario generation ---
-M_SCENARIOS = 10        # Number of random damage scenarios to sample for the full toy run.
+M_SCENARIOS = 50        # Number of random damage scenarios every method is finally scored on.
+                        # Raised from 10 on 2026-08-10: at M=10 the standard error of a method's
+                        # mean F (~0.002) was the same size as the gaps BETWEEN methods, so the
+                        # three solvers looked tied when a paired test over 50 scenarios separates
+                        # them. Note the horizon T is derived from the sample, so changing M can
+                        # change T and hence every F -- results across different M are NOT
+                        # comparable, and all methods must be re-scored together after a change.
 SEED = 42               # RNG seed, fixed so the scenario sampling is reproducible.
-N_DISRUPTED_ORACLE = 4  # Number of disrupted roads the oracle enumerates over. It tries every repair
-                        # order, so 4 disrupted roads gives 4! = 24 candidate schedules. The disrupted set
-                        # is chosen by baseline UE flow (the most heavily used, i.e. critical, links).
-
-# --- UE solver convergence for the per-slot traffic solves (loosened for speed) ---
+N_DISRUPTED_ORACLE = 10  # Number of disrupted roads. The instance is chosen by baseline UE flow
+                        # (the most heavily used, i.e. critical, links); the brute-force oracle is
+                        # only feasible at small values (n! orders).
+# --- UE solver convergence ---
 # The relative gap measures how far the current flow is from true equilibrium; the solver stops
-# once it drops below UE_RGAP. This tolerance is looser than the tight setting used for validation.
-UE_RGAP = 1e-6
+# once it drops below the target rgap, or when the max-iter cap is spent, whichever comes first.
+# There are TWO tolerances, because two kinds of solve serve different roles.
+#
+# DEFINITION solves (UE_RGAP_DEF / UE_MAX_ITER_DEF) stay tight. They fix the PROBLEM itself and
+# must be stable run to run: the baseline two-way flow that ranks edges to select the instance and
+# that seeds the RL flow prior (util.oracle._baseline_twoway_flow), and the baseline reference
+# travel times u_0 that F measures degradation against (util.evaluate.build_context). Loosening
+# these once silently reordered the edge ranking and changed WHICH segments the n=6 instance
+# selects, which is why they are pinned here rather than sharing the loosened value.
+#
+# DECISION 2026-08-10: the two-tier split is PERMANENT (option 甲). Deleting this tier was
+# considered for compute savings and measured before rejecting: it changes the n=10 instance
+# itself ([1,10,12,13,15,17,18,21,25,32] -> [1,8,12,13,15,17,19,22,23,30], six segments differ),
+# which would invalidate every recorded result -- while saving almost nothing, because these
+# solves run once per context (seconds) and ALL per-slot evaluation already runs at the loose
+# tier below. Do not merge the tiers.
+UE_RGAP_DEF = 1e-6
+UE_MAX_ITER_DEF = 100
+#
+# EVALUATION solves (UE_RGAP / UE_MAX_ITER) are the hot path: one per slot, thousands per RL run.
+# EXPLORATION-STAGE LOOSENING (2026-08-06): dropped from 1e-6/100 to 1e-2/25 while the solver was
+# AequilibraE, trading ~1% error in the per-slot accessibility g for ~3.7x speed.
+# RETIGHTENED TO 1e-3 + WARM STARTS (2026-08-11), after the in-house solver replaced AequilibraE.
+# The tolerance audit (python -m util.ue_audit; data and write-up under outputs/0-UE_val/) showed
+# 1e-2 was quietly corrupting the SHAPE of the recovery curve, not just its level: the error in the
+# slot-to-slot CHANGE of g reached 3.8x the true change at the 90th percentile, and 5 of 50
+# adjacent slot pairs had their direction read backwards (g measured as rising where it truly
+# fell). At 1e-3 with warm-started solves the change error is bounded by 0.34x the true change on
+# every pair, direction flips vanish, and each solve is ~1.9x FASTER than the 1e-2 cold setting it
+# replaces (median 10 iterations vs 17, because the previous slot's equilibrium is a far better
+# start than free flow). Results under this setting are not tolerance-comparable to runs recorded
+# before it; every method must be re-scored together before mixing numbers.
+UE_RGAP = 1e-3
 UE_MAX_ITER = 100       # Hard cap on solver iterations, in case the gap tolerance is never reached.
+                        # Sized from the audit: cold solves at 1e-3 take ~40 iterations (each
+                        # scenario's first slot is necessarily cold), warm ones ~10.
+UE_WARM_START = True    # Chain consecutive slots of an evaluation: each slot's UE solve is seeded
+                        # with the previous slot's equilibrium plus an all-or-nothing loading of
+                        # the demand increment (util.ue.warm_start_seed -- see there for why the
+                        # seed must be built feasible). Besides speed, chaining makes consecutive
+                        # slots' truncation errors nearly cancel in the g differences the recovery
+                        # curve is built from (audit: change error 0.043x vs 0.067x cold at the
+                        # median). Off = every slot solves cold from free flow, as before.
+
+SIM_CACHE = True        # Persistent cross-run, cross-method cache of per-slot UE accessibility
+                        # terms, under cache/sim_cache/ at the project root (util/sim_cache.py).
+                        # Sound because the slot term is a deterministic function of the damage-
+                        # trajectory prefix; every entry lives under a fingerprint of EVERYTHING
+                        # else that determines it (network data, instance, B/H0/baseline arrays,
+                        # RHO/KAPPA/penalty and both UE tolerance regimes), so changing any of
+                        # those starts a fresh cache rather than silently reusing stale terms.
+                        # False bypasses it entirely (every slot solved live).
 
 # --- Pretraining surrogate: a cheap approximate stand-in for the true scheduling problem,
 # cast as a mixed-integer linear program (MILP) and solved with the traffic state held fixed ---
