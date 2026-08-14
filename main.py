@@ -166,7 +166,8 @@ def solve(names, seed=None, seeds=None):
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_nominal, rl_stoch, rl_stoch_per, tune-search, compare")
+                             f"milp, oracle, rl_nominal, rl_stoch, rl_stoch_per, tune-search, "
+                             f"compare")
 
 
 if __name__ == "__main__":

@@ -119,6 +119,26 @@ FEAT_COLS = ["phi", "sev", "dur", "dem_hat", "t_frac", "crew_gap", "demand_short
 # configuration), which exceeds the gap between competing methods. Single-seed numbers from this
 # module are not evidence; report a multi-seed mean and spread.
 RANK_PARAMS_NOMINAL = dict(
+    # ARCHITECTURE (adopted 2026-08-13, replacing the row architecture as the default).
+    # Classic DQN wiring after Mnih et al. (2015): the STATE goes in and one Q comes out per
+    # action, instead of scoring one (state, candidate) PAIR per network call. The action set here
+    # shrinks as segments are repaired while a head has fixed width, so the head spans all n
+    # segments and a LEGALITY MASK selects the live ones -- implemented by gathering, so an illegal
+    # action never reaches any consumer. Dueling (Wang et al., 2016) splits the trunk into a scalar
+    # V(s) and a per-segment advantage, aggregated over the LEGAL actions only; trunk_rescale is
+    # that paper's 1/sqrt(2) correction for the two streams' gradients summing in the shared trunk.
+    #
+    # Measured on n10, five paired seeds, against the row architecture it replaces (medians):
+    # row 0.955483 (spread 0.0133) -> dqn 0.952152 (0.0065) -> dqn+dueling+rescale 0.949892
+    # (0.0066), against GA's 0.949234. The two dueling switches only work TOGETHER: dueling alone
+    # left the median unmoved and inflated the spread to 0.0109, because the shared trunk receives
+    # both streams' gradients and is effectively over-stepped without the rescale.
+    #
+    # The row architecture is NOT deleted -- arch="rows" still selects it, so earlier results stay
+    # reproducible.
+    arch="dqn",
+    dueling=True,
+    trunk_rescale=True,
     loss="margin",       # TD regression + large-margin hinge (the only supported loss)
     hidden=(32, 32),     # widths of the MLP hidden layers (tanh); the output layer starts at zero
     n_lag=1,             # append the base features of the last n_lag REPAIRED segments: an explicit
@@ -257,6 +277,12 @@ RANK_PARAMS_STOCH = dict(
     #   sil_buffer  the top-K good-trajectory buffer the ranking loss imitates from
     #   reveal      progressive duration revelation during a rollout
     #   saa_n       the sample-average size (see below); the nominal variant rejects saa_n > 1
+    # Same architecture as the nominal variant (see RANK_PARAMS_NOMINAL for the evidence): a
+    # change of training world is no reason for a different function approximator, and letting the
+    # two drift apart would make them incomparable for a reason unrelated to what they differ in.
+    arch="dqn",
+    dueling=True,
+    trunk_rescale=True,
     loss="margin",
     hidden=(32, 32),
     n_lag=1,
@@ -492,6 +518,131 @@ def _build_net(hidden, n_lag, torch, nn, dueling=False):
     return _Dueling()
 
 
+def _noisy_linear(nn, torch):
+    """Factorised-Gaussian NoisyLinear (Fortunato et al., ICLR 2018), built lazily so torch is only
+    touched inside train().
+
+    Each weight is mu + sigma * eps with mu and sigma BOTH learned, so the network decides how much
+    exploration noise it wants and can decide it PER STATE -- which is the whole point, and exactly
+    what an eps-greedy schedule cannot do: eps is a single number applied identically everywhere,
+    while a state the network is confident about can have its noise annealed away while an
+    ambiguous one keeps it.
+
+    Factorised noise (the paper's cheaper variant) draws p + q unit samples instead of p*q and
+    forms the weight noise as an outer product of f(eps) = sign(eps)*sqrt(|eps|). `reset_noise()`
+    redraws; `set_noise(False)` evaluates at mu alone, which is what delivery and the plateau
+    probes use so that the reported policy is the learned one rather than one noisy sample of it.
+    """
+    class NoisyLinear(nn.Module):
+        def __init__(self, p_in, q_out, sigma0=0.5):
+            super().__init__()
+            self.p_in, self.q_out = p_in, q_out
+            self.w_mu = nn.Parameter(torch.empty(q_out, p_in))
+            self.w_sigma = nn.Parameter(torch.empty(q_out, p_in))
+            self.b_mu = nn.Parameter(torch.empty(q_out))
+            self.b_sigma = nn.Parameter(torch.empty(q_out))
+            self.register_buffer("w_eps", torch.zeros(q_out, p_in))
+            self.register_buffer("b_eps", torch.zeros(q_out))
+            bound = p_in ** -0.5
+            nn.init.uniform_(self.w_mu, -bound, bound)
+            nn.init.uniform_(self.b_mu, -bound, bound)
+            nn.init.constant_(self.w_sigma, sigma0 * bound)
+            nn.init.constant_(self.b_sigma, sigma0 * bound)
+            self.noisy = True
+            self.reset_noise()
+
+        @staticmethod
+        def _f(x):
+            return x.sign() * x.abs().sqrt()
+
+        def reset_noise(self):
+            ei = self._f(torch.randn(self.p_in))
+            eo = self._f(torch.randn(self.q_out))
+            self.w_eps.copy_(eo.outer(ei))
+            self.b_eps.copy_(eo)
+
+        def forward(self, x):
+            if self.noisy and self.training:
+                w = self.w_mu + self.w_sigma * self.w_eps
+                b = self.b_mu + self.b_sigma * self.b_eps
+            else:
+                w, b = self.w_mu, self.b_mu
+            return torch.nn.functional.linear(x, w, b)
+    return NoisyLinear
+
+
+def _reset_noise(model):
+    """Redraw every NoisyLinear's noise. No-op on a network without any."""
+    for m in model.modules():
+        if hasattr(m, "reset_noise"):
+            m.reset_noise()
+
+
+def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False, noisy=False,
+                   n_atoms=1, tilt=None):
+    """State-to-vector Q network for the classic-DQN variant: input is the fixed-order state
+    vector (n_seg per-segment blocks + the lag block), output is one Q residual per segment.
+    The head is zero-initialized for the same reason as the row architecture's: Q then starts
+    at the flow prior exactly, and episode 0 plays the flow order.
+
+    With dueling=True (Wang et al., ICML 2016) the trunk splits into a scalar state-value stream
+    V(s) and a per-segment advantage stream A(s, e). This is the architecture the paper actually
+    describes, and it is only expressible HERE: the row architecture had no state-level input, so
+    its V had to be faked as the mean over candidate rows -- which is a plausible reason it lost
+    there (0.9447 / 0.9524 against 0.9396).
+
+    Returns the two streams SEPARATELY rather than a combined Q, because the paper's aggregator
+    subtracts the mean advantage over the LEGAL action set and this module cannot see which
+    actions are legal -- the legality mask lives in the caller's gather. Combining here would
+    average over repaired segments too and shift every Q by a garbage constant. The caller
+    aggregates after gathering; see Qf in train()."""
+    dims = [_N_FEAT * (n_seg + n_lag)] + list(hidden)
+    # Noise goes on the HIDDEN layers only; the output head stays a deterministic zero-initialized
+    # Linear. That is a deliberate restriction: the head is what makes Q start exactly equal to the
+    # flow prior so episode 0 plays the flow order, and a noisy head would emit sigma*eps*z at
+    # init and destroy that invariant -- the property every variant in this project is anchored on.
+    # Noise in the trunk still gives state-dependent exploration once the head has learned anything.
+    Lin = _noisy_linear(nn, torch) if noisy else nn.Linear
+    layers = []
+    for a, b in zip(dims[:-1], dims[1:]):
+        layers += [Lin(a, b), nn.Tanh()]
+    trunk = nn.Sequential(*layers)
+    # n_atoms>1 is the C51 head: every segment gets a probability vector over the return support
+    # instead of a single value. tilt carries the flow prior into that head -- see the caller.
+    if not dueling:
+        head = nn.Linear(dims[-1], n_seg * n_atoms)
+        nn.init.zeros_(head.weight)
+        if tilt is None:
+            nn.init.zeros_(head.bias)
+        else:
+            with torch.no_grad():
+                head.bias.copy_(tilt.reshape(-1))
+        return nn.Sequential(*list(trunk), head)
+
+    class _DuelDQN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.trunk = trunk
+            self.n_atoms = n_atoms
+            self.val = nn.Linear(dims[-1], n_atoms)            # V(s)     [n_atoms]
+            self.adv = nn.Linear(dims[-1], n_seg * n_atoms)    # A(s, e)  [n_seg, n_atoms]
+            for h in (self.val, self.adv):
+                nn.init.zeros_(h.weight)
+                nn.init.zeros_(h.bias)
+            if tilt is not None:
+                with torch.no_grad():
+                    self.adv.bias.copy_(tilt.reshape(-1))
+
+        def forward(self, sv):                     # -> (V, A) shaped for the caller to aggregate
+            z = self.trunk(sv)
+            v = self.val(z)
+            a = self.adv(z)
+            if self.n_atoms > 1:
+                return v, a.reshape(-1, self.n_atoms)
+            return v.squeeze(-1), a
+    return _DuelDQN()
+
+
 def _augment(base_X, chosen_base, n_lag):
     """Append the base features of the last n_lag repaired segments to every candidate row, zero
     padded at the start of an episode. Column 0 stays the flow prior, which the residual Q reads."""
@@ -602,13 +753,20 @@ class _Recorder:
         self.dir, self.v, self.PS = str(rec_dir), variant, prior_scale
         self.torch = torch
         self.snap_every, self.flush_every = max(1, snap_every), max(1, flush_every)
-        self.probe_X = np.asarray(probe_X, dtype=np.float32)
+        # probe_X=None disables the representation/Q snapshots while keeping the trace. The probe
+        # feeds a CANDIDATE MATRIX through the net and reads its last hidden layer, which only
+        # means something for the row architecture -- the DQN architecture has one representation
+        # per STATE, not one per candidate. The per-episode trace is architecture-agnostic, so it
+        # is recorded either way and every figure drawn from it survives.
+        self.probe_X = None if probe_X is None else np.asarray(probe_X, dtype=np.float32)
         self.probe_meta = probe_meta
-        self.probe_groups = np.array([m["step"] for m in probe_meta])   # state label per probe row
+        self.probe_groups = (None if probe_meta is None
+                             else np.array([m["step"] for m in probe_meta]))
         self.trace, self.snaps, self.snap_eps = [], [], []
         os.makedirs(self.dir, exist_ok=True)
-        pd.DataFrame(probe_meta).to_csv(os.path.join(self.dir, f"{variant}_probe_meta.csv"),
-                                        index=False)
+        if probe_meta is not None:
+            pd.DataFrame(probe_meta).to_csv(os.path.join(self.dir, f"{variant}_probe_meta.csv"),
+                                            index=False)
 
     def repr_q(self, net, Xnp):
         return repr_q(net, Xnp, self.PS, self.torch, groups=self.probe_groups)
@@ -622,6 +780,8 @@ class _Recorder:
             self.flush()
 
     def maybe_snapshot(self, ep, net):
+        if self.probe_X is None:
+            return
         if ep == 0 or ep % self.snap_every == 0:
             rep, q = self.repr_q(net, self.probe_X)
             self.snaps.append((rep, q))
@@ -649,9 +809,10 @@ class _Recorder:
             print(f"  [{self.v}] figure refresh failed ({type(exc).__name__}: {exc})", flush=True)
 
     def finish(self, net):
-        rep, q = self.repr_q(net, self.probe_X)        # always snapshot the DELIVERED network
-        self.snaps.append((rep, q))
-        self.snap_eps.append(-1)                       # -1 marks the delivered net
+        if self.probe_X is not None:
+            rep, q = self.repr_q(net, self.probe_X)    # always snapshot the DELIVERED network
+            self.snaps.append((rep, q))
+            self.snap_eps.append(-1)                   # -1 marks the delivered net
         self.flush()
 
 
@@ -697,6 +858,36 @@ def _nstep_rows(feats, picks, rewards, n_step, gamma):
         boot = feats[i + n_step] if i + n_step < n else None
         out.append((feats[i], picks[i], R, boot, gamma ** n_step if boot is not None else 0.0))
     return out
+
+
+def _project_c51(R, bd, p_next, z, v_min, v_max, torch):
+    """Categorical Bellman projection (Bellemare et al., 2017, Algorithm 1).
+
+    The Bellman image of a distribution on a FIXED support is generally not on that support: each
+    atom z_i maps to R + bd*z_i, which lands between grid points. The projection splits each atom's
+    probability between the two neighbouring grid points in inverse proportion to the distance, so
+    the result is a distribution on the original support again -- that is the whole trick that
+    makes a fixed-support categorical representation closed under the Bellman operator.
+
+    bd=0 with any normalized p_next gives the projection of a POINT MASS at R, which is what a
+    terminal transition needs (no bootstrap, the return is known exactly).
+    """
+    n = z.numel()
+    dz = (v_max - v_min) / (n - 1)
+    Tz = (R + bd * z).clamp(v_min, v_max)
+    b = (Tz - v_min) / dz
+    l, u = b.floor().long(), b.ceil().long()
+    m = torch.zeros(n)
+    # An atom landing exactly on a grid point has l == u, and the two weights (u-b) and (b-l) are
+    # then both zero, so its mass would silently vanish. It is assigned whole instead.
+    eq = l == u
+    if eq.any():
+        m.index_add_(0, l[eq], p_next[eq])
+    ne = ~eq
+    if ne.any():
+        m.index_add_(0, l[ne], p_next[ne] * (u[ne].float() - b[ne]))
+        m.index_add_(0, u[ne], p_next[ne] * (b[ne] - l[ne].float()))
+    return m
 
 
 def _hinge(Qf, net, ex_feats, ex_picks, margin, torch):
@@ -746,8 +937,39 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     Ttr = env["T_train"] if stoch else env["T"]
 
     dueling = bool(hp.get("dueling", False))
-    net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
-    tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
+    dqn_arch = str(hp.get("arch", "rows")) == "dqn"
+    noisy = bool(hp.get("noisy", False))
+    if noisy and not dqn_arch:
+        raise ValueError("noisy nets are implemented for arch='dqn' only")
+    # C51 (Bellemare et al., ICML 2017): learn the DISTRIBUTION of the return on a fixed support
+    # instead of its expectation. n_atoms=1 (the default) is the ordinary scalar head.
+    n_atoms = int(hp.get("n_atoms", 1) or 1)
+    distributional = n_atoms > 1
+    if distributional and not dqn_arch:
+        raise ValueError("C51 is implemented for arch='dqn' only")
+    v_min, v_max = float(hp.get("v_min", -12.0)), float(hp.get("v_max", 3.0))
+    if dqn_arch:
+        n_seg_all = len(env["segs"])
+        # THE FLOW PRIOR, carried into a distributional head. The scalar head adds
+        # prior_scale*phi_hat to Q, which is what makes episode 0 play the flow order -- the
+        # starting point every variant in this project is anchored on. A distribution has no
+        # place to add a constant, so the prior enters as a TILT on the head bias instead:
+        # bias[e, i] = prior_scale * phi_hat[e] * z_i makes the softmax put more mass on high
+        # atoms for high-flow segments, so the initial EXPECTATION is monotone in phi and the
+        # induced order is exactly the flow order (asserted below, not assumed).
+        z_supp = torch.linspace(v_min, v_max, n_atoms) if distributional else None
+        tilt = None
+        if distributional:
+            phi_col = torch.tensor([float(env["st"]["phi_hat"][e]) for e in env["segs"]],
+                                   dtype=torch.float32).unsqueeze(1)
+            tilt = PS * phi_col * z_supp.unsqueeze(0)          # [n_seg, n_atoms]
+        net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling,
+                             noisy=noisy, n_atoms=n_atoms, tilt=tilt)
+        tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling,
+                             noisy=noisy, n_atoms=n_atoms, tilt=tilt)
+    else:
+        net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
+        tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
     tgt.load_state_dict(net.state_dict())
     opt = torch.optim.Adam(net.parameters(), lr=float(hp["lr"]))
     # Wang et al. (2016) training recommendations, both off unless the hp asks: clip the global
@@ -779,16 +1001,89 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         raise ValueError("saa_n > 1 is meaningless for the nominal variant: it trains in one fixed "
                          "world, so there is no world distribution to average over")
 
-    def Qf(model, Xnp):
-        """Q for ONE state's candidate matrix. The dueling head aggregates across the matrix's
-        rows, which is why every caller passes a full state, never rows from mixed states."""
-        Xt = torch.tensor(np.asarray(Xnp), dtype=torch.float32)
-        if Xt.dim() == 1:
-            Xt = Xt.unsqueeze(0)
-        return PS * Xt[:, 0] + model(Xt).squeeze(-1)
+    if dqn_arch:
+        # Everything downstream -- greedy and eps policies, the TD target, the hinge, the plateau
+        # probes and the delivery rollouts -- consumes "the Q vector aligned with this state's
+        # candidate rows" through this one function. The DQN architecture therefore plugs in HERE
+        # and nowhere else: convert the candidate matrix to the fixed-order state vector, run the
+        # single forward pass, and GATHER the head's outputs back into candidate-row order. The
+        # legality mask falls out of the gathering -- a repaired segment's entry is simply never in
+        # the returned vector, so no consumer can select it, bootstrap from it, or penalize it.
+        #
+        # Row identity comes from the phi column: column 0 of every candidate row is that segment's
+        # normalized flow prior, a per-segment constant copied from one dict, so exact float
+        # equality identifies the segment. Asserted unique at setup; an unknown value raises
+        # KeyError rather than mis-assigning a row.
+        segs_sorted = list(env["segs"])
+        _phi_to_head = {float(env["st"]["phi_hat"][e]): j for j, e in enumerate(segs_sorted)}
+        if len(_phi_to_head) != len(segs_sorted):
+            raise ValueError("phi values are not distinct across segments; the DQN row-identity "
+                             "lookup cannot work on this instance")
+        _phi_vec = torch.tensor([float(env["st"]["phi_hat"][e]) for e in segs_sorted],
+                                dtype=torch.float32)
+        _sdim = _N_FEAT * (len(segs_sorted) + n_lag)
+
+        def Qf(model, Xnp):
+            """Q for ONE state's candidate matrix, DQN wiring: one forward on the state vector,
+            outputs gathered into candidate-row order."""
+            X = np.asarray(Xnp, dtype=float)
+            if X.ndim == 1:
+                X = X[None, :]
+            sv = np.zeros(_sdim)
+            heads = []
+            for row in X:
+                j = _phi_to_head[float(row[0])]        # KeyError = loud, never silent
+                sv[j * _N_FEAT:(j + 1) * _N_FEAT] = row[:_N_FEAT]
+                heads.append(j)
+            if n_lag > 0:                              # lag block is state-wide: same on every row
+                sv[len(segs_sorted) * _N_FEAT:] = X[0, _N_FEAT:]
+            out = model(torch.tensor(sv, dtype=torch.float32))
+            if distributional:
+                # Logits per (legal action, atom), aggregated exactly as in the scalar case but
+                # per atom, then a softmax ACROSS ATOMS gives each action its return distribution.
+                if dueling:
+                    v, a_full = out                       # v [n_atoms], a_full [n_seg, n_atoms]
+                    a = a_full[heads]
+                    logits = v.unsqueeze(0) + a - a.mean(dim=0, keepdim=True)
+                else:
+                    logits = out.reshape(-1, n_atoms)[heads]
+                return torch.softmax(logits, dim=1)       # [n_legal, n_atoms]
+            if dueling:
+                # Wang et al. aggregation, applied to the LEGAL actions only: gather the advantage
+                # stream first, then subtract ITS mean. Subtracting the mean over all n segments
+                # would fold repaired segments' advantages into every remaining Q as a shared
+                # offset that drifts as the episode proceeds.
+                v, a_full = out
+                a = a_full[heads]
+                return PS * _phi_vec[heads] + v + a - a.mean()
+            return (PS * _phi_vec + out)[heads]
+    else:
+        def Qf(model, Xnp):
+            """Q for ONE state's candidate matrix. The dueling head aggregates across the matrix's
+            rows, which is why every caller passes a full state, never rows from mixed states."""
+            Xt = torch.tensor(np.asarray(Xnp), dtype=torch.float32)
+            if Xt.dim() == 1:
+                Xt = Xt.unsqueeze(0)
+            return PS * Xt[:, 0] + model(Xt).squeeze(-1)
+
+    if distributional:
+        # Every existing consumer asks for Q. Under C51 the head returns a DISTRIBUTION, so Pf is
+        # the raw head and Qf is its expectation -- one line that keeps the policy, the hinge, the
+        # probes and the delivery rollouts working untouched on the new representation.
+        Pf = Qf
+
+        def Qf(model, Xnp):                                   # noqa: F811 - deliberate rebind
+            return (Pf(model, Xnp) * z_supp.unsqueeze(0)).sum(dim=1)
 
     def greedy(rem, X):
+        """The DELIVERED policy: always evaluated at mu, never at a noise sample, so what gets
+        delivered and probed is the learned policy rather than one draw from it."""
         with torch.no_grad():
+            if noisy:
+                net.eval()                       # NoisyLinear falls back to mu when not training
+                q = Qf(net, X)
+                net.train()
+                return int(torch.argmax(q))
             return int(torch.argmax(Qf(net, X)))
 
     def states_for(order):
@@ -801,7 +1096,9 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
 
     rec = None
     if rec_dir is not None:
-        pX, pmeta = _build_probe(env, n_lag)
+        # The DQN architecture keeps the TRACE (and so every figure drawn from it) but drops the
+        # probe snapshots, whose representation-per-candidate notion is row-architecture-specific.
+        pX, pmeta = (None, None) if dqn_arch else _build_probe(env, n_lag)
         rec = _Recorder(rec_dir, variant, pX, pmeta, PS, torch,
                         snap_every=max(1, ep_cap // 50),
                         flush_every=FIGURE_REFRESH_EVERY)
@@ -840,7 +1137,15 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             LAM, float(lam0) * float(lam_growth) ** max(0, ep - 1))
 
         def pk(rem, X):
-            if rng.rand() < eps:
+            # BEHAVIOUR policy. With noisy nets the exploration comes from the weights: the noise
+            # is redrawn at every decision, so the perturbation is state-dependent -- a state the
+            # network has grown confident about (small learned sigma) is barely perturbed while an
+            # ambiguous one still is. eps-greedy cannot do that: one number, applied identically
+            # everywhere. Whether eps ALSO stays on is a hyperparameter; Fortunato et al. replace
+            # it outright, which `eps0=0` expresses.
+            if noisy:
+                _reset_noise(net)
+            if eps > 0 and rng.rand() < eps:
                 return rng.randint(len(rem))
             with torch.no_grad():
                 return int(torch.argmax(Qf(net, X)))
@@ -911,6 +1216,9 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         ep_q, ep_y, ep_td, ep_loss = [], [], [], []
         n_upd = UPD if len(replay) >= replay_start else 0
         for _u in range(n_upd):
+            if noisy:            # one fresh draw per gradient step, as in the paper
+                _reset_noise(net)
+                _reset_noise(tgt)
             opt.zero_grad()
             if stoch:                                   # exemplar: SAMPLED from the good-trajectory buffer
                 ex = buf[rng.randint(len(buf))][:2] if buf else None
@@ -933,28 +1241,51 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             # Per-transition forward on each state's full candidate matrix (a dueling head must
             # see all candidates of a state at once); indexing at the chosen action reproduces the
             # old stacked-single-rows computation exactly for the plain head.
-            q = torch.stack([Qf(net, replay[i][0])[replay[i][1]] for i in idx])
-            y = []
-            for i in idx:
-                _, _, R, bs, bd = replay[i]
-                if bs is None:
-                    y.append(R)
-                else:
+            if distributional:
+                # C51: the regression on values becomes a CROSS-ENTROPY between the predicted
+                # distribution and the projected Bellman target. Error clipping (huber_delta) has
+                # no meaning here -- it bounds a squared TD error that no longer exists.
+                q, td_list = [], []
+                for i in idx:
+                    _, a_i, R, bs, bd = replay[i]
+                    p_pred = Pf(net, replay[i][0])[a_i]
                     with torch.no_grad():
-                        a_on = int(torch.argmax(Qf(net, bs))) if ddqn else None
-                        y.append(R + bd * float(Qf(tgt, bs)[a_on] if ddqn
-                                                else Qf(tgt, bs).max()))
-            yt = torch.tensor(y, dtype=torch.float32)
-            if huber_delta:
-                td_elem = 2.0 * torch.nn.functional.huber_loss(
-                    q, yt, reduction="none", delta=float(huber_delta))
+                        if bs is None:
+                            m = _project_c51(R, 0.0, torch.full((n_atoms,), 1.0 / n_atoms),
+                                             z_supp, v_min, v_max, torch)
+                        else:
+                            a_on = int(torch.argmax(Qf(net, bs))) if ddqn                                 else int(torch.argmax(Qf(tgt, bs)))
+                            m = _project_c51(R, bd, Pf(tgt, bs)[a_on], z_supp, v_min, v_max, torch)
+                    ce = -(m * torch.log(p_pred.clamp_min(1e-8))).sum()
+                    td_list.append(ce)
+                    q.append((p_pred.detach() * z_supp).sum())
+                td_elem = torch.stack(td_list)
+                q = torch.stack(q)
+                yt = q.detach()                    # only the recorder reads these two
             else:
-                td_elem = (q - yt) ** 2
+                q = torch.stack([Qf(net, replay[i][0])[replay[i][1]] for i in idx])
+                y = []
+                for i in idx:
+                    _, _, R, bs, bd = replay[i]
+                    if bs is None:
+                        y.append(R)
+                    else:
+                        with torch.no_grad():
+                            a_on = int(torch.argmax(Qf(net, bs))) if ddqn else None
+                            y.append(R + bd * float(Qf(tgt, bs)[a_on] if ddqn
+                                                    else Qf(tgt, bs).max()))
+                yt = torch.tensor(y, dtype=torch.float32)
+                if huber_delta:
+                    td_elem = 2.0 * torch.nn.functional.huber_loss(
+                        q, yt, reduction="none", delta=float(huber_delta))
+                else:
+                    td_elem = (q - yt) ** 2
             if prioritized:                    # weighted TD loss + refresh sampled priorities
                 loss = (w_t * td_elem).mean()
-                with torch.no_grad():          # priority stays the raw TD magnitude either way
-                    for j, i in enumerate(idx):
-                        prio[i] = float(abs(q[j] - yt[j])) + float(hp["per_eps"])
+                with torch.no_grad():          # priority: |TD| normally, the cross-entropy
+                    for j, i in enumerate(idx):    # under C51 (Rainbow uses the KL the same way)
+                        prio[i] = (float(td_elem[j]) if distributional
+                                   else float(abs(q[j] - yt[j]))) + float(hp["per_eps"])
             else:
                 loss = td_elem.mean()
             if ex is not None:
@@ -1200,10 +1531,14 @@ def run_rank(variants=("rl_nominal", "rl_stoch"), toy_dir=TOY, N=None, M=P.M_SCE
         pd.DataFrame(rows).to_csv(results_dir(vdir) / f"{v}_optima.csv", index=False)
         pd.DataFrame(slots).to_csv(rdir / f"{v}_slots.csv", index=False)
         torch.save(r["net"].state_dict(), results_dir(vdir) / "model_best.pt")
-        _deliver_analysis(env, v, r["net"], r["per_scenario"], int(r["hp"]["n_lag"]),
-                          float(r["hp"]["prior_scale"]), str(rdir), torch)
-        if not v.startswith("rl_stoch"):
-            _value_est_record(vdir, variant=v)
+        if str(r["hp"].get("arch", "rows")) == "dqn":
+            print(f"  [{v}] deliver-analysis skipped: repr/qmc probes are row-architecture-"
+                  f"specific", flush=True)
+        else:
+            _deliver_analysis(env, v, r["net"], r["per_scenario"], int(r["hp"]["n_lag"]),
+                              float(r["hp"]["prior_scale"]), str(rdir), torch)
+            if not v.startswith("rl_stoch"):
+                _value_est_record(vdir, variant=v)
         meanF = float(np.mean([x["F"] for x in rows]))
         write_run_meta(vdir, method=v, segments=env["segs"], T=env["T"], seed=seed, M=M,
                        hp={k: (list(x) if isinstance(x, tuple) else x) for k, x in r["hp"].items()},
