@@ -518,7 +518,68 @@ def _build_net(hidden, n_lag, torch, nn, dueling=False):
     return _Dueling()
 
 
-def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False):
+def _noisy_linear(nn, torch):
+    """Factorised-Gaussian NoisyLinear (Fortunato et al., ICLR 2018), built lazily so torch is only
+    touched inside train().
+
+    Each weight is mu + sigma * eps with mu and sigma BOTH learned, so the network decides how much
+    exploration noise it wants and can decide it PER STATE -- which is the whole point, and exactly
+    what an eps-greedy schedule cannot do: eps is a single number applied identically everywhere,
+    while a state the network is confident about can have its noise annealed away while an
+    ambiguous one keeps it.
+
+    Factorised noise (the paper's cheaper variant) draws p + q unit samples instead of p*q and
+    forms the weight noise as an outer product of f(eps) = sign(eps)*sqrt(|eps|). `reset_noise()`
+    redraws; `set_noise(False)` evaluates at mu alone, which is what delivery and the plateau
+    probes use so that the reported policy is the learned one rather than one noisy sample of it.
+    """
+    class NoisyLinear(nn.Module):
+        def __init__(self, p_in, q_out, sigma0=0.5):
+            super().__init__()
+            self.p_in, self.q_out = p_in, q_out
+            self.w_mu = nn.Parameter(torch.empty(q_out, p_in))
+            self.w_sigma = nn.Parameter(torch.empty(q_out, p_in))
+            self.b_mu = nn.Parameter(torch.empty(q_out))
+            self.b_sigma = nn.Parameter(torch.empty(q_out))
+            self.register_buffer("w_eps", torch.zeros(q_out, p_in))
+            self.register_buffer("b_eps", torch.zeros(q_out))
+            bound = p_in ** -0.5
+            nn.init.uniform_(self.w_mu, -bound, bound)
+            nn.init.uniform_(self.b_mu, -bound, bound)
+            nn.init.constant_(self.w_sigma, sigma0 * bound)
+            nn.init.constant_(self.b_sigma, sigma0 * bound)
+            self.noisy = True
+            self.reset_noise()
+
+        @staticmethod
+        def _f(x):
+            return x.sign() * x.abs().sqrt()
+
+        def reset_noise(self):
+            ei = self._f(torch.randn(self.p_in))
+            eo = self._f(torch.randn(self.q_out))
+            self.w_eps.copy_(eo.outer(ei))
+            self.b_eps.copy_(eo)
+
+        def forward(self, x):
+            if self.noisy and self.training:
+                w = self.w_mu + self.w_sigma * self.w_eps
+                b = self.b_mu + self.b_sigma * self.b_eps
+            else:
+                w, b = self.w_mu, self.b_mu
+            return torch.nn.functional.linear(x, w, b)
+    return NoisyLinear
+
+
+def _reset_noise(model):
+    """Redraw every NoisyLinear's noise. No-op on a network without any."""
+    for m in model.modules():
+        if hasattr(m, "reset_noise"):
+            m.reset_noise()
+
+
+def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False, noisy=False,
+                   n_atoms=1, tilt=None):
     """State-to-vector Q network for the classic-DQN variant: input is the fixed-order state
     vector (n_seg per-segment blocks + the lag block), output is one Q residual per segment.
     The head is zero-initialized for the same reason as the row architecture's: Q then starts
@@ -536,29 +597,49 @@ def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False):
     average over repaired segments too and shift every Q by a garbage constant. The caller
     aggregates after gathering; see Qf in train()."""
     dims = [_N_FEAT * (n_seg + n_lag)] + list(hidden)
+    # Noise goes on the HIDDEN layers only; the output head stays a deterministic zero-initialized
+    # Linear. That is a deliberate restriction: the head is what makes Q start exactly equal to the
+    # flow prior so episode 0 plays the flow order, and a noisy head would emit sigma*eps*z at
+    # init and destroy that invariant -- the property every variant in this project is anchored on.
+    # Noise in the trunk still gives state-dependent exploration once the head has learned anything.
+    Lin = _noisy_linear(nn, torch) if noisy else nn.Linear
     layers = []
     for a, b in zip(dims[:-1], dims[1:]):
-        layers += [nn.Linear(a, b), nn.Tanh()]
+        layers += [Lin(a, b), nn.Tanh()]
     trunk = nn.Sequential(*layers)
+    # n_atoms>1 is the C51 head: every segment gets a probability vector over the return support
+    # instead of a single value. tilt carries the flow prior into that head -- see the caller.
     if not dueling:
-        head = nn.Linear(dims[-1], n_seg)
+        head = nn.Linear(dims[-1], n_seg * n_atoms)
         nn.init.zeros_(head.weight)
-        nn.init.zeros_(head.bias)
+        if tilt is None:
+            nn.init.zeros_(head.bias)
+        else:
+            with torch.no_grad():
+                head.bias.copy_(tilt.reshape(-1))
         return nn.Sequential(*list(trunk), head)
 
     class _DuelDQN(nn.Module):
         def __init__(self):
             super().__init__()
             self.trunk = trunk
-            self.val = nn.Linear(dims[-1], 1)          # V(s)
-            self.adv = nn.Linear(dims[-1], n_seg)      # A(s, e) for every segment
+            self.n_atoms = n_atoms
+            self.val = nn.Linear(dims[-1], n_atoms)            # V(s)     [n_atoms]
+            self.adv = nn.Linear(dims[-1], n_seg * n_atoms)    # A(s, e)  [n_seg, n_atoms]
             for h in (self.val, self.adv):
                 nn.init.zeros_(h.weight)
                 nn.init.zeros_(h.bias)
+            if tilt is not None:
+                with torch.no_grad():
+                    self.adv.bias.copy_(tilt.reshape(-1))
 
-        def forward(self, sv):                         # -> (V scalar, A vector over all segments)
+        def forward(self, sv):                     # -> (V, A) shaped for the caller to aggregate
             z = self.trunk(sv)
-            return self.val(z).squeeze(-1), self.adv(z)
+            v = self.val(z)
+            a = self.adv(z)
+            if self.n_atoms > 1:
+                return v, a.reshape(-1, self.n_atoms)
+            return v.squeeze(-1), a
     return _DuelDQN()
 
 
@@ -779,6 +860,36 @@ def _nstep_rows(feats, picks, rewards, n_step, gamma):
     return out
 
 
+def _project_c51(R, bd, p_next, z, v_min, v_max, torch):
+    """Categorical Bellman projection (Bellemare et al., 2017, Algorithm 1).
+
+    The Bellman image of a distribution on a FIXED support is generally not on that support: each
+    atom z_i maps to R + bd*z_i, which lands between grid points. The projection splits each atom's
+    probability between the two neighbouring grid points in inverse proportion to the distance, so
+    the result is a distribution on the original support again -- that is the whole trick that
+    makes a fixed-support categorical representation closed under the Bellman operator.
+
+    bd=0 with any normalized p_next gives the projection of a POINT MASS at R, which is what a
+    terminal transition needs (no bootstrap, the return is known exactly).
+    """
+    n = z.numel()
+    dz = (v_max - v_min) / (n - 1)
+    Tz = (R + bd * z).clamp(v_min, v_max)
+    b = (Tz - v_min) / dz
+    l, u = b.floor().long(), b.ceil().long()
+    m = torch.zeros(n)
+    # An atom landing exactly on a grid point has l == u, and the two weights (u-b) and (b-l) are
+    # then both zero, so its mass would silently vanish. It is assigned whole instead.
+    eq = l == u
+    if eq.any():
+        m.index_add_(0, l[eq], p_next[eq])
+    ne = ~eq
+    if ne.any():
+        m.index_add_(0, l[ne], p_next[ne] * (u[ne].float() - b[ne]))
+        m.index_add_(0, u[ne], p_next[ne] * (b[ne] - l[ne].float()))
+    return m
+
+
 def _hinge(Qf, net, ex_feats, ex_picks, margin, torch):
     """Large-margin term over one exemplar trajectory: every rival action must fall at least
     `margin` below the exemplar's, and contributes nothing once it does."""
@@ -827,10 +938,35 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
 
     dueling = bool(hp.get("dueling", False))
     dqn_arch = str(hp.get("arch", "rows")) == "dqn"
+    noisy = bool(hp.get("noisy", False))
+    if noisy and not dqn_arch:
+        raise ValueError("noisy nets are implemented for arch='dqn' only")
+    # C51 (Bellemare et al., ICML 2017): learn the DISTRIBUTION of the return on a fixed support
+    # instead of its expectation. n_atoms=1 (the default) is the ordinary scalar head.
+    n_atoms = int(hp.get("n_atoms", 1) or 1)
+    distributional = n_atoms > 1
+    if distributional and not dqn_arch:
+        raise ValueError("C51 is implemented for arch='dqn' only")
+    v_min, v_max = float(hp.get("v_min", -12.0)), float(hp.get("v_max", 3.0))
     if dqn_arch:
         n_seg_all = len(env["segs"])
-        net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling)
-        tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling)
+        # THE FLOW PRIOR, carried into a distributional head. The scalar head adds
+        # prior_scale*phi_hat to Q, which is what makes episode 0 play the flow order -- the
+        # starting point every variant in this project is anchored on. A distribution has no
+        # place to add a constant, so the prior enters as a TILT on the head bias instead:
+        # bias[e, i] = prior_scale * phi_hat[e] * z_i makes the softmax put more mass on high
+        # atoms for high-flow segments, so the initial EXPECTATION is monotone in phi and the
+        # induced order is exactly the flow order (asserted below, not assumed).
+        z_supp = torch.linspace(v_min, v_max, n_atoms) if distributional else None
+        tilt = None
+        if distributional:
+            phi_col = torch.tensor([float(env["st"]["phi_hat"][e]) for e in env["segs"]],
+                                   dtype=torch.float32).unsqueeze(1)
+            tilt = PS * phi_col * z_supp.unsqueeze(0)          # [n_seg, n_atoms]
+        net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling,
+                             noisy=noisy, n_atoms=n_atoms, tilt=tilt)
+        tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling,
+                             noisy=noisy, n_atoms=n_atoms, tilt=tilt)
     else:
         net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
         tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
@@ -902,6 +1038,16 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             if n_lag > 0:                              # lag block is state-wide: same on every row
                 sv[len(segs_sorted) * _N_FEAT:] = X[0, _N_FEAT:]
             out = model(torch.tensor(sv, dtype=torch.float32))
+            if distributional:
+                # Logits per (legal action, atom), aggregated exactly as in the scalar case but
+                # per atom, then a softmax ACROSS ATOMS gives each action its return distribution.
+                if dueling:
+                    v, a_full = out                       # v [n_atoms], a_full [n_seg, n_atoms]
+                    a = a_full[heads]
+                    logits = v.unsqueeze(0) + a - a.mean(dim=0, keepdim=True)
+                else:
+                    logits = out.reshape(-1, n_atoms)[heads]
+                return torch.softmax(logits, dim=1)       # [n_legal, n_atoms]
             if dueling:
                 # Wang et al. aggregation, applied to the LEGAL actions only: gather the advantage
                 # stream first, then subtract ITS mean. Subtracting the mean over all n segments
@@ -920,8 +1066,24 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                 Xt = Xt.unsqueeze(0)
             return PS * Xt[:, 0] + model(Xt).squeeze(-1)
 
+    if distributional:
+        # Every existing consumer asks for Q. Under C51 the head returns a DISTRIBUTION, so Pf is
+        # the raw head and Qf is its expectation -- one line that keeps the policy, the hinge, the
+        # probes and the delivery rollouts working untouched on the new representation.
+        Pf = Qf
+
+        def Qf(model, Xnp):                                   # noqa: F811 - deliberate rebind
+            return (Pf(model, Xnp) * z_supp.unsqueeze(0)).sum(dim=1)
+
     def greedy(rem, X):
+        """The DELIVERED policy: always evaluated at mu, never at a noise sample, so what gets
+        delivered and probed is the learned policy rather than one draw from it."""
         with torch.no_grad():
+            if noisy:
+                net.eval()                       # NoisyLinear falls back to mu when not training
+                q = Qf(net, X)
+                net.train()
+                return int(torch.argmax(q))
             return int(torch.argmax(Qf(net, X)))
 
     def states_for(order):
@@ -975,7 +1137,15 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             LAM, float(lam0) * float(lam_growth) ** max(0, ep - 1))
 
         def pk(rem, X):
-            if rng.rand() < eps:
+            # BEHAVIOUR policy. With noisy nets the exploration comes from the weights: the noise
+            # is redrawn at every decision, so the perturbation is state-dependent -- a state the
+            # network has grown confident about (small learned sigma) is barely perturbed while an
+            # ambiguous one still is. eps-greedy cannot do that: one number, applied identically
+            # everywhere. Whether eps ALSO stays on is a hyperparameter; Fortunato et al. replace
+            # it outright, which `eps0=0` expresses.
+            if noisy:
+                _reset_noise(net)
+            if eps > 0 and rng.rand() < eps:
                 return rng.randint(len(rem))
             with torch.no_grad():
                 return int(torch.argmax(Qf(net, X)))
@@ -1046,6 +1216,9 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         ep_q, ep_y, ep_td, ep_loss = [], [], [], []
         n_upd = UPD if len(replay) >= replay_start else 0
         for _u in range(n_upd):
+            if noisy:            # one fresh draw per gradient step, as in the paper
+                _reset_noise(net)
+                _reset_noise(tgt)
             opt.zero_grad()
             if stoch:                                   # exemplar: SAMPLED from the good-trajectory buffer
                 ex = buf[rng.randint(len(buf))][:2] if buf else None
@@ -1068,28 +1241,51 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             # Per-transition forward on each state's full candidate matrix (a dueling head must
             # see all candidates of a state at once); indexing at the chosen action reproduces the
             # old stacked-single-rows computation exactly for the plain head.
-            q = torch.stack([Qf(net, replay[i][0])[replay[i][1]] for i in idx])
-            y = []
-            for i in idx:
-                _, _, R, bs, bd = replay[i]
-                if bs is None:
-                    y.append(R)
-                else:
+            if distributional:
+                # C51: the regression on values becomes a CROSS-ENTROPY between the predicted
+                # distribution and the projected Bellman target. Error clipping (huber_delta) has
+                # no meaning here -- it bounds a squared TD error that no longer exists.
+                q, td_list = [], []
+                for i in idx:
+                    _, a_i, R, bs, bd = replay[i]
+                    p_pred = Pf(net, replay[i][0])[a_i]
                     with torch.no_grad():
-                        a_on = int(torch.argmax(Qf(net, bs))) if ddqn else None
-                        y.append(R + bd * float(Qf(tgt, bs)[a_on] if ddqn
-                                                else Qf(tgt, bs).max()))
-            yt = torch.tensor(y, dtype=torch.float32)
-            if huber_delta:
-                td_elem = 2.0 * torch.nn.functional.huber_loss(
-                    q, yt, reduction="none", delta=float(huber_delta))
+                        if bs is None:
+                            m = _project_c51(R, 0.0, torch.full((n_atoms,), 1.0 / n_atoms),
+                                             z_supp, v_min, v_max, torch)
+                        else:
+                            a_on = int(torch.argmax(Qf(net, bs))) if ddqn                                 else int(torch.argmax(Qf(tgt, bs)))
+                            m = _project_c51(R, bd, Pf(tgt, bs)[a_on], z_supp, v_min, v_max, torch)
+                    ce = -(m * torch.log(p_pred.clamp_min(1e-8))).sum()
+                    td_list.append(ce)
+                    q.append((p_pred.detach() * z_supp).sum())
+                td_elem = torch.stack(td_list)
+                q = torch.stack(q)
+                yt = q.detach()                    # only the recorder reads these two
             else:
-                td_elem = (q - yt) ** 2
+                q = torch.stack([Qf(net, replay[i][0])[replay[i][1]] for i in idx])
+                y = []
+                for i in idx:
+                    _, _, R, bs, bd = replay[i]
+                    if bs is None:
+                        y.append(R)
+                    else:
+                        with torch.no_grad():
+                            a_on = int(torch.argmax(Qf(net, bs))) if ddqn else None
+                            y.append(R + bd * float(Qf(tgt, bs)[a_on] if ddqn
+                                                    else Qf(tgt, bs).max()))
+                yt = torch.tensor(y, dtype=torch.float32)
+                if huber_delta:
+                    td_elem = 2.0 * torch.nn.functional.huber_loss(
+                        q, yt, reduction="none", delta=float(huber_delta))
+                else:
+                    td_elem = (q - yt) ** 2
             if prioritized:                    # weighted TD loss + refresh sampled priorities
                 loss = (w_t * td_elem).mean()
-                with torch.no_grad():          # priority stays the raw TD magnitude either way
-                    for j, i in enumerate(idx):
-                        prio[i] = float(abs(q[j] - yt[j])) + float(hp["per_eps"])
+                with torch.no_grad():          # priority: |TD| normally, the cross-entropy
+                    for j, i in enumerate(idx):    # under C51 (Rainbow uses the KL the same way)
+                        prio[i] = (float(td_elem[j]) if distributional
+                                   else float(abs(q[j] - yt[j]))) + float(hp["per_eps"])
             else:
                 loss = td_elem.mean()
             if ex is not None:
