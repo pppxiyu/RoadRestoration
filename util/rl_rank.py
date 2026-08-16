@@ -314,7 +314,7 @@ RANK_PARAMS_SAA = dict(
     # 1 reproduces the historical single-draw behaviour. Above 1 the learner is scored on a sample
     # average of its value rather than on one draw, at a proportional evaluation cost -- see the
     # episode loop in train() for why the single draw is so noisy here.
-    saa_n=20,
+    saa_n=10,
     # How the fixed SAA sample is drawn: "lhs" = probability-stratified Latin Hypercube over the
     # per-level marginals, which covers the uncertainty space evenly and estimates E[F] with far
     # lower variance than the same number of i.i.d. draws (util.scenarios.saa_lhs_sample). Measured
@@ -323,24 +323,19 @@ RANK_PARAMS_SAA = dict(
     # seed*1000+21, a separate stream from the eval ruler, so the two do not systematically coincide
     # (measured overlap <=3/50 at saa_n=20, the same order as i.i.d.).
     saa_sampling="lhs",
-    # DISTRIBUTIONAL RL (C51, Bellemare et al., ICML 2017), the SAA variant's headline addition:
-    # each action's head emits a probability vector over a fixed return support instead of a single
-    # value, and the value regression becomes a cross-entropy against the projected Bellman target
-    # (train() switches the loss automatically; huber_delta is then inert). n_atoms=1 would be the
-    # ordinary scalar head. The rationale for putting it HERE and not on the nominal variant: the
-    # SAA reward is a sample average over drawn worlds, so the return a state can realize is genuinely
-    # a DISTRIBUTION, which is exactly what a categorical value head represents rather than collapses.
-    #
-    # SUPPORT [v_min, v_max]. The head can only place mass on this interval; a Bellman target outside
-    # it is clipped onto the boundary atom, which biases, so the support must bracket the return-to-go
-    # the training actually produces. Measured on a short SAA probe (seed 42, n10, 25 episodes, so it
-    # already includes early untrained exploratory orders): return-to-go ran [-7.42, +2.67] with
-    # p1/p99 [-4.45, +2.21]. [-12, 3] brackets that with margin on both ends; 51 atoms give ~0.3
-    # resolution across it. The flow prior enters this head as a bias TILT (see _build_dqn_net /
-    # train()), so episode 0 still plays the flow order.
-    n_atoms=51,
-    v_min=-12.0,
-    v_max=3.0,
+    # DISTRIBUTIONAL RL, quantile-regression head (QR-DQN, Dabney et al., AAAI 2018), the SAA
+    # variant's headline addition: each action's head emits n_quantiles VALUES at fixed quantile
+    # fractions tau_i=(i+0.5)/n instead of a single expected value, and the value regression becomes
+    # the quantile-Huber (pinball) loss toward the Bellman-image quantiles. n_quantiles=1 would be the
+    # ordinary scalar head. The rationale for putting it HERE and not on the nominal variant: the SAA
+    # reward is a sample average over drawn worlds, so the return a state can realize is genuinely a
+    # DISTRIBUTION, which a quantile head represents rather than collapses. Unlike a fixed-support
+    # categorical head it needs no return range to bound or tune, and it proved both better and far
+    # more stable on n10 (seeds 42/1 delivered 0.9515/0.9517 against a categorical head's 0.9581/
+    # 0.9573; spread 0.0002 against the categorical head's 0.9492-0.9623). The flow prior enters by
+    # ADDING prior_scale*phi to every quantile in Qf (see train()), so episode 0 still plays the flow
+    # order.
+    n_quantiles=51,
 )
 
 # Mechanism variants reuse the tuned bases unchanged and add ONE mechanism each, so a difference
@@ -604,8 +599,7 @@ def _reset_noise(model):
             m.reset_noise()
 
 
-def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False, noisy=False,
-                   n_atoms=1, tilt=None):
+def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False, noisy=False, n_out=1):
     """State-to-vector Q network for the classic-DQN variant: input is the fixed-order state
     vector (n_seg per-segment blocks + the lag block), output is one Q residual per segment.
     The head is zero-initialized for the same reason as the row architecture's: Q then starts
@@ -633,38 +627,33 @@ def _build_dqn_net(hidden, n_seg, n_lag, torch, nn, dueling=False, noisy=False,
     for a, b in zip(dims[:-1], dims[1:]):
         layers += [Lin(a, b), nn.Tanh()]
     trunk = nn.Sequential(*layers)
-    # n_atoms>1 is the C51 head: every segment gets a probability vector over the return support
-    # instead of a single value. tilt carries the flow prior into that head -- see the caller.
+    # n_out>1 is the DISTRIBUTIONAL (quantile) head: every segment gets n_out values instead of one.
+    # The head is always zero-initialized (zero weight and bias): the flow prior is added by Qf,
+    # so Q starts at the prior for both the scalar and the quantile head and episode 0 plays the flow
+    # order.
     if not dueling:
-        head = nn.Linear(dims[-1], n_seg * n_atoms)
+        head = nn.Linear(dims[-1], n_seg * n_out)
         nn.init.zeros_(head.weight)
-        if tilt is None:
-            nn.init.zeros_(head.bias)
-        else:
-            with torch.no_grad():
-                head.bias.copy_(tilt.reshape(-1))
+        nn.init.zeros_(head.bias)
         return nn.Sequential(*list(trunk), head)
 
     class _DuelDQN(nn.Module):
         def __init__(self):
             super().__init__()
             self.trunk = trunk
-            self.n_atoms = n_atoms
-            self.val = nn.Linear(dims[-1], n_atoms)            # V(s)     [n_atoms]
-            self.adv = nn.Linear(dims[-1], n_seg * n_atoms)    # A(s, e)  [n_seg, n_atoms]
+            self.n_out = n_out
+            self.val = nn.Linear(dims[-1], n_out)            # V(s)     [n_out]
+            self.adv = nn.Linear(dims[-1], n_seg * n_out)    # A(s, e)  [n_seg, n_out]
             for h in (self.val, self.adv):
                 nn.init.zeros_(h.weight)
                 nn.init.zeros_(h.bias)
-            if tilt is not None:
-                with torch.no_grad():
-                    self.adv.bias.copy_(tilt.reshape(-1))
 
         def forward(self, sv):                     # -> (V, A) shaped for the caller to aggregate
             z = self.trunk(sv)
             v = self.val(z)
             a = self.adv(z)
-            if self.n_atoms > 1:
-                return v, a.reshape(-1, self.n_atoms)
+            if self.n_out > 1:
+                return v, a.reshape(-1, self.n_out)
             return v.squeeze(-1), a
     return _DuelDQN()
 
@@ -886,41 +875,6 @@ def _nstep_rows(feats, picks, rewards, n_step, gamma):
     return out
 
 
-def _project_c51(R, bd, p_next, z, v_min, v_max, torch):
-    """Categorical Bellman projection (Bellemare et al., 2017, Algorithm 1).
-
-    The Bellman image of a distribution on a FIXED support is generally not on that support: each
-    atom z_i maps to R + bd*z_i, which lands between grid points. The projection splits each atom's
-    probability between the two neighbouring grid points in inverse proportion to the distance, so
-    the result is a distribution on the original support again -- that is the whole trick that
-    makes a fixed-support categorical representation closed under the Bellman operator.
-
-    bd=0 with any normalized p_next gives the projection of a POINT MASS at R, which is what a
-    terminal transition needs (no bootstrap, the return is known exactly).
-    """
-    n = z.numel()
-    dz = (v_max - v_min) / (n - 1)
-    Tz = (R + bd * z).clamp(v_min, v_max)
-    # Clamp the grid coordinate to [0, n-1] BEFORE floor/ceil. Tz is already clamped to
-    # [v_min, v_max], so b is in [0, n-1] in exact arithmetic -- but a target sitting on v_max makes
-    # b = n-1 in real arithmetic and n-1 + epsilon in float, and then b.ceil() = n indexes off the
-    # end of the n-atom support (IndexError). Clamping b keeps both neighbours legal without changing
-    # any interior split.
-    b = ((Tz - v_min) / dz).clamp(0.0, float(n - 1))
-    l, u = b.floor().long(), b.ceil().long()
-    m = torch.zeros(n)
-    # An atom landing exactly on a grid point has l == u, and the two weights (u-b) and (b-l) are
-    # then both zero, so its mass would silently vanish. It is assigned whole instead.
-    eq = l == u
-    if eq.any():
-        m.index_add_(0, l[eq], p_next[eq])
-    ne = ~eq
-    if ne.any():
-        m.index_add_(0, l[ne], p_next[ne] * (u[ne].float() - b[ne]))
-        m.index_add_(0, u[ne], p_next[ne] * (b[ne] - l[ne].float()))
-    return m
-
-
 def _hinge(Qf, net, ex_feats, ex_picks, margin, torch):
     """Large-margin term over one exemplar trajectory: every rival action must fall at least
     `margin` below the exemplar's, and contributes nothing once it does."""
@@ -972,32 +926,26 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     noisy = bool(hp.get("noisy", False))
     if noisy and not dqn_arch:
         raise ValueError("noisy nets are implemented for arch='dqn' only")
-    # C51 (Bellemare et al., ICML 2017): learn the DISTRIBUTION of the return on a fixed support
-    # instead of its expectation. n_atoms=1 (the default) is the ordinary scalar head.
-    n_atoms = int(hp.get("n_atoms", 1) or 1)
-    distributional = n_atoms > 1
+    # QR-DQN (Dabney et al., AAAI 2018): learn the return DISTRIBUTION as n_quantiles VALUES at fixed
+    # quantile fractions tau_i=(i+0.5)/n, instead of the expectation. n_quantiles=1 is the ordinary
+    # scalar head; >1 turns the head distributional (and switches the loss to quantile-Huber below).
+    n_quantiles = int(hp.get("n_quantiles", 1) or 1)
+    distributional = n_quantiles > 1
     if distributional and not dqn_arch:
-        raise ValueError("C51 is implemented for arch='dqn' only")
-    v_min, v_max = float(hp.get("v_min", -12.0)), float(hp.get("v_max", 3.0))
+        raise ValueError("the distributional (quantile) head is implemented for arch='dqn' only")
     if dqn_arch:
         n_seg_all = len(env["segs"])
-        # THE FLOW PRIOR, carried into a distributional head. The scalar head adds
-        # prior_scale*phi_hat to Q, which is what makes episode 0 play the flow order -- the
-        # starting point every variant in this project is anchored on. A distribution has no
-        # place to add a constant, so the prior enters as a TILT on the head bias instead:
-        # bias[e, i] = prior_scale * phi_hat[e] * z_i makes the softmax put more mass on high
-        # atoms for high-flow segments, so the initial EXPECTATION is monotone in phi and the
-        # induced order is exactly the flow order (asserted below, not assumed).
-        z_supp = torch.linspace(v_min, v_max, n_atoms) if distributional else None
-        tilt = None
-        if distributional:
-            phi_col = torch.tensor([float(env["st"]["phi_hat"][e]) for e in env["segs"]],
-                                   dtype=torch.float32).unsqueeze(1)
-            tilt = PS * phi_col * z_supp.unsqueeze(0)          # [n_seg, n_atoms]
+        # THE FLOW PRIOR. The scalar head adds prior_scale*phi_hat to Q so episode 0 plays the flow
+        # order -- the starting point every variant is anchored on. The quantile head carries the same
+        # prior by ADDING prior_scale*phi to EVERY quantile in Qf (see below), so the initial per-
+        # action mean is prior_scale*phi and the induced order is exactly the flow order. tau is the
+        # vector of quantile fractions; None for the scalar head.
+        tau = ((torch.arange(n_quantiles, dtype=torch.float32) + 0.5) / n_quantiles) \
+            if distributional else None
         net = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling,
-                             noisy=noisy, n_atoms=n_atoms, tilt=tilt)
+                             noisy=noisy, n_out=n_quantiles)
         tgt = _build_dqn_net(hp["hidden"], n_seg_all, n_lag, torch, nn, dueling=dueling,
-                             noisy=noisy, n_atoms=n_atoms, tilt=tilt)
+                             noisy=noisy, n_out=n_quantiles)
     else:
         net = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
         tgt = _build_net(hp["hidden"], n_lag, torch, nn, dueling=dueling)
@@ -1070,15 +1018,16 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                 sv[len(segs_sorted) * _N_FEAT:] = X[0, _N_FEAT:]
             out = model(torch.tensor(sv, dtype=torch.float32))
             if distributional:
-                # Logits per (legal action, atom), aggregated exactly as in the scalar case but
-                # per atom, then a softmax ACROSS ATOMS gives each action its return distribution.
+                # Per (legal action, quantile) aggregation, exactly as the scalar dueling case but per
+                # quantile. The flow prior is added to EVERY quantile so the initial per-action mean is
+                # prior_scale*phi (episode 0 = the flow order).
                 if dueling:
-                    v, a_full = out                       # v [n_atoms], a_full [n_seg, n_atoms]
+                    v, a_full = out                       # v [n_quantiles], a_full [n_seg, n_quantiles]
                     a = a_full[heads]
-                    logits = v.unsqueeze(0) + a - a.mean(dim=0, keepdim=True)
+                    agg = v.unsqueeze(0) + a - a.mean(dim=0, keepdim=True)
                 else:
-                    logits = out.reshape(-1, n_atoms)[heads]
-                return torch.softmax(logits, dim=1)       # [n_legal, n_atoms]
+                    agg = out.reshape(-1, n_quantiles)[heads]
+                return agg + PS * _phi_vec[heads].unsqueeze(1)       # [n_legal, n_quantiles]
             if dueling:
                 # Wang et al. aggregation, applied to the LEGAL actions only: gather the advantage
                 # stream first, then subtract ITS mean. Subtracting the mean over all n segments
@@ -1098,13 +1047,13 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             return PS * Xt[:, 0] + model(Xt).squeeze(-1)
 
     if distributional:
-        # Every existing consumer asks for Q. Under C51 the head returns a DISTRIBUTION, so Pf is
-        # the raw head and Qf is its expectation -- one line that keeps the policy, the hinge, the
-        # probes and the delivery rollouts working untouched on the new representation.
+        # Every existing consumer asks for Q. The head returns the QUANTILES, so Pf is the raw head and
+        # Qf is their mean (equal-weighted by construction of tau) -- one rebind that keeps the policy,
+        # the hinge, the probes and the delivery rollouts working untouched on the new representation.
         Pf = Qf
 
-        def Qf(model, Xnp):                                   # noqa: F811 - deliberate rebind
-            return (Pf(model, Xnp) * z_supp.unsqueeze(0)).sum(dim=1)
+        def Qf(model, Xnp):                              # noqa: F811 - deliberate rebind
+            return Pf(model, Xnp).mean(dim=1)
 
     def greedy(rem, X):
         """The DELIVERED policy: always evaluated at mu, never at a noise sample, so what gets
@@ -1286,26 +1235,30 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             # see all candidates of a state at once); indexing at the chosen action reproduces the
             # old stacked-single-rows computation exactly for the plain head.
             if distributional:
-                # C51: the regression on values becomes a CROSS-ENTROPY between the predicted
-                # distribution and the projected Bellman target. Error clipping (huber_delta) has
-                # no meaning here -- it bounds a squared TD error that no longer exists.
+                # QR-DQN (Dabney et al., AAAI 2018): the value regression becomes the QUANTILE-HUBER loss
+                # between the predicted quantiles theta and the Bellman-image quantiles R+gamma*theta'.
+                # For predicted quantile tau_i the pinball asymmetry |tau_i - 1{u<0}| pulls it toward
+                # the tau_i-quantile of the target. No fixed support and no error clipping here.
+                kappa = 1.0
                 q, td_list = [], []
                 for i in idx:
                     _, a_i, R, bs, bd = replay[i]
-                    p_pred = Pf(net, replay[i][0])[a_i]
+                    theta = Pf(net, replay[i][0])[a_i]                 # [N] predicted quantiles
                     with torch.no_grad():
                         if bs is None:
-                            m = _project_c51(R, 0.0, torch.full((n_atoms,), 1.0 / n_atoms),
-                                             z_supp, v_min, v_max, torch)
+                            Tq = torch.full((n_quantiles,), float(R))   # terminal: point mass at R
                         else:
-                            a_on = int(torch.argmax(Qf(net, bs))) if ddqn                                 else int(torch.argmax(Qf(tgt, bs)))
-                            m = _project_c51(R, bd, Pf(tgt, bs)[a_on], z_supp, v_min, v_max, torch)
-                    ce = -(m * torch.log(p_pred.clamp_min(1e-8))).sum()
-                    td_list.append(ce)
-                    q.append((p_pred.detach() * z_supp).sum())
+                            a_on = int(torch.argmax(Qf(net, bs))) if ddqn \
+                                else int(torch.argmax(Qf(tgt, bs)))
+                            Tq = R + bd * Pf(tgt, bs)[a_on]            # [N] target quantiles
+                    u = Tq.unsqueeze(0) - theta.unsqueeze(1)          # [N_pred, N_target]
+                    hub = torch.where(u.abs() <= kappa, 0.5 * u ** 2, kappa * (u.abs() - 0.5 * kappa))
+                    rho = (tau.unsqueeze(1) - (u.detach() < 0).float()).abs() * hub
+                    td_list.append(rho.mean(dim=1).sum())             # mean over target, sum over pred
+                    q.append(theta.detach().mean())
                 td_elem = torch.stack(td_list)
                 q = torch.stack(q)
-                yt = q.detach()                    # only the recorder reads these two
+                yt = q.detach()
             else:
                 q = torch.stack([Qf(net, replay[i][0])[replay[i][1]] for i in idx])
                 y = []
@@ -1326,8 +1279,8 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                     td_elem = (q - yt) ** 2
             if prioritized:                    # weighted TD loss + refresh sampled priorities
                 loss = (w_t * td_elem).mean()
-                with torch.no_grad():          # priority: |TD| normally, the cross-entropy
-                    for j, i in enumerate(idx):    # under C51 (Rainbow uses the KL the same way)
+                with torch.no_grad():          # priority: |TD| for the scalar head, the per-transition
+                    for j, i in enumerate(idx):    # quantile-Huber loss for the distributional head
                         prio[i] = (float(td_elem[j]) if distributional
                                    else float(abs(q[j] - yt[j]))) + float(hp["per_eps"])
             else:

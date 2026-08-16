@@ -35,9 +35,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # `greedy_rl_stoch` was still appearing in the n6 comparison.
 RULE_BASED = ("flow", "demand", "ratio")
 
-# The searched/learned methods, each owning its own folder. rl_saa is the SAA variant
-# (nominal DQN config + sample-average-approximation training + C51); its 5-seed current-config
-# re-run is what admits it here. rl_saa_per stays absent (a dormant PER-tuning variant, not delivered).
+# The searched/learned methods, each owning its own folder. rl_saa is the SAA variant (nominal DQN
+# config + sample-average-approximation training on an LHS-covered world sample + a quantile-
+# regression distributional head); its 5-seed current-config re-run is what admits it here.
 SEARCHED = (("ga", "1-baselines"), ("rl_nominal", "2-RL"), ("rl_saa", "2-RL"))
 
 
