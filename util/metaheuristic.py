@@ -513,7 +513,7 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
                 rows.append(row)
             # Optima + per-slot slots now live in the variant's OWN tree, outputs/{v}/n{N}/ (+ raw/),
             # beside its diagnostics -- mirroring outputs/pretrain_milp, outputs/rl and
-            # outputs/rl_stoch. compare.py discovers each method's optima from its own folder, so
+            # outputs/rl_saa. compare.py discovers each method's optima from its own folder, so
             # nothing has to sit in the shared greedy pool any more.
             diag = scale_dir(OUT_DIAG / v)
             diag.mkdir(parents=True, exist_ok=True)

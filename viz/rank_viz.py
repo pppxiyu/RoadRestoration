@@ -134,7 +134,7 @@ def _objective(ax, tr, variant, traces=()):
     if traces:
         _seed_band(ax, traces, "best_F", C["signal"], "best so far")
         _seed_band(ax, traces, "scenF", C["teal"], "evaluation")
-    if variant.startswith("rl_stoch"):
+    if variant.startswith("rl_saa"):
         ax.plot(ep, tr["F"], color=C["neutral_light"], lw=0.8,
                 label="episode F (in its own drawn world)")
         if "buf_bestF" in tr and tr["buf_bestF"].notna().any():

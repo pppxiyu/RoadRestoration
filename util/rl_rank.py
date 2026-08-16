@@ -38,7 +38,7 @@ removed on 2026-08-10; the historical comparison lives in the run records, not i
 
 THE TWO VARIANTS mirror util.rl. The nominal variant ("rl_nominal") trains in the nominal world, its
 exemplar is the best-by-F order found so far, and it delivers ONE committed order. The stochastic
-variant ("rl_stoch") draws a fresh duration realization every episode (util.scenarios.draw_durations,
+variant ("rl_saa") draws a fresh duration realization every episode (util.scenarios.draw_durations,
 the law the evaluation sample is drawn from) and delivers the POLICY, rolled out per scenario.
 F values from different worlds are not comparable, so the nominal variant's single best-by-F
 exemplar does not exist there; instead a top-K buffer holds the lowest-F_w trajectories seen and
@@ -87,7 +87,7 @@ from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
                              write_run_meta)
 from util.rl import (_completion_rewards, _decision_features, _evaluate_prefix_cached,
                      _scenario_statics)
-from util.scenarios import (draw_durations, nominal_durations, sample_scenarios,
+from util.scenarios import (draw_durations, nominal_durations, saa_lhs_sample, sample_scenarios,
                             worst_case_durations)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -264,7 +264,7 @@ SEARCH_SWEEP = {
     "n_lag-2":           dict(n_lag=2),
 }
 
-RANK_PARAMS_STOCH = dict(
+RANK_PARAMS_SAA = dict(
     # ADOPTED WHOLESALE FROM THE NOMINAL VARIANT (2026-08-12). Every value below that the two
     # variants share is the one the nominal variant's tuning campaign selected -- the loss shape,
     # the network, the exploration schedule, the imitation ramp, prioritized replay and the error
@@ -314,7 +314,33 @@ RANK_PARAMS_STOCH = dict(
     # 1 reproduces the historical single-draw behaviour. Above 1 the learner is scored on a sample
     # average of its value rather than on one draw, at a proportional evaluation cost -- see the
     # episode loop in train() for why the single draw is so noisy here.
-    saa_n=10,
+    saa_n=20,
+    # How the fixed SAA sample is drawn: "lhs" = probability-stratified Latin Hypercube over the
+    # per-level marginals, which covers the uncertainty space evenly and estimates E[F] with far
+    # lower variance than the same number of i.i.d. draws (util.scenarios.saa_lhs_sample). Measured
+    # on n10 seed 42 (at saa_n=10): LHS lifted the delivered mean F from 0.9562 (i.i.d.) to 0.9502,
+    # level with GA; the delivered numbers at this saa_n come from the re-run. Drawn from
+    # seed*1000+21, a separate stream from the eval ruler, so the two do not systematically coincide
+    # (measured overlap <=3/50 at saa_n=20, the same order as i.i.d.).
+    saa_sampling="lhs",
+    # DISTRIBUTIONAL RL (C51, Bellemare et al., ICML 2017), the SAA variant's headline addition:
+    # each action's head emits a probability vector over a fixed return support instead of a single
+    # value, and the value regression becomes a cross-entropy against the projected Bellman target
+    # (train() switches the loss automatically; huber_delta is then inert). n_atoms=1 would be the
+    # ordinary scalar head. The rationale for putting it HERE and not on the nominal variant: the
+    # SAA reward is a sample average over drawn worlds, so the return a state can realize is genuinely
+    # a DISTRIBUTION, which is exactly what a categorical value head represents rather than collapses.
+    #
+    # SUPPORT [v_min, v_max]. The head can only place mass on this interval; a Bellman target outside
+    # it is clipped onto the boundary atom, which biases, so the support must bracket the return-to-go
+    # the training actually produces. Measured on a short SAA probe (seed 42, n10, 25 episodes, so it
+    # already includes early untrained exploratory orders): return-to-go ran [-7.42, +2.67] with
+    # p1/p99 [-4.45, +2.21]. [-12, 3] brackets that with margin on both ends; 51 atoms give ~0.3
+    # resolution across it. The flow prior enters this head as a bias TILT (see _build_dqn_net /
+    # train()), so episode 0 still plays the flow order.
+    n_atoms=51,
+    v_min=-12.0,
+    v_max=3.0,
 )
 
 # Mechanism variants reuse the tuned bases unchanged and add ONE mechanism each, so a difference
@@ -327,7 +353,7 @@ RANK_PARAMS_STOCH = dict(
 # per_beta0 to 1 over per_beta_eps episodes; a new transition enters at the current maximum
 # priority so it is seen at least once. The buffer is small (4000), so plain proportional
 # sampling replaces the usual sum-tree with no measurable cost.
-RANK_PARAMS_STOCH_PER = dict(RANK_PARAMS_STOCH, prioritized=True, per_alpha=0.6,
+RANK_PARAMS_SAA_PER = dict(RANK_PARAMS_SAA, prioritized=True, per_alpha=0.6,
                              per_beta0=0.4, per_beta_eps=300, per_eps=1e-3)
 
 # Plateau stopping. patience_P and stable_K are counted in PROBES, not episodes: the nominal
@@ -353,7 +379,7 @@ STOP_PARAMS = dict(
 # stochastic one
 # every `probe_every` episodes -- so one number means very different budgets. Splitting them here
 # keeps a change to one variant from silently rescaling the other: patience_P=45 is 45 EPISODES for
-# rl_nominal, but would be 45*25 = 1125 episodes for rl_stoch.
+# rl_nominal, but would be 45*25 = 1125 episodes for rl_saa.
 #
 # rl_nominal's 45 (raised from the shared 10 on 2026-08-10) is a search-budget decision, not a tuning
 # one: at patience 10 the run stopped at episode 61 having scored only ~60 distinct orders, while
@@ -875,7 +901,12 @@ def _project_c51(R, bd, p_next, z, v_min, v_max, torch):
     n = z.numel()
     dz = (v_max - v_min) / (n - 1)
     Tz = (R + bd * z).clamp(v_min, v_max)
-    b = (Tz - v_min) / dz
+    # Clamp the grid coordinate to [0, n-1] BEFORE floor/ceil. Tz is already clamped to
+    # [v_min, v_max], so b is in [0, n-1] in exact arithmetic -- but a target sitting on v_max makes
+    # b = n-1 in real arithmetic and n-1 + epsilon in float, and then b.ceil() = n indexes off the
+    # end of the n-atom support (IndexError). Clamping b keeps both neighbours legal without changing
+    # any interior split.
+    b = ((Tz - v_min) / dz).clamp(0.0, float(n - 1))
     l, u = b.floor().long(), b.ceil().long()
     m = torch.zeros(n)
     # An atom landing exactly on a grid point has l == u, and the two weights (u-b) and (b-l) are
@@ -908,15 +939,15 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
 
     Returns dict(order, per_scenario, net, episodes, n_evals, outcome, best_score). For "rl_nominal",
     per_scenario is the one committed order list-scheduled into each evaluation scenario; for
-    "rl_stoch" it is the policy's own greedy rollout in each scenario, so each gets its own order.
+    "rl_saa" it is the policy's own greedy rollout in each scenario, so each gets its own order.
     """
     import torch
     import torch.nn as nn
     torch.set_num_threads(1)
 
-    stoch = variant.startswith("rl_stoch")
-    base = {"rl_nominal": RANK_PARAMS_NOMINAL, "rl_stoch": RANK_PARAMS_STOCH,
-            "rl_stoch_per": RANK_PARAMS_STOCH_PER}[variant]
+    saa = variant.startswith("rl_saa")
+    base = {"rl_nominal": RANK_PARAMS_NOMINAL, "rl_saa": RANK_PARAMS_SAA,
+            "rl_saa_per": RANK_PARAMS_SAA_PER}[variant]
     hp = dict(base, **(hp or {}))
     prioritized = bool(hp.get("prioritized", False))
     sp = _merge_stop(variant, stop_params)
@@ -934,7 +965,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     sync = int(hp["target_sync"])
     env["st"]["reveal"] = bool(hp.get("reveal", True))
     env["st"]["n_lag"] = n_lag
-    Ttr = env["T_train"] if stoch else env["T"]
+    Ttr = env["T_train"] if saa else env["T"]
 
     dueling = bool(hp.get("dueling", False))
     dqn_arch = str(hp.get("arch", "rows")) == "dqn"
@@ -997,7 +1028,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     # reward signal every episode. 1 is a single fixed world (a degenerate sample average), not the
     # old per-episode redraw -- that redraw was resampling, not SAA, and has been removed.
     saa_n = int(hp.get("saa_n", 1) or 1)
-    if saa_n > 1 and not stoch:
+    if saa_n > 1 and not saa:
         raise ValueError("saa_n > 1 is meaningless for the nominal variant: it trains in one fixed "
                          "world, so there is no world distribution to average over")
 
@@ -1103,7 +1134,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                         snap_every=max(1, ep_cap // 50),
                         flush_every=FIGURE_REFRESH_EVERY)
 
-    val_worlds = [draw_durations(env["dis"], val_rng) for _ in range(sp["n_val"])] if stoch else []
+    val_worlds = [draw_durations(env["dis"], val_rng) for _ in range(sp["n_val"])] if saa else []
     # SAMPLE AVERAGE APPROXIMATION: the sample is drawn ONCE and then held FIXED for the whole run.
     # That is what makes it SAA rather than plain resampling -- fixing the sample replaces the
     # stochastic objective E[F] with a DETERMINISTIC surrogate, the average over these particular
@@ -1117,8 +1148,24 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     # The bias this buys is the standard SAA one and is real: the delivered policy is optimal for
     # THESE saa_n worlds, not for the distribution, and it is optimistic on them. Larger saa_n
     # shrinks that gap; the frozen 50 report what survives it.
+    # `saa_resample=True` overrides the fix described above: it draws a FRESH sample of saa_n worlds
+    # every episode instead of holding one fixed. That is NOT SAA -- it is the plain resampling SAA
+    # was introduced to replace -- and is kept only as a measurable alternative: the objective then
+    # moves under the learner, so an order can score better purely by drawing an easier world. Default
+    # False = the fixed-sample SAA the delivery uses.
+    saa_resample = bool(hp.get("saa_resample", False))
+    # How the FIXED SAA sample is drawn: "iid" = saa_n independent draw_durations (plain Monte
+    # Carlo, the historical default); "lhs" = probability-stratified Latin Hypercube over the
+    # per-level marginals, which covers the uncertainty space far more evenly at n=10 and so
+    # estimates E[F] with lower variance (see util.scenarios.saa_lhs_sample). Ignored when
+    # saa_resample redraws every episode.
+    saa_sampling = str(hp.get("saa_sampling", "iid"))
     saa_rng = np.random.RandomState(seed * 1000 + 21)
-    saa_worlds = [draw_durations(env["dis"], saa_rng) for _ in range(saa_n)] if stoch else []
+    if saa and not saa_resample:
+        saa_worlds = (saa_lhs_sample(env["dis"], saa_n, saa_rng) if saa_sampling == "lhs"
+                      else [draw_durations(env["dis"], saa_rng) for _ in range(saa_n)])
+    else:
+        saa_worlds = []
     stop = RankPlateauStop(sp["ep_min"], sp["patience_P"], sp["stable_K"], sp["tol"])
     memo, sc, replay, buf = {}, {}, [], []
     prio = []                                  # per-transition priorities (prioritized replay only)
@@ -1150,33 +1197,30 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             with torch.no_grad():
                 return int(torch.argmax(Qf(net, X)))
 
-        if stoch:
-            # SAMPLE AVERAGE APPROXIMATION. The episode's reward signal is averaged over `saa_n`
-            # freshly drawn worlds instead of read off a single draw. One draw is an unbiased but
-            # very noisy estimate of the policy's true value E[F]: on this problem the spread across
-            # worlds is many times the gap between the methods being compared, so at saa_n=1 the
-            # learner spends much of its capacity fitting which world it happened to draw. Averaging
-            # n draws divides that noise's variance by n at n times the evaluation cost -- the
-            # standard SAA trade, and the reason the estimate is called a sample average.
+        if saa:
+            # SAMPLE AVERAGE APPROXIMATION. The episode's reward is the AVERAGE F over saa_n worlds --
+            # a far less noisy estimate of the policy's value E[F] than one draw, at saa_n times the
+            # evaluation cost (on this problem the across-world spread is many times the gap between
+            # the methods being compared, so a single draw wastes capacity fitting which world it hit).
             #
-            # The worlds are drawn FRESH from the training stream each episode and may repeat, which
-            # is what makes them an independent sample rather than a fixed set being re-fitted. They
-            # are never the M frozen evaluation scenarios: those stay untouched as the ruler, and
-            # training against them would be training on the test set.
+            # DEFAULT mode holds the sample FIXED (drawn once above): the surrogate is deterministic,
+            # so a repeated (world, order) pair is memoized. `saa_resample` mode redraws the worlds
+            # FRESH every episode (plain resampling, not SAA) and skips the memo, since no
+            # (world, order) key recurs. Neither set is ever the M frozen evaluation scenarios.
+            worlds_ep = ([draw_durations(env["dis"], saa_rng) for _ in range(saa_n)]
+                         if saa_resample else saa_worlds)
             trajs = []
-            for wi, dur in enumerate(saa_worlds):
+            for wi, dur in enumerate(worlds_ep):
                 perm, start, feats, picks, _ = _rollout(env, pk, n_lag, dur)
-                # Fixing the sample makes the surrogate deterministic, so a repeated (world, order)
-                # pair has a known value and needs no second evaluation -- the same memo the nominal
-                # variant relies on, now available here because the worlds no longer change.
                 key = (wi, perm)
-                if key in memo:
+                if (not saa_resample) and key in memo:
                     res_i, rew_i = memo[key]
                 else:
                     res_i = _evaluate_prefix_cached(start, dur, Ttr, env["ctx"], sc)
                     rew_i, _ = _completion_rewards(perm, start, dur, res_i["terms"], Ttr,
                                                    env["phi"])
-                    memo[key] = (res_i, rew_i)
+                    if not saa_resample:
+                        memo[key] = (res_i, rew_i)
                 trajs.append(dict(perm=perm, feats=feats, picks=picks, res=res_i, rew=rew_i))
             F_ep = float(np.mean([t["res"]["F"] for t in trajs]))
             # Self-imitation exemplar: this episode's BEST trajectory, but filed under the SAA MEAN.
@@ -1220,7 +1264,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                 _reset_noise(net)
                 _reset_noise(tgt)
             opt.zero_grad()
-            if stoch:                                   # exemplar: SAMPLED from the good-trajectory buffer
+            if saa:                                   # exemplar: SAMPLED from the good-trajectory buffer
                 ex = buf[rng.randint(len(buf))][:2] if buf else None
             else:                                       # exemplar: the best-by-F order so far
                 ex = states_for(best_perm) if best_perm is not None else None
@@ -1333,7 +1377,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         # variant list-schedules its ONE committed order into every scenario. Costs M evaluations
         # per probe, most of them cache hits.
         if probe:
-            if stoch:
+            if saa:
                 scen_F = float(np.mean([
                     _evaluate_prefix_cached(_rollout(env, greedy, n_lag, d)[1], d, env["T"],
                                             env["ctx"], sc)["F"] for d in env["scen"]]))
@@ -1342,7 +1386,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
                     _evaluate_prefix_cached(schedule_from_permutation(list(gperm), d), d,
                                             env["T"], env["ctx"], sc)["F"] for d in env["scen"]]))
 
-        if stoch:
+        if saa:
             if probe:
                 F_val = float(np.mean([
                     _evaluate_prefix_cached(_rollout(env, greedy, n_lag, dv)[1], dv, Ttr,
@@ -1356,15 +1400,15 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         if rec is not None:
             _m = lambda a: (float(np.mean(a)) if a else None)
             rec.episode(episode=ep, eps=float(eps), lam=float(lam_ep), F=float(res["F"]),
-                        best_F=(None if stoch else float(best_F)),
-                        buf_bestF=(float(buf[0][2]) if (stoch and buf) else None),
+                        best_F=(None if saa else float(best_F)),
+                        buf_bestF=(float(buf[0][2]) if (saa and buf) else None),
                         F_val=F_val, scenF=scen_F, greedy_order="-".join(map(str, gperm)),
                         loss=_m(ep_loss), q_pred_mean=_m(ep_q), y_target_mean=_m(ep_y),
                         td_abs_mean=_m(ep_td), since_improve=stop.since_improve, stable=stop.stable)
             rec.maybe_snapshot(ep, net)
         if verbose and ep % 25 == 0:
             print(f"  [{variant}] ep {ep}  eps={eps:.3f}  lam={lam_ep:.3f}  "
-                  f"{'F_val=' + (f'{F_val:.4f}' if F_val is not None else '-') if stoch else f'best_F={best_F:.4f}'}"
+                  f"{'F_val=' + (f'{F_val:.4f}' if F_val is not None else '-') if saa else f'best_F={best_F:.4f}'}"
                   f"  since_improve={stop.since_improve}  stable={stop.stable}", flush=True)
         ep += 1
 
@@ -1391,7 +1435,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     # nominal-trained Q has only ever seen nominal-world states, so the states adaptivity leads to
     # sit off its training manifold: the two seeds that produced ONE distinct order over 50 scenarios
     # were unchanged, while the seeds that adapted most (9 and 10 distinct orders) degraded most.
-    # Adaptivity has to be TRAINED FOR to pay -- that is what rl_stoch's random-scenario training is.
+    # Adaptivity has to be TRAINED FOR to pay -- that is what rl_saa's random-scenario training is.
     per_scenario = []
     for d in env["scen"]:
         gp, gs, _, _, _ = _rollout(env, greedy, n_lag, d)
@@ -1403,8 +1447,8 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         print(f"  [{variant}] stopped at ep {ep} ({outcome}) in {(time.perf_counter()-t0)/60:.1f} min",
               flush=True)
     return dict(order=order, per_scenario=per_scenario, net=net, episodes=ep,
-                n_evals=(ep if stoch else len(memo)), outcome=outcome,
-                best_score=(stop.best if stoch else best_F), hp=hp, seed=seed)
+                n_evals=(ep if saa else len(memo)), outcome=outcome,
+                best_score=(stop.best if saa else best_F), hp=hp, seed=seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -1474,7 +1518,7 @@ def record_value_curve(variant="rl_nominal", N=None):
     print(f"[{variant}] value-estimate record written -> {log_dir(vdir)}", flush=True)
 
 
-def run_rank(variants=("rl_nominal", "rl_stoch"), toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED,
+def run_rank(variants=("rl_nominal", "rl_saa"), toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED,
              ep_cap=EP_CAP, hp=None, stop_params=None):
     """Train each variant to a plateau and write its canonical results and diagnostics.
 
@@ -1509,15 +1553,20 @@ def run_rank(variants=("rl_nominal", "rl_stoch"), toy_dir=TOY, N=None, M=P.M_SCE
             row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],
                        time_s=time.perf_counter() - ts, n_evals=r["n_evals"],
                        episodes=r["episodes"], outcome=r["outcome"],
-                       # Serial-equivalent compute for THIS scenario: every distinct order the
-                       # search scored costs a full evaluation (T UE solves at the horizon the
-                       # training used), amortised over the M scenarios the one search serves, plus
-                       # this scenario's own evaluation. The slot cache makes many of those solves
-                       # free in practice and is deliberately not credited -- it is an engineering
-                       # convenience, not a property of the method. (Before 2026-08-11 this line
+                       # Serial-equivalent compute for THIS scenario: every evaluation the search
+                       # performed costs a full pass (T UE solves at the horizon the training used),
+                       # amortised over the M scenarios the one search serves, plus this scenario's
+                       # own evaluation. The slot cache makes many of those solves free in practice
+                       # and is deliberately NOT credited -- it is an engineering convenience, not a
+                       # property of the method. For the SAA variant each EPISODE evaluates saa_n
+                       # worlds (n_evals counts episodes), so the honest count multiplies by saa_n:
+                       # at saa_n=20 the search does 20 full evaluations per episode, and hiding that
+                       # behind the cache would understate its cost 20x. (Before 2026-08-11 this line
                        # divided the ORDER count by M and so understated the cost by a factor of T.)
-                       ue_total=(r["n_evals"] * (env["T_train"] if v.startswith("rl_stoch")
-                                                 else env["T"]) / len(env["scen"]) + env["T"]),
+                       ue_total=(r["n_evals"]
+                                 * (int(r["hp"].get("saa_n", 1) or 1) if v.startswith("rl_saa") else 1)
+                                 * (env["T_train"] if v.startswith("rl_saa") else env["T"])
+                                 / len(env["scen"]) + env["T"]),
                        order="-".join(map(str, order_m)),
                        durations="-".join(str(int(dur[e])) for e in env["segs"]))
             # Recorded for BOTH variants since both now deliver per-scenario: `order` above is
@@ -1537,7 +1586,7 @@ def run_rank(variants=("rl_nominal", "rl_stoch"), toy_dir=TOY, N=None, M=P.M_SCE
         else:
             _deliver_analysis(env, v, r["net"], r["per_scenario"], int(r["hp"]["n_lag"]),
                               float(r["hp"]["prior_scale"]), str(rdir), torch)
-            if not v.startswith("rl_stoch"):
+            if not v.startswith("rl_saa"):
                 _value_est_record(vdir, variant=v)
         meanF = float(np.mean([x["F"] for x in rows]))
         write_run_meta(vdir, method=v, segments=env["segs"], T=env["T"], seed=seed, M=M,

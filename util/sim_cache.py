@@ -184,7 +184,7 @@ def _iter_canonical_runs(N):
     """Yield (method, scale_dir) for every method folder holding an optima file at scale N."""
     groups = {"1-baselines/rule-based": ("flow", "demand", "ratio"),
               "1-baselines/ga": ("ga",), "1-baselines/pretrain_milp": ("milp",),
-              "2-RL/rl_nominal": ("rl_nominal",), "2-RL/rl_stoch": ("rl_stoch",)}
+              "2-RL/rl_nominal": ("rl_nominal",), "2-RL/rl_saa": ("rl_saa",)}
     for rel, methods in groups.items():
         d = ROOT / "outputs" / rel / f"n{N}"
         for m in methods:

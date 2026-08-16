@@ -23,7 +23,7 @@ be inspected end to end.
 
 `python main.py --solve <names>`: run any solver(s) at the scale config.py declares
 (N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_nominal, rl_stoch, compare. `ga-rescore` re-measures GA's committed order under the
+milp, oracle, rl_nominal, rl_saa, compare. `ga-rescore` re-measures GA's committed order under the
 current settings without repeating the search, for use after a change of ruler (a UE tolerance or
 engine change makes every F on disk stale while leaving the order it selected valid).
 This is THE entry point for experiments: what runs is chosen
@@ -155,7 +155,7 @@ def solve(names, seed=None, seeds=None):
         elif name == "oracle":
             from util.oracle import run_oracle
             run_oracle()
-        elif name in ("rl_nominal", "rl_stoch", "rl_stoch_per"):
+        elif name in ("rl_nominal", "rl_saa", "rl_saa_per"):
             from util.rl_rank import run_rank
             run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
         elif name == "tune-search":
@@ -166,7 +166,7 @@ def solve(names, seed=None, seeds=None):
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_nominal, rl_stoch, rl_stoch_per, tune-search, "
+                             f"milp, oracle, rl_nominal, rl_saa, rl_saa_per, tune-search, "
                              f"compare")
 
 

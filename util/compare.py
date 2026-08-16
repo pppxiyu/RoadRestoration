@@ -35,10 +35,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # `greedy_rl_stoch` was still appearing in the n6 comparison.
 RULE_BASED = ("flow", "demand", "ratio")
 
-# The searched/learned methods, each owning its own folder. rl_stoch and rl_stoch_per are
-# deliberately absent: their results on disk predate the current M, and the stochastic variant is
-# held out of the comparison until it is re-run. Re-add them here when that happens.
-SEARCHED = (("ga", "1-baselines"), ("rl_nominal", "2-RL"))
+# The searched/learned methods, each owning its own folder. rl_saa is the SAA variant
+# (nominal DQN config + sample-average-approximation training + C51); its 5-seed current-config
+# re-run is what admits it here. rl_saa_per stays absent (a dormant PER-tuning variant, not delivered).
+SEARCHED = (("ga", "1-baselines"), ("rl_nominal", "2-RL"), ("rl_saa", "2-RL"))
 
 
 def _discover(base, gdir, N):
@@ -199,7 +199,7 @@ def _compute_accounting(greedy_finals, milp_opt, M):
                               kind="greedy"))
             continue
         n_evals = float(d["n_evals"].mean())
-        kind = "rl" if v.startswith("rl_nominal") else "rl_stoch" if v.startswith("rl_stoch") else "meta"
+        kind = "rl" if v.startswith("rl_nominal") else "rl_saa" if v.startswith("rl_saa") else "meta"
         stats.append(dict(method=v, mean_F=float(d["F"].mean()), n_evals=n_evals,
                           mean_ue=n_evals * T / M + T, kind=kind))
     stats.append(dict(method="milp", mean_F=float(milp_opt["F_milp"].mean()),

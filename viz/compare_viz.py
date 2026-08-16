@@ -48,9 +48,9 @@ def _method_colors(cols):
             out[c] = C["accent2"]
         elif v == "rl_nominal":
             out[c] = C["teal"]
-        elif v == "rl_stoch":
+        elif v == "rl_saa":
             out[c] = C["purple"]
-        elif v == "rl_stoch_per":
+        elif v == "rl_saa_per":
             out[c] = C["accent2"]
 
         else:                                              # a static greedy variant
@@ -193,7 +193,7 @@ def make_accuracy_compute(out_dir, stats):
             s["_c"], s["_m"] = C["good"], "s"
         elif s["kind"] == "rl":
             s["_c"], s["_m"] = C["teal"], "^"
-        elif s["kind"] == "rl_stoch":
+        elif s["kind"] == "rl_saa":
             s["_c"], s["_m"] = C["purple"], "v"
         else:
             s["_c"], s["_m"] = _GREY_RAMP[gi % len(_GREY_RAMP)], "o"

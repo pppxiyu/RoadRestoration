@@ -50,6 +50,16 @@ M_SCENARIOS = 50        # Number of random damage scenarios every method is fina
                         # change T and hence every F -- results across different M are NOT
                         # comparable, and all methods must be re-scored together after a change.
 SEED = 42               # RNG seed, fixed so the scenario sampling is reproducible.
+# How the M evaluation scenarios (the frozen ruler every method is scored on) are drawn:
+#   "iid" -- independent Monte Carlo draws (the historical default).
+#   "lhs" -- probability-stratified Latin Hypercube over the per-level duration marginals, which
+#            covers the uncertainty space far more evenly at M=50 and so estimates each method's
+#            E[F] with lower variance (util.scenarios.saa_lhs_sample). Same distribution, stratified
+#            draw. This is a CHANGE OF RULER: every F on disk becomes stale and all methods must be
+#            re-scored together (see the M_SCENARIOS note above). The RL-SAA training sample is drawn
+#            from a separate stream (seed*1000+21) so it does not systematically coincide with this
+#            eval sample -- measured overlap at saa_n=20 is <=3/50, the same order as i.i.d.
+EVAL_SAMPLING = "lhs"
 N_DISRUPTED_ORACLE = 10  # Number of disrupted roads. The instance is chosen by baseline UE flow
                         # (the most heavily used, i.e. critical, links); the brute-force oracle is
                         # only feasible at small values (n! orders).

@@ -32,7 +32,14 @@ def sample_scenarios(disrupted, M=P.M_SCENARIOS, seed=P.SEED):
     (road_class, severity) level shares one duration within a scenario, a
     duration is drawn once per distinct level and then broadcast to all of that
     level's segments. A fixed seed makes the whole sample reproducible.
+
+    When config.EVAL_SAMPLING == "lhs" the draw is delegated to saa_lhs_sample: the SAME per-level
+    duration distribution, sampled by probability-stratified Latin Hypercube instead of i.i.d., so
+    M=50 covers the uncertainty space evenly and estimates E[F] with lower variance. It is a change
+    of ruler (see the config note), so every method must be re-scored after flipping it.
     """
+    if getattr(P, "EVAL_SAMPLING", "iid") == "lhs":
+        return saa_lhs_sample(disrupted, M, np.random.RandomState(seed))
     rng = np.random.default_rng(seed)
     rows = list(disrupted.itertuples(index=False))
     # Enumerate the distinct (road_class, severity) levels present; sorting keeps
@@ -116,6 +123,45 @@ def draw_durations(disrupted, rng):
         eta = float(rng.choice(P.ETA))
         lvl_dur[lvl] = max(1, int(round(base * eta)))
     return {int(r.edge_id): lvl_dur[(r.road_class, int(r.severity))] for r in rows}
+
+
+def saa_lhs_sample(disrupted, n, rng):
+    """n duration scenarios by PROBABILITY-STRATIFIED Latin Hypercube Sampling over the per-level
+    duration marginals -- a lower-variance stand-in for n i.i.d. draw_durations calls, for the FIXED
+    SAA training sample.
+
+    Same generative law as draw_durations: a level's duration marginal is the pushforward of a
+    uniform draw over its (base, eta) combinations through max(1, round(base*eta)), so a duration's
+    probability is its combination multiplicity over the combo count. Instead of drawing each of the
+    n worlds independently (which at n=10 routinely clumps and leaves gaps), LHS stratifies each
+    level's [0,1) probability axis into n equal slices, draws one duration per slice through the
+    marginal's inverse CDF, and independently PERMUTES each level's n durations before pairing them
+    into worlds. Two consequences, both wanted here: every level's n durations track its true
+    marginal far more tightly than an i.i.d. sample of the same size (so the SAA average is a
+    lower-variance, still-unbiased estimate of E[F]), and the independent permutations keep the
+    levels decorrelated, matching the law's independence across levels.
+
+    A degenerate level (single possible duration, e.g. local-1) contributes that value to all n
+    worlds. Drawn ONCE from the caller's rng and then held fixed by the trainer, so this stays SAA;
+    it is never used for the frozen evaluation sample, which stays i.i.d. under sample_scenarios.
+    """
+    from collections import Counter
+    rows = list(disrupted.itertuples(index=False))
+    levels = sorted({(r.road_class, int(r.severity)) for r in rows})
+    cols = {}
+    for lvl in levels:
+        cnt = Counter(max(1, int(round(base * eta)))
+                      for base in P.DURATION_SUPPORT[lvl] for eta in P.ETA)
+        durs = sorted(cnt)
+        cdf = np.cumsum([cnt[d] for d in durs], dtype=float) / sum(cnt.values())
+        # one stratified draw per equal-probability slice: u in slice k is (k + jitter)/n, then
+        # inverse-CDF (first duration whose cumulative probability exceeds u).
+        us = (np.arange(n) + rng.rand(n)) / n
+        col = np.array([durs[int(np.searchsorted(cdf, u, side="right"))] for u in us], dtype=int)
+        rng.shuffle(col)                                   # decorrelate this level from the others
+        cols[lvl] = col
+    return [{int(r.edge_id): int(cols[(r.road_class, int(r.severity))][i]) for r in rows}
+            for i in range(n)]
 
 
 def worst_case_durations(disrupted):
