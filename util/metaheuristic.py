@@ -1,9 +1,9 @@
 """
-Metaheuristic baseline solvers for the road-restoration scheduling problem: a genetic algorithm (GA).
+Metaheuristic baseline solver for the road-restoration scheduling problem: a genetic algorithm (GA).
 It searches the same space the greedy and MILP solvers do -- a
 repair PRIORITY ORDER over the disrupted segments, turned into start times by the work-conserving list
-schedule -- and are scored by the identical true objective F (a real user-equilibrium solve per slot),
-so their results are directly comparable to the other methods.
+schedule -- and is scored by the identical true objective F (a real user-equilibrium solve per slot),
+so its results are directly comparable to the other methods.
 
 Each search runs ONCE, against a nominal instance whose durations are the expected repair times
 rounded to whole slots, and the single order it returns is then evaluated on every sampled
@@ -25,24 +25,24 @@ the solver to its iteration cap), two things make the search affordable:
 The search is run under a fixed budget of UNIQUE evaluations, so every method is compared at a
 controlled compute level.
 
-Both populations are SEEDED with the three static greedy orders (flow / demand / ratio) plus random
-fills; with elitism this guarantees each metaheuristic finishes no worse than the best greedy baseline,
+The population is SEEDED with the three static greedy orders (flow / demand / ratio) plus random
+fills. With elitism this guarantees the GA finishes no worse than the best greedy baseline,
 making it a meaningful "can search improve on the heuristic?" baseline rather than a blind sample of a
 13!-sized space. Set seed_greedy=False for pure random initialization.
 
-Each variant writes outputs/greedy/n{N}/{variant}_optima.csv, the same schema and directory the static
-greedy solvers use, so util/compare.py discovers them automatically, beside {variant}_slots.csv
-holding the per-slot accessibility of those same evaluations, so a recovery curve costs no extra UE
-solve. The search's own record stays in outputs/{variant}/n{N}/: {variant}_trace.csv, the
-search-process figure drawn from it, and a run_meta.json naming the instance, hyperparameters,
-delivered order and stopping condition.
+Everything a run produces lives in the variant's own numbered folder
+outputs/02-baselines/04-ga/n{N}/. results/{variant}_optima.csv keeps the schema of the static
+greedy solvers, so util/compare.py discovers it by name, and log/{variant}_slots.csv holds the
+per-slot accessibility of those same evaluations, so a recovery curve costs no extra UE solve.
+The search's own record sits beside them: log/{variant}_trace.csv, the search-process figure
+drawn from it, and config/run_meta.json naming the instance, hyperparameters, delivered order
+and stopping condition.
 
 Run inside the road_restore conda env (PYTHONPATH = project root); above 8 segments compute_horizon
 switches to the Graham bound by itself, so a large-n run only needs the N_DISRUPTED_ORACLE override:
   python -m util.metaheuristic                 # ga at the configured scale
 """
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -90,7 +90,7 @@ def _worker_eval(task):
 
 
 # --------------------------------------------------------------------------- #
-# Budgeted, memoized, parallel fitness cache (shared by GA and PSO)
+# Budgeted, memoized, parallel fitness cache
 # --------------------------------------------------------------------------- #
 class FitnessCache:
     """Evaluate candidate orders under a fixed budget of UNIQUE evaluations, in parallel, once each.
@@ -125,7 +125,7 @@ class FitnessCache:
 
 
 # --------------------------------------------------------------------------- #
-# Plateau-based stopping (shared by GA and PSO)
+# Plateau-based stopping
 # --------------------------------------------------------------------------- #
 class PlateauStop:
     """Stop a population search once it has visibly levelled off, rather than when a preset amount
@@ -202,14 +202,12 @@ def _gen_row(gen, fit, pop, F, stop):
 # Seeds: the static greedy priority orders (shared initialization)
 # --------------------------------------------------------------------------- #
 def _greedy_seed_orders(ctx, segments, durations, flow):
-    """Three static priority orders (flow / demand / ratio) as permutations, used to seed both
-    metaheuristics.
+    """Three static priority orders (flow / demand / ratio) as permutations, used to seed the GA.
 
     All three match the util/greedy.py baselines, because the caller passes the NOMINAL durations
     the search itself optimizes against, and those are the same expected durations the ratio
     baseline divides by (up to the rounding to whole slots that the scheduler requires). Seeding
-    from the static rankers is what makes each metaheuristic finish no worse than the best of
-    them."""
+    from the static rankers is what makes the search finish no worse than the best of them."""
     B, sev, dis = ctx["B"], ctx["severity_vec"], ctx["disrupted"]
     demand = {int(dis[j][0]): float(sev[j] * B[:, j].sum()) for j in range(len(dis))}
     ratio = {e: demand[e] / max(1, int(durations[e])) for e in demand}
@@ -293,10 +291,11 @@ GA_PARAMS = dict(pop_size=16, elite=4, tour_k=3, p_cross=0.9, p_mut=0.5, max_swa
 
 # Ceiling on unique true evaluations per variant. Effectively OPEN: the plateau rule is what ends
 # a run, and this cap is only the runaway guard behind it. It was briefly 60 (a shared-compute
-# ceiling matched to the RL solver), but the recorded n=10 GA baseline (mean F 0.9389, run_meta
-# budget=100000) plateau-stopped at 383 unique evaluations -- under a cap of 60 the same call
-# would stop at ~6 generations and silently fail to reproduce the result on disk. The default
-# must reproduce the recorded baseline; a tighter budget is a per-call override, not a default.
+# ceiling matched to the RL solver), but the recorded n=10 GA baseline (mean F 0.9473 on the LHS
+# ruler, run_meta budget=100000) plateau-stopped at 378 unique evaluations -- under a cap of 60
+# the same call would stop at ~6 generations and silently fail to reproduce the result on disk
+# (the pre-re-score 2026-08 run showed the same pattern, 0.9389 at 383 evaluations). The default
+# must reproduce the recorded baseline. A tighter budget is a per-call override, not a default.
 BUDGET_CAP = 100_000
 
 
@@ -394,8 +393,8 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
                       seed=P.SEED, budget=BUDGET_CAP, workers=16, seed_greedy=True,
                       rescore=False, search_seed=None):
     """Search ONCE on a nominal instance, then evaluate the resulting priority order on all M
-    sampled scenarios, writing outputs/greedy/n{N}/{variant}_optima.csv (schema shared with the
-    static greedy solvers).
+    sampled scenarios, writing outputs/02-baselines/04-ga/n{N}/results/{variant}_optima.csv
+    (schema shared with the static greedy solvers).
 
     The search optimizes against a single set of NOMINAL durations, each segment's expected repair
     time rounded to whole slots (util.scenarios.nominal_durations, the same vector the MILP uses,
@@ -511,10 +510,11 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
                 for e in segments:
                     row[f"start_{e}"] = start[e]
                 rows.append(row)
-            # Optima + per-slot slots now live in the variant's OWN tree, outputs/{v}/n{N}/ (+ raw/),
-            # beside its diagnostics -- mirroring outputs/pretrain_milp, outputs/rl and
-            # outputs/rl_saa. compare.py discovers each method's optima from its own folder, so
-            # nothing has to sit in the shared greedy pool any more.
+            # Optima + per-slot slots live in the variant's OWN numbered tree,
+            # outputs/02-baselines/04-ga/n{N}/ (results/ and log/), beside its diagnostics --
+            # mirroring outputs/02-baselines/03-pretrain_milp and the two outputs/03-RL solver
+            # folders. compare.py discovers each method's optima from its own folder, so nothing
+            # has to sit in the shared rule-based pool any more.
             diag = scale_dir(OUT_DIAG / solver_dir(v))
             diag.mkdir(parents=True, exist_ok=True)
             pd.DataFrame(rows).to_csv(results_dir(diag) / f"{v}_optima.csv", index=False)

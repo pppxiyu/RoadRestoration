@@ -42,7 +42,6 @@ Maintenance entry points (the cache subsystem's own, per the main.py/config.py c
 import hashlib
 import json
 import sqlite3
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -182,9 +181,12 @@ def for_ctx(ctx, toy_dir=None):
 # --------------------------------------------------------------------------- #
 def _iter_canonical_runs(N):
     """Yield (method, scale_dir) for every method folder holding an optima file at scale N."""
-    groups = {"1-baselines/rule-based": ("flow", "demand", "ratio"),
-              "1-baselines/ga": ("ga",), "1-baselines/pretrain_milp": ("milp",),
-              "2-RL/rl_nominal": ("rl_nominal",), "2-RL/rl_saa": ("rl_saa",)}
+    from util.provenance import solver_dir
+    groups = {f"02-baselines/{solver_dir('rule-based')}": ("flow", "demand", "ratio"),
+              f"02-baselines/{solver_dir('ga')}": ("ga",),
+              f"02-baselines/{solver_dir('pretrain_milp')}": ("milp",),
+              f"03-RL/{solver_dir('rl_nominal')}": ("rl_nominal",),
+              f"03-RL/{solver_dir('rl_saa')}": ("rl_saa",)}
     for rel, methods in groups.items():
         d = ROOT / "outputs" / rel / f"n{N}"
         for m in methods:
@@ -267,7 +269,7 @@ def verify(N=None, toy_dir=None):
     surface as cache misses (reported via n_ue > 0). Exact-zero UE solves plus matching F is the
     proof the cache serves precisely the recorded evaluations."""
     import pandas as pd
-    from util.evaluate import build_context, schedule_from_permutation
+    from util.evaluate import build_context
     from util.oracle import compute_horizon, select_oracle_instance
     from util.rl import _evaluate_prefix_cached
     from util.scenarios import sample_scenarios

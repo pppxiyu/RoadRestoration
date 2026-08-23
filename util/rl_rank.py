@@ -36,10 +36,11 @@ itself produced, not an external demonstration:
 also fixed the drift during the diagnosis but lost both hyperparameter searches to margin and was
 removed on 2026-08-10; the historical comparison lives in the run records, not in this module.)
 
-THE TWO VARIANTS mirror util.rl. The nominal variant ("rl_nominal") trains in the nominal world, its
-exemplar is the best-by-F order found so far, and it delivers ONE committed order. The stochastic
-variant ("rl_saa") draws a fresh duration realization every episode (util.scenarios.draw_durations,
-the law the evaluation sample is drawn from) and delivers the POLICY, rolled out per scenario.
+THE TWO VARIANTS mirror util.rl. The nominal variant ("rl_nominal") trains in the nominal world,
+with the best-by-F order found so far as its exemplar. The stochastic variant ("rl_saa") fixes an
+LHS-drawn SAA sample of saa_n worlds once per run (util.scenarios.saa_lhs_sample, the same law the
+evaluation sample is drawn from) and scores each episode on their average F. Both variants deliver
+the FINAL policy, rolled out per scenario -- the nominal-world order is kept only as a summary.
 F values from different worlds are not comparable, so the nominal variant's single best-by-F
 exemplar does not exist there; instead a top-K buffer holds the lowest-F_w trajectories seen and
 the ranking loss imitates one SAMPLED from it. Sampling rather than always taking the buffer
@@ -94,7 +95,7 @@ from util.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT_DIAG = ROOT / "outputs" / "03-RL" # each variant owns outputs/03-RL/{variant}/n{N}/
+OUT_DIAG = ROOT / "outputs" / "03-RL" # variants own outputs/03-RL/{01-rl_nominal,02-rl_saa}/n{N}/
 _N_FEAT = 8                          # base per-candidate features; see util.rl._decision_features
 
 # Feature-column names, in the order _decision_features emits them. Carried here because every
@@ -283,8 +284,10 @@ SEARCH_SWEEP = {
 RANK_PARAMS_SAA = dict(
     # ADOPTED WHOLESALE FROM THE NOMINAL VARIANT (2026-08-12). Every value below that the two
     # variants share is the one the nominal variant's tuning campaign selected -- the loss shape,
-    # the network, the exploration schedule, the imitation ramp, prioritized replay and the error
-    # clipping. Those mechanisms were screened one at a time against a measured baseline, and there
+    # the network, the exploration schedule, the imitation ramp and prioritized replay. (The error
+    # clipping stopped being shared on 2026-08-23, when the nominal variant switched it off with
+    # the mp2-line adoption while this variant still carries the campaign's 0.5.) Those mechanisms
+    # were screened one at a time against a measured baseline, and there
     # is no reason a change of training world should overturn what they established; keeping two
     # independently drifted parameter sets was making the two variants incomparable for reasons
     # that had nothing to do with the thing they actually differ in.
@@ -525,8 +528,10 @@ def _build_net(hidden, n_lag, torch, nn, dueling=False):
     0 plays the flow order. The search starts at the strongest static baseline instead of at noise,
     which is also what makes the delivery no worse than flow in the nominal world.
 
-    With dueling=True (Wang et al., ICML 2016; an EXPERIMENTAL flag, off in every tuned config)
-    the same trunk splits into a value stream and an advantage stream,
+    With dueling=True (Wang et al., ICML 2016 -- on this row architecture it was measured-rejected
+    and is reachable only via arch="rows", while the tuned configs use dueling on the dqn
+    architecture, see _build_dqn_net) the same trunk splits into a value stream and an advantage
+    stream,
         Q(s, e) = prior + V(s) + A(s, e) - mean_e' A(s, e'),
     with V(s) the candidate-mean of the value head (the trunk scores one candidate per row, so the
     state's value is read as the mean over its candidate rows) and the mean-subtraction the paper's
@@ -972,9 +977,9 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
           stop_params=None, verbose=True):
     """Train one variant to a plateau and return the delivery plus its diagnostics.
 
-    Returns dict(order, per_scenario, net, episodes, n_evals, outcome, best_score). For "rl_nominal",
-    per_scenario is the one committed order list-scheduled into each evaluation scenario; for
-    "rl_saa" it is the policy's own greedy rollout in each scenario, so each gets its own order.
+    Returns dict(order, per_scenario, net, episodes, n_evals, outcome, best_score). For both
+    variants, per_scenario is the final policy's own greedy rollout in each evaluation scenario
+    (each scenario gets its own order). The returned order is only the nominal-world summary.
     """
     import torch
     import torch.nn as nn
@@ -1419,10 +1424,11 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         # It is deliberately kept OUT of `stop.update` for both variants. Stopping on the evaluation
         # sample would turn the reported mean into an optimistic best-of over the test set.
         #
-        # Each variant is scored the way it actually DELIVERS, so the curve lands on the same number
-        # run_rank finally reports: the stochastic policy is rolled out per scenario, the nominal
-        # variant list-schedules its ONE committed order into every scenario. Costs M evaluations
-        # per probe, most of them cache hits.
+        # The stochastic variant is scored the way it actually DELIVERS -- the policy rolled out
+        # per scenario -- so its curve lands on the number run_rank finally reports. The nominal
+        # probe list-schedules the CURRENT nominal greedy order as a cheap proxy, while actual
+        # delivery rolls the policy per scenario, so its curve approximates the finally reported
+        # mean rather than equalling it. Costs M evaluations per probe, most of them cache hits.
         if probe:
             if saa:
                 scen_F = float(np.mean([
@@ -1470,11 +1476,10 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     # apply that same order to every scenario, which threw the policy away and delivered a static
     # order it never needed to be a policy to produce.
     #
-    # OBSERVED HISTORY ONLY, so this is not clairvoyance. Durations are drawn per (road_class,
-    # severity) LEVEL and shared by every segment of that level (util.scenarios.draw_durations), so
-    # _rollout holds each unfinished segment at its planning duration `dur_raw` and adopts a realized
-    # duration only for levels that a COMPLETED segment has already exposed. No segment's own time is
-    # ever read before the world has shown it.
+    # NO CLAIRVOYANCE, and no duration beliefs either. Since the 2026-08-23 removal of the
+    # progressive-revelation mechanism (see _rollout), beliefs always stay at the planning
+    # expectation. Adaptivity comes only from realized durations shaping the crew-availability and
+    # schedule state the policy observes, never from realized durations entering the beliefs.
     #
     # MEASURED COST, recorded because it argues against the change on results while the change is
     # still the right one on semantics (n10, 2026-08-12, the five saved nominal models, no
@@ -1556,22 +1561,14 @@ def _value_est_record(vdir, variant):
         log_dir(vdir) / f"{variant}_value_est.csv", index=False)
 
 
-def record_value_curve(variant="rl_nominal", N=None):
-    """Post-hoc entry: write the value-estimate record for an already-delivered run from its own
-    log, without retraining and without evaluating anything."""
-    N = P.N_DISRUPTED_ORACLE if N is None else N
-    vdir = scale_dir(OUT_DIAG / solver_dir(variant), N)
-    _value_est_record(vdir, variant)
-    print(f"[{variant}] value-estimate record written -> {log_dir(vdir)}", flush=True)
-
-
 def run_rank(variants=("rl_nominal", "rl_saa"), toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED,
              ep_cap=EP_CAP, hp=None, stop_params=None):
     """Train each variant to a plateau and write its canonical results and diagnostics.
 
-    Outputs go to the variant's OWN folder (outputs/{variant}/n{N}/): {variant}_optima.csv, the
-    per-slot recovery curve in raw/, the diagnostics in raw/, and run_meta.json plus the delivered
-    network in cache/. A rerun REPLACES that folder: it holds the latest run, and only that.
+    Outputs go to the variant's OWN folder (outputs/03-RL/{solver_dir(variant)}/n{N}/):
+    {variant}_optima.csv and the delivered network model_best.pt in results/, the per-slot recovery
+    curve and the diagnostics in log/, and run_meta.json in config/. A rerun REPLACES that folder:
+    it holds the latest run, and only that.
     """
     import torch
     N = P.N_DISRUPTED_ORACLE if N is None else N

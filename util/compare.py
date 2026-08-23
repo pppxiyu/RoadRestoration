@@ -1,9 +1,10 @@
 """
-Compare the road-restoration solvers on a common instance: every baseline found under
-outputs/greedy/n{N}/ (the static greedy variants plus the GA/PSO metaheuristics and the RL DQN,
-which share that directory), the pretraining MILP, and -- when its results exist for this scale --
-the brute-force oracle. Aligns them by scenario, computes gaps to the oracle, and writes to
-outputs/comparison/n{N}/.
+Compare the road-restoration solvers on a common instance, each discovered by NAME: the static
+rule-based rankers under outputs/02-baselines/02-rule-based/n{N}/, the GA and both RL variants
+each in its own numbered folder (02-baselines/04-ga, 03-RL/01-rl_nominal, 03-RL/02-rl_saa), the
+pretraining MILP, and -- when its results exist for this scale -- the brute-force oracle. Aligns
+them by scenario, computes gaps to the oracle, and writes to outputs/04-comparison/n{N}/
+(comparison.csv in its results/ subfolder).
 
 The oracle is included only if oracle_optima.csv is present for this scale (it is infeasible at
 larger sizes). Greedy-vs-MILP is always reported.
@@ -23,14 +24,14 @@ import pandas as pd
 
 import config as P
 from util.oracle import scale_dir, select_oracle_instance
-from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, source_meta,
+from util.provenance import (solver_dir, fresh_scale_dir, results_dir, source_meta,
                              write_run_meta)
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-# The three static rankers, named rather than globbed. outputs/02-baselines/rule-based/n{N}/ used to
-# be the SHARED pool every method wrote into, so at scales last touched before the per-method
+# The three static rankers, named rather than globbed. outputs/02-baselines/02-rule-based/n{N}/
+# used to be the SHARED pool every method wrote into, so at scales last touched before the per-method
 # reorganisation it still holds ga_optima.csv / rl_optima.csv / rl_stoch_optima.csv. A glob picks
 # those up and silently re-admits a superseded run under a legacy name -- which is exactly how
 # `greedy_rl_stoch` was still appearing in the n6 comparison.
@@ -56,7 +57,8 @@ def _discover(base, gdir, N):
 
 def run_compare(N=None):
     """Align every baseline + MILP + (optional) oracle for scale N, write
-    outputs/comparison/n{N}/comparison.csv + figures, and print a summary sorted best-first."""
+    outputs/04-comparison/n{N}/ (results/comparison.csv + figures), and print a summary sorted
+    best-first."""
     N = P.N_DISRUPTED_ORACLE if N is None else N
     base = ROOT / "outputs"
     gdir = scale_dir(base / "02-baselines" / solver_dir("rule-based"), N)

@@ -5,7 +5,7 @@ make_performance_distribution, accuracy against compute in
 make_accuracy_compute, and the gap to the true optimum (only where the oracle exists) in
 make_gap_to_oracle. Every figure here compares METHODS; a single solver's own search trajectory
 belongs with that solver instead -- the MILP's in viz/pretrain_viz.py, the metaheuristics' in
-viz/meta_viz.py, the RL variants' in viz/rl_viz.py. Styling follows viz/style.py so it matches
+viz/meta_viz.py, the RL variants' in viz/rank_viz.py. Styling follows viz/style.py so it matches
 the rest of the project's figures."""
 from pathlib import Path
 
@@ -15,10 +15,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from viz.style import C, CMAP_SEQ, save_pub, use_pub
+from viz.style import C, save_pub, use_pub
 
-# The darkening grey ramp is reserved for the static greedy variants; the full per-method mapping
-# (grey ramp / GA red / PSO green / RL teal / MILP blue / oracle red) lives in _method_colors below.
+# The darkening grey ramp is reserved for the static greedy variants. The full per-method mapping
+# (grey ramp / GA red / rl_nominal teal / rl_saa purple / rl_saa_per light blue / MILP dark blue /
+# oracle red) lives in _method_colors below.
 _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 
 
@@ -27,11 +28,12 @@ def _label(c):
 
 
 def _method_colors(cols):
-    """Static greedy rules share a darkening grey ramp (context); GA and PSO, being population
-    metaheuristics rather than static rankers, get their own colors (GA reuses the signal red,
-    which cannot collide because the oracle is never drawn in the same figure as GA); the RL DQN
-    takes the remaining distinct accent (teal); the MILP is the emphasis blue (method under
-    test); the oracle keeps the signal red where it appears."""
+    """Static greedy rules share a darkening grey ramp (context). GA, being a population
+    metaheuristic rather than a static ranker, reuses the signal red, which cannot collide
+    because the oracle is never drawn in the same figure as GA. The nominal RL DQN takes the
+    teal accent, and the SAA variants take purple (rl_saa) and the lighter blue (rl_saa_per).
+    The MILP is the emphasis blue (method under test), and the oracle keeps the signal red
+    where it appears."""
     out, gi = {}, 0
     for c in cols:
         v = _label(c)
@@ -41,11 +43,6 @@ def _method_colors(cols):
             out[c] = C["signal"]
         elif v == "ga":
             out[c] = C["signal"]
-        elif v == "ga_milpcost":
-            # A GA run given the MILP's compute instead of the shared 60-evaluation budget. It is
-            # drawn in the secondary blue rather than the GA red because what it is there to be
-            # read against is the MILP, not the full-budget GA.
-            out[c] = C["accent2"]
         elif v == "rl_nominal":
             out[c] = C["teal"]
         elif v == "rl_saa":
@@ -173,8 +170,8 @@ def make_accuracy_compute(out_dir, stats):
     many workers is not made to look cheaper than it is (see Caveats C1). Lower-left is better,
     meaning little compute together with high accuracy. `stats` is a list of dicts
     {method, mean_F, mean_ue, kind} where kind is 'greedy' (static rule, grey circle), 'meta'
-    (budgeted population search, green square), 'rl' (budgeted DQN, teal triangle) or 'milp'
-    (blue diamond)."""
+    (budgeted population search, green square), 'rl' (budgeted nominal DQN, teal triangle),
+    'rl_saa' (SAA DQN, purple down-triangle) or 'milp' (blue diamond)."""
     use_pub()
     figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)

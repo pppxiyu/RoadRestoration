@@ -1,8 +1,8 @@
 """
 Figures documenting the CURRENT problem setting, organized by world:
 
-    python -m viz.problem_setting            # current setting (per-segment eta, the default)
-    python -m viz.problem_setting --law repo # the legacy level-shared law from config.py
+    python -m viz.problem_setting            # per-segment eta, the incoming setting (default)
+    python -m viz.problem_setting --law repo # the scoring ruler (util.scenarios.sample_scenarios)
 
   01_nominal_setting    the NOMINAL scenario, everything a solver optimizing that one world
                         faces: the damaged network (map), what each severity level does to a
@@ -18,15 +18,18 @@ Figures documenting the CURRENT problem setting, organized by world:
                         the severity physics and the demand rule are scenario-invariant, so
                         they appear only in 01.
 
-THE DURATION LAW RENDERED BY DEFAULT. The research line currently evaluates every solver under
-per-segment INDEPENDENT duration draws: segment e's realized repair time is
-max(1, round(E[d_e] * eta)) with its own eta ~ U(ETA_LO, ETA_HI) per scenario, where E[d_e] is
-the segment's expected duration under config.py's (road_class, severity) support sets. That law
-lives here explicitly (ETA_LO/ETA_HI below) because config.py's own sample_scenarios still
-implements the LEGACY law -- one shared eta from the discrete set P.ETA per (class, severity)
-level -- which the committed solver results on disk were scored under. Passing --law repo
-renders that legacy law instead; the generated figures and raw tables record which law they
-were built from, so the two can never be silently confused.
+THE DURATION LAW RENDERED BY DEFAULT. The default view draws per-segment INDEPENDENT
+durations: segment e's realized repair time is max(1, round(E[d_e] * eta)) with its own
+eta ~ U(ETA_LO, ETA_HI) per scenario, where E[d_e] is the segment's expected duration under
+config.py's (road_class, severity) support sets. This is the research line's INCOMING problem
+setting (adopted on the sandbox line, where the current RL configuration was selected); it is
+NOT yet the ruler the committed solver results on disk are scored under, which is why its
+parameters live here (ETA_LO/ETA_HI below) rather than in config.py. The scoring ruler remains
+util.scenarios.sample_scenarios: level-shared durations (one draw per (road_class, severity)
+level), sampled under config.EVAL_SAMPLING == "lhs" by probability-stratified Latin Hypercube
+over the per-level marginals. Passing --law repo renders that ruler instead; the generated
+figures and raw tables record which law they were built from, so the two can never be
+silently confused.
 
 Raw tables behind the figures (outputs/01-sim_val_n_problem_setting/raw/):
   problem_setting_segments.csv   one row per damaged segment: endpoints, class, severity,
@@ -56,7 +59,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT_FIG = ROOT / "outputs" / "01-sim_val_n_problem_setting" / "03-problem_setting"
 OUT_RAW = ROOT / "outputs" / "01-sim_val_n_problem_setting" / "raw"
 
-# The current per-segment duration law (see the module docstring for why it is defined here).
+# The per-segment duration law rendered by default (see the module docstring for its status).
 ETA_LO, ETA_HI = 0.30, 1.70
 
 
@@ -243,7 +246,7 @@ def render_problem_setting(law="new"):
                   for m, s in enumerate(scen)]).to_csv(
         OUT_RAW / "problem_setting_durations.csv", index=False)
     meta = dict(law=("per-segment independent eta" if law == "new"
-                     else "level-shared eta (legacy config.py law)"),
+                     else "level-shared eta (the current scoring ruler)"),
                 eta=({"lo": ETA_LO, "hi": ETA_HI} if law == "new" else {"support": P.ETA}),
                 n_disrupted=P.N_DISRUPTED_ORACLE, M=P.M_SCENARIOS, seed=P.SEED,
                 horizon_T=int(T), crews=P.C_MAX, rho=P.RHO, kappa=P.KAPPA,
@@ -259,5 +262,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--law", choices=("new", "repo"), default="new",
                     help="duration law to render: 'new' = per-segment independent eta "
-                         "(the current setting, default), 'repo' = the legacy level-shared law")
+                         "(the incoming setting, default), 'repo' = the current scoring ruler "
+                         "(util.scenarios.sample_scenarios, level-shared eta)")
     render_problem_setting(ap.parse_args().law)

@@ -88,7 +88,7 @@ def _evaluate_prefix_cached(start, durations, T, ctx, slot_cache, collect_traces
                                      ctx["zone_ids"], links_prev)
             links, _ = solve_ue(dmg_edges, _matrix_from_H(H, ctx),
                                 ctx["zone_ids"], rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER,
-                                quiet=True, cores=1, x0=x0)     # cores=1: bit-reproducible (see module docstring)
+                                quiet=True, cores=1, x0=x0)     # cores=1: bit-reproducible (see util.ue.solve_ue)
             u = od_travel_times(links, ctx)
             if P.UE_WARM_START:
                 # Routed demand: disconnected pairs' trips went unrouted, so the next slot's
@@ -123,7 +123,7 @@ def _evaluate_prefix_cached(start, durations, T, ctx, slot_cache, collect_traces
 
 
 # --------------------------------------------------------------------------- #
-# Tiny numpy MLP with Adam (no framework dependency)
+# Feature and reward primitives shared by the rl_rank solvers
 
 
 def _scenario_statics(ctx, segments, durations, phi):

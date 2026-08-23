@@ -132,8 +132,9 @@ def build_context(toy_dir, disrupted, ue_cores=None):
     that F1 measures degradation against, the demand-shortfall matrix B, and the
     disconnection penalty u_pen. `disrupted` is a DataFrame with columns edge_id, u, v,
     severity listing the damaged segments to be scheduled, where u and v are a segment's
-    two endpoint nodes. `ue_cores` pins the baseline UE solve's thread pool (None keeps
-    the engine default; see util.ue.solve_ue on why bit-reproducible callers pass 1)."""
+    two endpoint nodes. `ue_cores` is forwarded to the baseline UE solve's `cores` argument,
+    a retained no-op kept so existing call sites keep working -- the in-house solver is
+    single-threaded (see util.ue.solve_ue)."""
     edges, od, zone_ids = load_toy_network(toy_dir)
     zone_pos = {int(z): i for i, z in enumerate(zone_ids)}
     od_pairs = [(int(r.origin), int(r.destination)) for r in od.itertuples(index=False)]
@@ -250,12 +251,10 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
         # Solve UE on the damaged network under demand H to obtain congested link times, then
         # collapse them into OD travel times. Disconnected pairs (infinite time) are charged
         # the finite penalty u_pen so the objective stays well defined.
-        # cores=1: on this 24-node network the per-solve thread setup of the multi-core assignment
-        # costs more than the solve, so single-core is faster in WALL time, and it is what the RL
-        # evaluator already uses. It also removes the cross-thread reduction noise (~1e-10 in the
-        # flows). Measured to change the slot term g by at most 3.8e-15 vs the multi-core result
-        # (the ue-tolerance probe, 2026-08-11), far below any reported difference, so no method's
-        # numbers move -- this only makes the brute-force oracle and the searches faster.
+        # cores=1: a retained no-op under the single-threaded in-house solver (see
+        # util.ue.solve_ue). It dates from the retired multi-threaded engine, where single-core
+        # was faster in WALL time on this 24-node network and was measured to change the slot
+        # term g by at most 3.8e-15 vs the multi-core result (the ue-tolerance probe, 2026-08-11).
         x0 = None
         if P.UE_WARM_START and warm is not None:
             links_prev, H_routed_prev = warm

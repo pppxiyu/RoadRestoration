@@ -22,11 +22,11 @@ one rule an information advantage the others did not have.)
 The three rankers never run UE to decide the order, so each costs a single F evaluation per
 scenario (one UE per slot). All variants share the same instance / scenarios / horizon / real
 evaluator as the oracle and the MILP, so their objective values are directly comparable. Each
-variant writes outputs/greedy/n{N}/{variant}_optima.csv, alongside {variant}_slots.csv (the
-per-slot accessibility of that same evaluation, so a recovery curve costs no extra UE solve) and
-{variant}_run_meta.json (the instance, objective parameters and code revision the numbers came
-from). The directory is shared with the metaheuristics and the RL variants, hence the per-variant
-metadata name.
+variant writes outputs/02-baselines/02-rule-based/n{N}/results/{variant}_optima.csv, alongside
+log/{variant}_slots.csv (the per-slot accessibility of that same evaluation, so a recovery curve
+costs no extra UE solve) and config/{variant}_run_meta.json (the instance, objective parameters
+and code revision the numbers came from). The directory is shared by the three static rankers,
+hence the per-variant metadata name.
 
 Run inside the road_restore conda env (PYTHONPATH = project root):
   python -m util.greedy                    # the three static variants (default)
@@ -88,7 +88,8 @@ STATIC = {"demand": score_demand, "ratio": score_ratio, "flow": score_flow}
 def run_greedy(variants=("demand", "ratio", "flow"), toy_dir=TOY, out_dir=OUT,
                M=P.M_SCENARIOS, seed=P.SEED):
     """Run the chosen greedy variants over M scenarios and write one
-    outputs/greedy/n{N}/{variant}_optima.csv per variant (checkpointed each scenario)."""
+    outputs/02-baselines/02-rule-based/n{N}/results/{variant}_optima.csv per variant
+    (checkpointed each scenario)."""
     out_dir = scale_dir(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     # This folder is SHARED by the static rankers, so clear only the variants being rerun --
@@ -144,8 +145,8 @@ def run_greedy(variants=("demand", "ratio", "flow"), toy_dir=TOY, out_dir=OUT,
         (results_dir(out_dir) / f"{v}_solution_best.json").write_text(_json.dumps(dict(
             order=[int(x) for x in orders[v]],
             mean_F=float(pd.DataFrame(rows[v])["F"].mean())), indent=2), encoding="utf-8")
-        # outputs/greedy/n{N}/ is shared with the metaheuristics and the RL variants, so each
-        # ranker's metadata carries its own name rather than overwriting a common file.
+        # outputs/02-baselines/02-rule-based/n{N}/ is shared by the three static rankers, so
+        # each ranker's metadata carries its own name rather than overwriting a common file.
         write_run_meta(out_dir, method=v, segments=segments, T=T, seed=seed, M=M,
                        shared_dir=True,
                        order="-".join(map(str, orders[v])),

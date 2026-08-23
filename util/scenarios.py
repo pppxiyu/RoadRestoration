@@ -142,8 +142,9 @@ def saa_lhs_sample(disrupted, n, rng):
     levels decorrelated, matching the law's independence across levels.
 
     A degenerate level (single possible duration, e.g. local-1) contributes that value to all n
-    worlds. Drawn ONCE from the caller's rng and then held fixed by the trainer, so this stays SAA;
-    it is never used for the frozen evaluation sample, which stays i.i.d. under sample_scenarios.
+    worlds. Drawn ONCE from the caller's rng and then held fixed by the trainer, so this stays SAA.
+    It also serves the frozen evaluation sample: with config.EVAL_SAMPLING == "lhs" (the current
+    ruler), sample_scenarios delegates its draw here, from a separate rng stream than the trainer's.
     """
     from collections import Counter
     rows = list(disrupted.itertuples(index=False))

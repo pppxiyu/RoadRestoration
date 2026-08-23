@@ -284,8 +284,9 @@ def solve_ue(edges, od_matrix, zone_ids, algorithm="bfw", max_iter=1000, rgap=1e
     considered converged.
 
     `x0` is the WARM-START hook: an initial arc-flow vector, normally a previous solution mapped
-    through `_Network.map_flows`. None starts from the free-flow all-or-nothing loading, which is
-    what every caller in the project currently does. Note that a seed which is not feasible for
+    through `_Network.map_flows`. None starts from the free-flow all-or-nothing loading -- the
+    cold start used for a chain's first slot and whenever config.UE_WARM_START is off; with warm
+    starting on, the per-slot evaluators seed every later slot. Note that a seed not feasible for
     THIS OD table makes the relative gap an invalid optimality bound -- it can report convergence
     early -- so a warm seed must be built to be feasible for the demand it is solved against.
 

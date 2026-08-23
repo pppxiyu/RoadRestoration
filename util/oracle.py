@@ -81,9 +81,10 @@ def _param_fingerprint():
 
 
 def scale_dir(base=OUT, n=None):
-    """Return the scale-specific output folder outputs/oracle/n{N}/, where N is the number of
-    disrupted segments. Giving each problem size its own folder ensures a run at one scale never
-    overwrites the cached result of another."""
+    """Return the scale-specific output folder base/n{N}/, where N is the number of disrupted
+    segments and base defaults to the brute-force oracle's outputs/02-baselines/01-brute-force/
+    (other solvers pass their own base). Giving each problem size its own folder ensures a run at
+    one scale never overwrites the cached result of another."""
     n = P.N_DISRUPTED_ORACLE if n is None else n
     return Path(base) / f"n{n}"
 
@@ -176,7 +177,7 @@ def compute_horizon(segments, scenarios):
 
 
 def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=False, force=False):
-    out_dir = scale_dir(out_dir)                     # per-scale cache folder outputs/oracle/n{N}/
+    out_dir = scale_dir(out_dir)                     # per-scale cache folder n{N}/ under out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     disrupted = select_oracle_instance(toy_dir, P.N_DISRUPTED_ORACLE)

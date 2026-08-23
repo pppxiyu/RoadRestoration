@@ -8,7 +8,7 @@ deliberate: an external plotting script keyed to column names drifts out of sync
 recorder changes one, and fails silently if its errors are swallowed. Keeping the figures a
 by-product of the same flush that writes the data makes that drift impossible to miss.
 
-Four figures per run, all reading outputs/{variant}/n{N}/log/:
+Four figures per run, all reading outputs/03-RL/{01-rl_nominal,02-rl_saa}/n{N}/log/:
   {v}_objective   the objective curves (for the stochastic variant this includes BOTH rulers: the
                   validation worlds the stopping rule reads, and, dashed, the frozen evaluation
                   scenarios recorded purely as a diagnostic), which differ by variant because the
@@ -348,8 +348,8 @@ def make_rank_figures(out_dir, variant, quiet=True):
         save_pub(fig, os.path.join(out_dir, f"{variant}_qvalue"))
         plt.close(fig)
 
-    # Greedy-policy stability, in the same view the value-based solver's figure established
-    # (viz/rl_viz.make_rl_stability): panel a is the SAWTOOTH of consecutive episodes with an
+    # Greedy-policy stability, in the view established by the retired value-based solver's figure
+    # (the old rl_viz module): panel a is the SAWTOOTH of consecutive episodes with an
     # unchanged greedy order -- every tooth one stretch of agreement, every reset one change of
     # mind -- and panel b the same information as a rolling change rate, which separates
     # "converging slowly" from "not converging". When the run's own run_meta records a stopping

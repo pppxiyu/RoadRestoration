@@ -338,8 +338,8 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
         if json.loads(prog_path.read_text(encoding="utf-8")).get("hash") == fp:
             saved = pd.read_csv(opt_path)
             if len(saved) == M:
-                print(f"[cache] MILP result for these settings is already complete; reusing it "
-                      f"and re-rendering figures only", flush=True)
+                print("[cache] MILP result for these settings is already complete; reusing it "
+                      "and re-rendering figures only", flush=True)
                 rows = saved.to_dict("records")
                 trace_rows = pd.read_csv(trace_path).to_dict("records")
                 cached = True

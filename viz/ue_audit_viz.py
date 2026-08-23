@@ -28,8 +28,6 @@ Two figures into outputs/01-sim_val_n_problem_setting/02-tolerance_audit/:
 Aggregation reuses util.ue_audit's own functions (_stats_row, _changes), so a figure can never
 disagree with the generated write-up in tolerance_audit.md.
 """
-from pathlib import Path
-
 import matplotlib
 
 matplotlib.use("Agg")
@@ -39,11 +37,10 @@ import numpy as np
 import pandas as pd
 
 import config as P
-from util.ue_audit import (AE_PROD, MEANINGFUL, OUT_DOC, OUT_RAW, REF_RGAP,
-                           _changes, _stats_row)
+from util.ue_audit import AE_PROD, MEANINGFUL, OUT_DOC, OUT_RAW, _changes, _stats_row
 from viz.style import C, save_pub, use_pub
 
-# One fixed visual identity per configuration family, shared by all three figures:
+# One fixed visual identity per configuration family, shared by both figures:
 # the retired AequilibraE production setting is the grey anchor, cold in-house solves are the
 # light blue family, warm in-house solves the dark blue family, and the production setting
 # (config.py's rgap + warm start) is the red signal color everywhere it appears.
@@ -75,7 +72,7 @@ def _configs(d):
 
 
 # ----------------------------------------------------------------------------------------- #
-# 01  the change error of g against solve time
+# 02  the change error of g against solve time
 # ----------------------------------------------------------------------------------------- #
 _RC_BIG = {"font.size": 17, "axes.titlesize": 22, "axes.labelsize": 20,
            "xtick.labelsize": 17, "ytick.labelsize": 17, "legend.fontsize": 17}
@@ -157,13 +154,13 @@ def _objective_change_error(cfgs, base_ms, path):
 
 
 # ----------------------------------------------------------------------------------------- #
-# 00  the per-slot level error of g
+# 01  the per-slot level error of g
 # ----------------------------------------------------------------------------------------- #
 def _objective_level_error(cfgs, d, path):
     """ONE panel: the per-slot UE-solve error in the objective's per-slot term g, as a
     percentage of the truth, for the loosest cold solve (the failure mode) and the production
     setting. The retired anchor is deliberately NOT drawn -- a third overlapping line adds
-    nothing here, and its error is on record in the other two figures. What the panel shows is
+    nothing here, and its error is on record in the change-error figure. What the panel shows is
     the error's STRUCTURE: the cold solve wobbles from slot to slot (that wobble is what leaks
     into the slot-to-slot change of g), while the warm-started production setting sits on a
     smooth, near-constant offset that cancels in differences."""
@@ -194,7 +191,7 @@ def _objective_level_error(cfgs, d, path):
 
 # ----------------------------------------------------------------------------------------- #
 def render_audit_figures():
-    """Render all three audit figures from raw/tolerance_audit.csv into 02-tolerance_audit/."""
+    """Render both audit figures from raw/tolerance_audit.csv into 02-tolerance_audit/."""
     src = OUT_RAW / "tolerance_audit.csv"
     if not src.exists():
         raise FileNotFoundError(

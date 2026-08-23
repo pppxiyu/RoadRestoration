@@ -63,9 +63,11 @@ def _git_revision(root):
 
 
 # --------------------------------------------------------------------------- #
-# The output layout. Every n{N} scale folder of every method has exactly this shape:
+# The output layout. Every n{N} scale folder of every method has exactly this shape (method
+# folders sit under a numbered group and take their numbered names from SOLVER_DIR above,
+# e.g. outputs/02-baselines/03-pretrain_milp/n{N}/, outputs/03-RL/01-rl_nominal/n{N}/):
 #
-#   outputs/{method}/n{N}/
+#   outputs/{group}/{NN-method}/n{N}/
 #     results/    what the run DELIVERS: the optima table, the delivered solution/order, the
 #                 trained model weights. The one folder whose contents may be irreplaceable
 #                 (a stochastic policy's weights cannot be recomputed without retraining).
@@ -144,10 +146,11 @@ def fresh_scale_dir(out_dir, methods=None, subdirs=("results", "log", "config"),
 
 def meta_name(method, shared_dir):
     """File name for a method's run metadata: `run_meta.json` when the method owns its directory,
-    `{method}_run_meta.json` when several methods write into one. outputs/greedy/n{N}/ is the
-    shared case -- the three static rankers, both metaheuristics and both RL variants all drop
-    their optima there so the comparison can discover them -- and a single run_meta.json in that
-    directory would describe only whichever method happened to finish last."""
+    `{method}_run_meta.json` when several methods write into one. The shared case is
+    outputs/02-baselines/02-rule-based/n{N}/, where the three static rankers (flow/demand/ratio)
+    all drop their optima -- a single run_meta.json there would describe only whichever ranker
+    happened to finish last. The GA, the MILP and the RL variants each own their own numbered
+    directory and use the plain name."""
     return f"{method}_run_meta.json" if shared_dir else "run_meta.json"
 
 

@@ -9,10 +9,11 @@ which gives a ground-truth benchmark for a faster approximate solver.
 
 DEFAULT (`python main.py`): run the whole task at the problem size configured in config.py.
   Step 1  Brute-force ORACLE: evaluate every feasible repair order to find the true optimum
-          for each scenario. This is the ground truth; the run is resumable. -> outputs/oracle/n{N}/
+          for each scenario. This is the ground truth; the run is resumable.
+          -> outputs/02-baselines/01-brute-force/n{N}/
   Step 2  Approximate "traffic-fixation" solver: a much cheaper mixed-integer linear program
           (MILP) that estimates the same schedule, plus comparison and process figures. Its
-          quality is measured against the oracle. -> outputs/pretrain_milp/n{N}/
+          quality is measured against the oracle. -> outputs/02-baselines/03-pretrain_milp/n{N}/
 The oracle is RESUMABLE: if a run is interrupted, rerun `python main.py` and it continues from
 the last completed scenario (finished ones are skipped). If a complete oracle result already
 exists for this problem size and parameter set, it is reused from cache rather than recomputed.
@@ -64,7 +65,8 @@ def run_all():
     print("STEP 2/2  traffic-fixation MILP  (+ comparison & process figures)")
     print("=" * 72, flush=True)
     run_pretrain_milp()
-    print("\nDONE. Raw data + figures under outputs/oracle/n{N}/ and outputs/pretrain_milp/n{N}/.")
+    print("\nDONE. Raw data + figures under outputs/02-baselines/01-brute-force/n{N}/ "
+          "and outputs/02-baselines/03-pretrain_milp/n{N}/.")
 
 
 def walkthrough():

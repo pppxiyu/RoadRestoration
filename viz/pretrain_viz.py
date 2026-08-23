@@ -12,7 +12,7 @@ solvers produce a schedule:
     then optimises that linearised "surrogate" objective. Fixing the travel times is called
     traffic fixation.
 
-`make_comparison(...)` writes outputs/pretrain_milp/n{N}/01_milp_vs_oracle.png:
+`make_comparison(...)` writes outputs/02-baselines/03-pretrain_milp/n{N}/01_milp_vs_oracle.png:
   panel a: per-scenario objective F -- the oracle optimum F* against the TRUE F of the schedule
            the MILP actually returned.
   panel b: the gap F_milp - F*. A value <= 0 means the MILP found a schedule at least as good as
