@@ -376,7 +376,7 @@ def _validate():
     from viz.ue_val import save_validation
 
     toy = root / "data" / "siouxfalls_toy"
-    out = root / "outputs" / "0-UE_val"
+    out = root / "outputs" / "01-sim_val_n_problem_setting"
     obj_rel_tol, mean_rel_flow_tol, rgap_target = 1e-3, 0.01, 1e-12
 
     edges, od, zone_ids = load_toy_network(toy)

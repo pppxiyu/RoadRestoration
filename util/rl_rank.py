@@ -80,25 +80,30 @@ import numpy as np
 import pandas as pd
 
 import config as P
-from util.evaluate import build_context, schedule_from_permutation
+from util.evaluate import (_matrix_from_H, build_context, build_damaged_edges,
+                           schedule_from_permutation)
 from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
                          select_oracle_instance)
-from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
+from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, slot_rows,
                              write_run_meta)
 from util.rl import (_completion_rewards, _decision_features, _evaluate_prefix_cached,
                      _scenario_statics)
 from util.scenarios import (draw_durations, nominal_durations, saa_lhs_sample, sample_scenarios,
                             worst_case_durations)
+from util.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT_DIAG = ROOT / "outputs" / "2-RL" # each variant owns outputs/2-RL/{variant}/n{N}/
+OUT_DIAG = ROOT / "outputs" / "03-RL" # each variant owns outputs/03-RL/{variant}/n{N}/
 _N_FEAT = 8                          # base per-candidate features; see util.rl._decision_features
 
 # Feature-column names, in the order _decision_features emits them. Carried here because every
 # downstream analysis (policy-vs-intuition correlations, demand effects) indexes by name rather
 # than by position, and a silent reordering upstream would otherwise mislabel every figure.
-FEAT_COLS = ["phi", "sev", "dur", "dem_hat", "t_frac", "crew_gap", "demand_shortfall", "rem_work"]
+FEAT_COLS = ["phi", "sev", "dur", "dem_hat", "t_frac", "crew_gap", "demand_shortfall", "rem_work",
+             # the six message-passing columns appended when mp_rounds=2 (see _nbr_cols):
+             # round-1 neighbourhood means, then the neighbourhood means of those means
+             "mp1_phi", "mp1_dem", "mp1_flow", "mp2_phi", "mp2_dem", "mp2_flow"]
 
 # --------------------------------------------------------------------------- #
 # Tuned hyperparameters
@@ -207,11 +212,22 @@ RANK_PARAMS_NOMINAL = dict(
     # dominate the gradient and swamp the ranking term this solver exists for. Bounding it keeps
     # the two terms in proportion -- visible in the trace as fewer, better-aimed improvements
     # (9 to reach the final order, against 16 unclipped) rather than a wider search.
-    huber_delta=0.5,
+    # 2026-08-23: switched OFF (None) when the sandbox line's three changes were adopted --
+    # every mp2-line result was measured without clipping, and re-enabling it would make the
+    # adopted configuration one never actually run. The measured defence of 0.5 above is kept
+    # for the day clipping is revisited.
+    huber_delta=None,
     n_step=1,            # n-step return horizon for the TD target (1 = one-step)
     gamma=0.9995,        # discount on the bootstrap term ONLY; F itself is undiscounted
     double_dqn=True,     # decouple action selection from evaluation in the TD target
     target_sync=25,      # gradient steps between target-network copies
+    # 2026-08-23: adopted from the sandbox line together with huber_delta=None after the 4-seed
+    # comparison (mean F 0.9611 vs the retired 8-feature line's 0.9653, spread halved
+    # 0.019 -> 0.0094). The third sandbox change -- progressive revelation OFF -- became
+    # code-level removal of the whole mechanism the same day, so it no longer appears here.
+    mp_rounds=2,         # two rounds of iterated neighbourhood aggregation appended to the state
+                         # (8 -> 14 features per segment); 0 = the plain 8-feature state. See
+                         # _nbr_cols for the exact columns and _current_flow for their UE cost.
 )
 
 # Search-coverage screen (run with `python main.py --solve tune-search`). The nominal variant
@@ -275,7 +291,6 @@ RANK_PARAMS_SAA = dict(
     #
     # KEPT VARIANT-SPECIFIC, because they only exist for stochastic training:
     #   sil_buffer  the top-K good-trajectory buffer the ranking loss imitates from
-    #   reveal      progressive duration revelation during a rollout
     #   saa_n       the sample-average size (see below); the nominal variant rejects saa_n > 1
     # Same architecture as the nominal variant (see RANK_PARAMS_NOMINAL for the evidence): a
     # change of training world is no reason for a different function approximator, and letting the
@@ -309,7 +324,6 @@ RANK_PARAMS_SAA = dict(
     target_sync=25,
     sil_buffer=8,        # top-K good-trajectory buffer the ranking loss imitates from: too small
                          # tracks one lucky world, too large imitates mediocrity
-    reveal=True,         # progressive duration revelation: a completion reveals its whole level
     # SAMPLE AVERAGE APPROXIMATION: worlds drawn per episode whose F is averaged into the reward.
     # 1 reproduces the historical single-draw behaviour. Above 1 the learner is scored on a sample
     # average of its value rather than on one draw, at a proportional evaluation cost -- see the
@@ -489,11 +503,20 @@ def build_env(toy_dir=TOY, N=None, M=P.M_SCENARIOS, ue_cores=1):
     # threaded its own seed in here was caught scoring itself on its own private scenario set --
     # the exact failure this line is worded against.)
     scen = sample_scenarios(dis, M, P.SEED)
+    # Statics for the mp_rounds message-passing columns (built unconditionally -- they are cheap
+    # and hp-independent): undirected adjacency by shared endpoint over ALL edges, each edge's
+    # endpoints for folding directed UE volumes, the instance severities for rebuilding damaged
+    # networks, and a per-env cache of current-flow solves keyed by the exact damaged state.
+    end_of = {int(r.edge_id): (int(r.u), int(r.v)) for r in ctx["edges"].itertuples(index=False)}
+    adj = {a: [b for b in end_of if b != a and set(end_of[a]) & set(end_of[b])] for a in end_of}
+    mp = dict(end_of=end_of, adj=adj, phi_max=max(phi.values()),
+              sev_of={int(eid): float(sv) for (eid, _, _, sv) in ctx["disrupted"]},
+              flow_cache={})
     T = compute_horizon(segs, scen)
     T_train = max(T, compute_horizon(segs, [worst_case_durations(dis)]))
     st = _scenario_statics(ctx, segs, nominal, phi)
     return dict(dis=dis, segs=segs, ctx=ctx, phi=phi, nominal=nominal, scen=scen, T=T,
-                T_train=T_train, st=st,
+                T_train=T_train, st=st, mp=mp,
                 seg_idx={int(eid): j for j, (eid, _, _, _) in enumerate(ctx["disrupted"])})
 
 
@@ -670,14 +693,65 @@ def _augment(base_X, chosen_base, n_lag):
     return np.hstack([base_X, np.tile(hist.reshape(-1), (base_X.shape[0], 1))])
 
 
+def _current_flow(env, damaged_now, D_now):
+    """Two-way UE flow per edge for the CURRENT traffic state: the network with `damaged_now`
+    still broken and the demand surviving the shortfall D_now. One UE solve per distinct state,
+    memoized on the exact (damaged set, shortfall vector) key, so repeated orders are free."""
+    mp, ctx = env["mp"], env["ctx"]
+    key = (tuple(sorted(damaged_now)), D_now.round(9).tobytes())
+    hit = mp["flow_cache"].get(key)
+    if hit is not None:
+        return hit
+    H = np.clip(ctx["H0"] - D_now, 0.0, None)
+    links, _ = solve_ue(build_damaged_edges(ctx, {e: mp["sev_of"][e] for e in damaged_now}),
+                        _matrix_from_H(H, ctx), ctx["zone_ids"], rgap=P.UE_RGAP,
+                        max_iter=P.UE_MAX_ITER, quiet=True, cores=1)
+    f = {}
+    for a, b, v in zip(links["from"].to_numpy(), links["to"].to_numpy(),
+                       links["volume"].to_numpy()):
+        k2 = (min(int(a), int(b)), max(int(a), int(b)))
+        f[k2] = f.get(k2, 0.0) + float(v)
+    flow = {eid: f.get(tuple(sorted(pr)), 0.0) for eid, pr in mp["end_of"].items()}
+    mp["flow_cache"][key] = flow
+    return flow
+
+
+def _nbr_cols(env, remaining, damaged_now, flow):
+    """The six message-passing columns for each remaining candidate: two ROUNDS of iterated
+    neighbourhood aggregation, not a fixed 2-hop window. Round 1 gives every segment the mean of
+    its damaged neighbours' phi_hat and dem_hat and (over ALL neighbours) the mean current UE
+    flow; round 2 aggregates those round-1 values over the neighbourhood again, so information
+    reaches a candidate along every 2-edge path and can flow back through itself. phi/demand
+    propagate on the still-damaged subgraph (an intact neighbour carries no damage signal), the
+    current flow on the full network (intact edges carry traffic). Flow columns are normalized by
+    the instance's largest pre-disaster segment flow."""
+    st, mp = env["st"], env["mp"]
+    adj, pm = mp["adj"], mp["phi_max"]
+    ext = np.zeros((len(remaining), 6))
+    m1p, m1d = {}, {}
+    for e in env["segs"]:
+        dn = [j for j in adj[e] if j in damaged_now]
+        m1p[e] = float(np.mean([st["phi_hat"][j] for j in dn])) if dn else 0.0
+        m1d[e] = float(np.mean([st["dem_hat"][j] for j in dn])) if dn else 0.0
+    m1f = {a: (float(np.mean([flow[b] for b in adj[a]])) if adj[a] else 0.0) for a in adj}
+    for i, e in enumerate(remaining):
+        dn = [j for j in adj[e] if j in damaged_now]
+        ext[i, 0] = m1p[e]
+        ext[i, 1] = m1d[e]
+        ext[i, 2] = m1f[e] / pm
+        ext[i, 3] = float(np.mean([m1p[j] for j in dn])) if dn else 0.0
+        ext[i, 4] = float(np.mean([m1d[j] for j in dn])) if dn else 0.0
+        ext[i, 5] = (float(np.mean([m1f[b] for b in adj[e]])) / pm) if adj[e] else 0.0
+    return ext
+
+
 def _rollout(env, pick, n_lag, durations=None):
     """One episode: repeatedly hand the caller's `pick` the candidate feature matrix at the current
     decision point and schedule whichever candidate it returns, work-conserving over C_MAX crews.
 
-    `durations` is the world the rollout EXECUTES in (the nominal world by default). Beliefs about
-    unfinished segments stay at the planning expectation until a completion reveals their level, so
-    nothing is read before the world has shown it -- the same information structure the delivery
-    rollouts use."""
+    `durations` is the world the rollout EXECUTES in (the nominal world by default). Duration
+    beliefs stay at the planning expectation throughout: realized durations shape the schedule as
+    crews free up, but are never read into the state."""
     ctx, st, T = env["ctx"], env["st"], env["T"]
     durations = env["nominal"] if durations is None else durations
     dis_l, sev, B, H0 = ctx["disrupted"], ctx["severity_vec"], ctx["B"], ctx["H0"]
@@ -698,9 +772,16 @@ def _rollout(env, pick, n_lag, durations=None):
                 if k < c:
                     v[seg_idx[e]] = sev[seg_idx[e]]
             D = np.maximum(B @ v, P.RHO * D)
-        rev = {st["level"][e2] for e2, cc in comp.items() if cc <= t} if st.get("reveal", True) else set()
-        bel = {e: (int(durations[e]) if st["level"][e] in rev else st["dur_raw"][e]) for e in remaining}
+        # Duration beliefs are ALWAYS the planning expectation. The progressive-revelation
+        # mechanism (a completion exposing its whole level's realized duration) was removed
+        # outright on 2026-08-23: under per-segment-independent durations a completion reveals
+        # nothing about other segments, so the level broadcast was pure leakage.
+        bel = {e: st["dur_raw"][e] for e in remaining}
         base_X = _decision_features(remaining, t, crew, D, st, T, bel)
+        if int(st.get("mp_rounds", 0)):
+            dmg = set(remaining) | {e for e, c in comp.items() if c > t}
+            base_X = np.hstack([base_X,
+                                _nbr_cols(env, remaining, dmg, _current_flow(env, dmg, D))])
         X = _augment(base_X, chosen_base, n_lag)
         rems.append(list(remaining))
         i = pick(remaining, X)
@@ -917,8 +998,21 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     MARGIN, LAM, ddqn = float(hp["margin"]), float(hp["lam"]), bool(hp["double_dqn"])
     lam0, lam_growth = hp.get("lam0"), hp.get("lam_growth")   # imitation ramp; None -> constant LAM
     sync = int(hp["target_sync"])
-    env["st"]["reveal"] = bool(hp.get("reveal", True))
+    if "reveal" in hp:
+        raise ValueError("the progressive-revelation mechanism was removed from the code on "
+                         "2026-08-23 -- drop the 'reveal' key (beliefs always stay at the "
+                         "planning expectation now)")
     env["st"]["n_lag"] = n_lag
+    # Feature width follows the hp: 8 base columns, plus 6 when the two message-passing rounds
+    # are on. A module global because every consumer (net sizing, the state assembler, the lag
+    # augmenter, the recorder) reads _N_FEAT; variants run sequentially, never concurrently.
+    mp_rounds = int(hp.get("mp_rounds", 0))
+    if mp_rounds not in (0, 2):
+        raise ValueError(f"mp_rounds must be 0 or 2, got {mp_rounds} -- only the plain state and "
+                         "the two-round aggregation exist (one round was measured and retired)")
+    env["st"]["mp_rounds"] = mp_rounds
+    global _N_FEAT
+    _N_FEAT = 8 + 3 * mp_rounds
     Ttr = env["T_train"] if saa else env["T"]
 
     dueling = bool(hp.get("dueling", False))
@@ -1466,7 +1560,7 @@ def record_value_curve(variant="rl_nominal", N=None):
     """Post-hoc entry: write the value-estimate record for an already-delivered run from its own
     log, without retraining and without evaluating anything."""
     N = P.N_DISRUPTED_ORACLE if N is None else N
-    vdir = scale_dir(OUT_DIAG / variant, N)
+    vdir = scale_dir(OUT_DIAG / solver_dir(variant), N)
     _value_est_record(vdir, variant)
     print(f"[{variant}] value-estimate record written -> {log_dir(vdir)}", flush=True)
 
@@ -1487,7 +1581,7 @@ def run_rank(variants=("rl_nominal", "rl_saa"), toy_dir=TOY, N=None, M=P.M_SCENA
           flush=True)
     out = {}
     for v in variants:
-        vdir = scale_dir(OUT_DIAG / v, N)
+        vdir = scale_dir(OUT_DIAG / solver_dir(v), N)
         vdir.mkdir(parents=True, exist_ok=True)
         # Stage 1 of the two-stage clear: diagnostics only. The previous run's DELIVERABLES
         # (results/ + config/) survive until this run has something to replace them with, so a
@@ -1590,7 +1684,7 @@ def run_search_sweep(configs=None, variant="rl_nominal", N=None, M=P.M_SCENARIOS
     """
     configs = SEARCH_SWEEP if configs is None else configs
     N = P.N_DISRUPTED_ORACLE if N is None else N
-    vdir = scale_dir(OUT_DIAG / variant, N)
+    vdir = scale_dir(OUT_DIAG / solver_dir(variant), N)
     rows = []
     for name, ov in configs.items():
         print(f"\n--- exploration config {name!r}: {ov or 'tuned defaults'} ---", flush=True)

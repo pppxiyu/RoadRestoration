@@ -73,13 +73,29 @@ CMAP_DEMAND = "magma"  # origin-destination travel demand (trips between locatio
 CMAP_ERR = "Reds"      # magnitude of error between two quantities
 
 
-def use_pub():
+def use_pub(slide=False):
     """Push the shared publication settings into matplotlib's global config.
 
     Call this once before building any figures; every figure created afterward
     inherits the consistent fonts, sizes, and spine styling.
+
+    slide=True scales every font size up (~1.7x) for figures whose primary home
+    is a slide rather than a manuscript page: same family, same palette, same
+    spine styling, just legible from the back of a room. Figures built at slide
+    scale should also use a proportionally larger figsize, so the type-to-canvas
+    ratio stays similar to the print version.
     """
-    mpl.rcParams.update(PUB_RC)
+    rc = dict(PUB_RC)
+    if slide:
+        k = 1.7
+        for key in ("font.size", "axes.titlesize", "axes.labelsize",
+                    "xtick.labelsize", "ytick.labelsize", "legend.fontsize"):
+            rc[key] = round(PUB_RC[key] * k, 1)
+        rc["axes.linewidth"] = 1.1
+        rc["xtick.major.width"] = 1.1
+        rc["ytick.major.width"] = 1.1
+        rc["lines.linewidth"] = 2.0
+    mpl.rcParams.update(rc)
 
 
 def severity_color(s):

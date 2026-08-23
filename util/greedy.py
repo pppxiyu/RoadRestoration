@@ -40,7 +40,7 @@ import pandas as pd
 
 import config as P
 from util.evaluate import build_context, evaluate_schedule, schedule_from_permutation
-from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
+from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, slot_rows,
                              write_run_meta)
 from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
                          select_oracle_instance)
@@ -48,7 +48,7 @@ from util.scenarios import expected_durations, sample_scenarios
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "1-baselines" / "rule-based"
+OUT = ROOT / "outputs" / "02-baselines" / solver_dir("rule-based")
 
 
 # --------------------------------------------------------------------------- #

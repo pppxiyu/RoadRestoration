@@ -39,13 +39,13 @@ import config as P
 from util.evaluate import (build_context, evaluate_schedule, makespan_slot,
                            schedule_from_permutation)
 from util.io import load_toy_network, od_to_matrix
-from util.provenance import config_dir, log_dir, results_dir
+from util.provenance import config_dir, log_dir, results_dir, solver_dir
 from util.scenarios import sample_scenarios
 from util.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "1-baselines" / "brute-force"
+OUT = ROOT / "outputs" / "02-baselines" / solver_dir("brute-force")
 
 # The exact horizon walks all N! permutations. 8! = 40320 is still a subsecond sweep, but the
 # factorial makes every further segment ~10x dearer, so larger instances switch to the Graham

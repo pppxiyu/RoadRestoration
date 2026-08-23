@@ -54,14 +54,14 @@ import config as P
 from util.evaluate import build_context, evaluate_schedule, schedule_from_permutation
 from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
                          select_oracle_instance)
-from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
+from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, slot_rows,
                              write_run_meta)
 from util.scenarios import nominal_durations, sample_scenarios
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "1-baselines" / "rule-based"   # legacy out_dir default (instance print only)
-OUT_DIAG = ROOT / "outputs" / "1-baselines"   # each variant owns outputs/1-baselines/{variant}/n{N}/
+OUT = ROOT / "outputs" / "02-baselines" / solver_dir("rule-based")   # legacy out_dir default (instance print only)
+OUT_DIAG = ROOT / "outputs" / "02-baselines"   # each variant owns outputs/02-baselines/{variant}/n{N}/
 
 
 # --------------------------------------------------------------------------- #
@@ -330,7 +330,7 @@ def _rescore_committed(v, ctx, segments, scenarios, T, M, seed, nominal):
     search really did cost that many evaluations, and a re-score does not make the answer cheaper
     to have found.
     """
-    diag = scale_dir(OUT_DIAG / v)
+    diag = scale_dir(OUT_DIAG / solver_dir(v))
     sol_path = results_dir(diag) / f"{v}_solution_best.json"
     prev_meta_path = diag / "config" / "run_meta.json"
     if not sol_path.exists():
@@ -448,7 +448,7 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
         print(f"Re-scored in {(time.perf_counter() - t_all) / 60:.1f} min", flush=True)
         from util.compare import refresh_comparison
         refresh_comparison()
-        return scale_dir(OUT_DIAG / variants[0])
+        return scale_dir(OUT_DIAG / solver_dir(variants[0]))
     flow = _baseline_twoway_flow(toy_dir)
     nominal = nominal_durations(disrupted, segments)
     print(f"instance: {len(segments)} segments {segments}; M={M}; horizon T={T}; "
@@ -468,7 +468,7 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
             # Live per-generation progress, so a long open-budget search is watchable rather than
             # only judged at the end (the trace is written when the run finishes). Overwrites a
             # one-line status file each generation; costs nothing.
-            diag = scale_dir(OUT_DIAG / v)
+            diag = scale_dir(OUT_DIAG / solver_dir(v))
             fresh_scale_dir(diag)            # a rerun replaces this variant's folder, no residue
             prog = log_dir(diag) / f"{v}_progress.txt"
 
@@ -515,7 +515,7 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
             # beside its diagnostics -- mirroring outputs/pretrain_milp, outputs/rl and
             # outputs/rl_saa. compare.py discovers each method's optima from its own folder, so
             # nothing has to sit in the shared greedy pool any more.
-            diag = scale_dir(OUT_DIAG / v)
+            diag = scale_dir(OUT_DIAG / solver_dir(v))
             diag.mkdir(parents=True, exist_ok=True)
             pd.DataFrame(rows).to_csv(results_dir(diag) / f"{v}_optima.csv", index=False)
             pd.DataFrame(slots).to_csv(log_dir(diag) / f"{v}_slots.csv", index=False)

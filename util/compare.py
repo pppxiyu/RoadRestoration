@@ -23,12 +23,13 @@ import pandas as pd
 
 import config as P
 from util.oracle import scale_dir, select_oracle_instance
-from util.provenance import fresh_scale_dir, log_dir, results_dir, source_meta, write_run_meta
+from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, source_meta,
+                             write_run_meta)
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-# The three static rankers, named rather than globbed. outputs/1-baselines/rule-based/n{N}/ used to
+# The three static rankers, named rather than globbed. outputs/02-baselines/rule-based/n{N}/ used to
 # be the SHARED pool every method wrote into, so at scales last touched before the per-method
 # reorganisation it still holds ga_optima.csv / rl_optima.csv / rl_stoch_optima.csv. A glob picks
 # those up and silently re-admits a superseded run under a legacy name -- which is exactly how
@@ -38,7 +39,7 @@ RULE_BASED = ("flow", "demand", "ratio")
 # The searched/learned methods, each owning its own folder. rl_saa is the SAA variant (nominal DQN
 # config + sample-average-approximation training on an LHS-covered world sample + a quantile-
 # regression distributional head); its 5-seed current-config re-run is what admits it here.
-SEARCHED = (("ga", "1-baselines"), ("rl_nominal", "2-RL"), ("rl_saa", "2-RL"))
+SEARCHED = (("ga", "02-baselines"), ("rl_nominal", "03-RL"), ("rl_saa", "03-RL"))
 
 
 def _discover(base, gdir, N):
@@ -47,7 +48,7 @@ def _discover(base, gdir, N):
     files = [gdir / "results" / f"{m}_optima.csv" for m in RULE_BASED]
     files = [f for f in files if f.exists()]
     for m, grp in SEARCHED:
-        p = scale_dir(base / grp / m, N) / "results" / f"{m}_optima.csv"
+        p = scale_dir(base / grp / solver_dir(m), N) / "results" / f"{m}_optima.csv"
         if p.exists():
             files.append(p)
     return files
@@ -58,9 +59,9 @@ def run_compare(N=None):
     outputs/comparison/n{N}/comparison.csv + figures, and print a summary sorted best-first."""
     N = P.N_DISRUPTED_ORACLE if N is None else N
     base = ROOT / "outputs"
-    gdir = scale_dir(base / "1-baselines" / "rule-based", N)
-    m_path = scale_dir(base / "1-baselines" / "pretrain_milp", N) / "results" / "milp_optima.csv"
-    o_path = scale_dir(base / "1-baselines" / "brute-force", N) / "results" / "oracle_optima.csv"
+    gdir = scale_dir(base / "02-baselines" / solver_dir("rule-based"), N)
+    m_path = scale_dir(base / "02-baselines" / solver_dir("pretrain_milp"), N) / "results" / "milp_optima.csv"
+    o_path = scale_dir(base / "02-baselines" / solver_dir("brute-force"), N) / "results" / "oracle_optima.csv"
     files = _discover(base, gdir, N)
     if not files:
         raise FileNotFoundError(f"no optima under {base}/*/n{N}")
@@ -98,7 +99,7 @@ def run_compare(N=None):
         for c in methods:
             df[f"gap_{c}"] = df[c] - df["oracle"]                        # shortfall vs the true optimum
 
-    out = scale_dir(base / "3-comparison", N)
+    out = scale_dir(base / "04-comparison", N)
     out.mkdir(parents=True, exist_ok=True)
     fresh_scale_dir(out)                     # a refresh replaces the comparison, no residue
     df.to_csv(results_dir(out) / "comparison.csv", index=False)

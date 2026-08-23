@@ -9,15 +9,19 @@ reference is the widely used open-source Sioux Falls flow pattern distributed in
 Transportation Networks test-problem format (SiouxFalls_flow.tntp), taken here as ground
 truth: if the engine is correct, its equilibrium flows and travel times must match it.
 
-`save_validation(...)` renders the comparison into outputs/0-UE_val/ as 600-dpi PNGs:
-  00_overview          two parity scatter plots -- modeled UE vs. reference link flow, and
-                       modeled UE vs. reference congested link travel time -- annotated with
-                       the flow correlation, error statistics, and the Beckmann objective gap.
-  01_flow_map          the network drawn twice: colored by UE link flow, and by the absolute
-                       flow discrepancy against the reference.
-  ue_vs_ref_links.csv  per directed link: UE vs. reference flow and travel time, plus their
-                       absolute errors.
-  summary.txt          the headline agreement numbers.
+`save_validation(...)` renders the comparison into outputs/01-sim_val_n_problem_setting/, split by role:
+  01-benchmark/01_ue_vs_reference.png   ONE four-panel figure: parity scatters of link flow
+                                       and congested travel time (top), and the network
+                                       colored by UE flow and by the absolute flow error
+                                       against the reference (bottom).
+  raw/ue_vs_ref_links.csv              per directed link: UE vs. reference flow and travel
+                                       time, plus their absolute errors -- the data behind
+                                       the figure.
+  raw/summary.txt                      the headline agreement numbers (Beckmann objectives
+                                       included).
+
+The figure is drawn at the shared slide scale (use_pub(slide=True)): every figure under
+outputs/01-sim_val_n_problem_setting/ is primarily consumed in slides, so the whole folder uses one type scale.
 """
 
 from pathlib import Path
@@ -30,7 +34,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from viz.style import C, CMAP_ERR, CMAP_SEQ, panel_label, save_pub, use_pub
+from viz.style import C, CMAP_ERR, CMAP_SEQ, save_pub, use_pub
 
 # Style for the rounded, semi-transparent white boxes drawn behind on-figure statistics,
 # so the numbers stay legible over scatter points and network edges.
@@ -51,70 +55,34 @@ def _graph_pos(nodes, edges):
     return G, pos
 
 
-# Build the overview figure: two "parity" scatter plots that check the engine against the
-# reference. A parity plot puts modeled values on one axis and reference values on the other;
-# points landing on the y = x diagonal mean the two agree exactly, so tight clustering on the
-# diagonal is the pass criterion.
-def _overview(cmp, m, path):
-    # Per-link absolute discrepancy in congested travel time between the UE and the reference.
-    cost_err = (cmp["cost_ue"] - cmp["cost_ref"]).abs()
-    fig, ax = plt.subplots(1, 2, figsize=(7.0, 3.1))
-
-    # Panel a -- reference vs. modeled link flow, in thousands of vehicles. The dashed
-    # diagonal marks perfect agreement; the axis limit is padded 5% above the largest flow.
-    a = ax[0]
-    vmax = max(cmp["volume_ref"].max(), cmp["volume_ue"].max()) / 1e3 * 1.05
-    a.plot([0, vmax], [0, vmax], ls="--", lw=1, color=C["signal"], zorder=1, label="y = x")
-    a.scatter(cmp["volume_ref"] / 1e3, cmp["volume_ue"] / 1e3, s=14, alpha=0.8,
-              color=C["accent"], edgecolor="white", lw=0.2, zorder=2)
-    a.set_xlim(0, vmax)
-    a.set_ylim(0, vmax)
-    a.set_xlabel(r"reference flow ($\times10^3$ veh)")
-    a.set_ylabel(r"UE flow ($\times10^3$ veh)")
-    a.set_aspect("equal")
-    a.set_title("link flow: UE vs. reference")
-    # Corner box reporting sample size, flow correlation, and mean/max absolute flow error.
-    a.text(0.05, 0.95,
-           f"n = {len(cmp)} links\ncorr = {m['corr']:.6f}\n"
-           f"mean |err| = {m['mean_abs_err']:.2f} veh\nmax |err| = {m['max_abs_err']:.2f} veh",
-           transform=a.transAxes, va="top", fontsize=6.3, bbox=_BOX)
-    panel_label(a, "a", x=-0.2)
-
-    # Panel b -- reference vs. modeled congested link travel time (link time under the
-    # equilibrium flow), the same diagonal parity check applied to travel times.
-    b = ax[1]
-    lim2 = [0, max(cmp["cost_ref"].max(), cmp["cost_ue"].max()) * 1.05]
-    b.plot(lim2, lim2, ls="--", lw=1, color=C["signal"], zorder=1, label="y = x")
-    b.scatter(cmp["cost_ref"], cmp["cost_ue"], s=14, alpha=0.8, color=C["teal"],
-              edgecolor="white", lw=0.2, zorder=2)
-    b.set_xlabel("reference congested time")
-    b.set_ylabel("UE congested time")
-    b.set_aspect("equal")
-    b.set_title("link congested travel time")
-    # Annotate only the worst-case travel-time discrepancy across all links.
-    b.text(0.05, 0.95, f"max |err| = {cost_err.max():.1e}", transform=b.transAxes,
-           va="top", fontsize=6.3, bbox=_BOX)
-    panel_label(b, "b", x=-0.2)
-
-    # Title carries the Beckmann objective value for both solutions and their relative gap
-    # (their fractional difference), a single scalar summarizing how close the equilibria are.
-    fig.suptitle("UE validation — reproducing the open-source Sioux Falls solution"
-                 f"   (Beckmann obj {m['z_ue']:,.0f} vs {m['z_ref']:,.0f}, gap {m['obj_gap']:.1e})",
-                 fontsize=8.5)
-    fig.tight_layout(rect=[0, 0, 1, 0.9])
-    save_pub(fig, path, svg=False, pdf=False)
-    plt.close(fig)
+def _parity(axis, x, y, xlab, ylab, title, unit_note):
+    """One parity panel: modeled values against reference values. Points on the dashed
+    y = x diagonal mean exact agreement, so tight clustering on it is the pass criterion."""
+    vmax = max(np.max(x), np.max(y)) * 1.05
+    axis.plot([0, vmax], [0, vmax], ls="--", lw=1.4, color=C["signal"], zorder=1)
+    axis.scatter(x, y, s=42, alpha=0.8, color=C["accent"], edgecolor="white", lw=0.4, zorder=2)
+    axis.set_xlim(0, vmax)
+    axis.set_ylim(0, vmax)
+    axis.set_xlabel(xlab)
+    axis.set_ylabel(ylab)
+    axis.set_aspect("equal")
+    axis.set_title(title)
+    axis.text(0.05, 0.95, unit_note, transform=axis.transAxes, va="top", fontsize=16,
+              bbox=_BOX)
 
 
-# Draw the equilibrium flow over the network twice: on the left the two-way link flow, on the
-# right the absolute flow error versus the reference, so any mismatch stands out as a bright
-# edge. The two panels share the same fixed node layout.
-def _flow_map(cmp, nodes, edges, path):
+# The single validation figure: two parity scatters on top (flow, congested travel time),
+# the network below colored by UE flow and by the absolute flow error vs. the reference.
+_RC_BIG = {"font.size": 17, "axes.titlesize": 22, "axes.labelsize": 20,
+           "xtick.labelsize": 17, "ytick.labelsize": 17, "legend.fontsize": 17}
+
+
+def _validation_figure(cmp, m, nodes, edges, path):
     G, pos = _graph_pos(nodes, edges)
     # Look-up table from each directed link (from, to) to its (UE, reference) flow pair.
     d = {(int(r["from"]), int(r["to"])): (r["volume_ue"], r["volume_ref"])
          for _, r in cmp.iterrows()}
-    # The map uses undirected edges, so fold the two travel directions together: total flow is
+    # The maps use undirected edges, so fold the two travel directions together: total flow is
     # the sum of both directional UE volumes, while the plotted error is the worse of the two
     # directions (a missing direction defaults to zero flow).
     elist, ftot, eabs = [], [], []
@@ -127,55 +95,74 @@ def _flow_map(cmp, nodes, edges, path):
         eabs.append(max(abs(uv[0] - uv[1]), abs(vu[0] - vu[1])))
     ftot = np.array(ftot)
     eabs = np.array(eabs)
-    # Scale line thickness with total flow so busy corridors read as visibly thicker edges.
-    widths = 1.0 + 5.0 * ftot / ftot.max()
 
-    fig, ax = plt.subplots(1, 2, figsize=(7.2, 4.0))
-    # Panel a -- edges colored and sized by total two-way UE flow.
-    ec = nx.draw_networkx_edges(G, pos, ax=ax[0], edgelist=elist, width=widths,
+    plt.rcParams.update(_RC_BIG)      # figure-local: save_validation re-applies use_pub after
+    fig, ax = plt.subplots(2, 2, figsize=(14.2, 13.0), height_ratios=[1.0, 1.15])
+
+    # Panel a -- link flow parity, in thousands of vehicles.
+    cost_err = (cmp["cost_ue"] - cmp["cost_ref"]).abs()
+    _parity(ax[0, 0], cmp["volume_ref"] / 1e3, cmp["volume_ue"] / 1e3,
+            r"reference flow ($\times10^3$ veh)", r"UE flow ($\times10^3$ veh)",
+            "Link flow: UE solver vs. reference",
+            f"n = {len(cmp)} links\ncorr = {m['corr']:.6f}\n"
+            f"max |err| = {m['max_abs_err']:.2f} veh")
+
+    # Panel b -- congested link travel time parity (link time under the equilibrium flow).
+    _parity(ax[0, 1], cmp["cost_ref"], cmp["cost_ue"],
+            "reference congested time", "UE congested time",
+            "Congested travel time: UE solver vs. reference",
+            f"max |err| = {cost_err.max():.1e}")
+
+    # Panel c -- edges colored and sized by total two-way UE flow.
+    c_ax = ax[1, 0]
+    widths = 1.6 + 8.0 * ftot / ftot.max()
+    ec = nx.draw_networkx_edges(G, pos, ax=c_ax, edgelist=elist, width=widths,
                                 edge_color=ftot, edge_cmap=plt.get_cmap(CMAP_SEQ))
-    nx.draw_networkx_nodes(G, pos, ax=ax[0], node_size=80, node_color="#eeeeee",
-                           edgecolors=C["neutral_mid"], linewidths=0.5)
-    nx.draw_networkx_labels(G, pos, ax=ax[0], font_size=5)
-    ax[0].set_title("UE equilibrium link flow (two-way)")
-    ax[0].set_aspect("equal")
-    ax[0].axis("off")
-    cb = fig.colorbar(ec, ax=ax[0], fraction=0.046, pad=0.02)
-    cb.set_label("flow (veh)")
-    cb.outline.set_linewidth(0.6)
-    panel_label(ax[0], "a", x=0.0)
+    nx.draw_networkx_nodes(G, pos, ax=c_ax, node_size=330, node_color="#eeeeee",
+                           edgecolors=C["neutral_mid"], linewidths=0.8)
+    nx.draw_networkx_labels(G, pos, ax=c_ax, font_size=12)
+    c_ax.set_title("UE link flow on the network (two-way)")
+    c_ax.set_aspect("equal")
+    c_ax.axis("off")
+    cb = fig.colorbar(ec, ax=c_ax, fraction=0.046, pad=0.02)
+    cb.set_label("flow (veh)", fontsize=19)
+    cb.ax.tick_params(labelsize=16)
+    cb.outline.set_linewidth(0.8)
 
-    # Panel b -- edges colored by absolute flow error on a fixed 0..max scale. The upper
+    # Panel d -- edges colored by absolute flow error on a fixed 0..max scale. The upper
     # bound is floored at 1 so a near-perfect match (tiny errors) does not stretch the color
     # ramp and exaggerate rounding-level noise.
-    ec2 = nx.draw_networkx_edges(G, pos, ax=ax[1], edgelist=elist, width=2.4,
+    d_ax = ax[1, 1]
+    ec2 = nx.draw_networkx_edges(G, pos, ax=d_ax, edgelist=elist, width=3.6,
                                  edge_color=eabs, edge_cmap=plt.get_cmap(CMAP_ERR),
                                  edge_vmin=0.0, edge_vmax=max(eabs.max(), 1.0))
-    nx.draw_networkx_nodes(G, pos, ax=ax[1], node_size=80, node_color="#eeeeee",
-                           edgecolors=C["neutral_mid"], linewidths=0.5)
-    nx.draw_networkx_labels(G, pos, ax=ax[1], font_size=5)
-    ax[1].set_title(f"|UE − reference| flow  (max {eabs.max():.2f} veh)")
-    ax[1].set_aspect("equal")
-    ax[1].axis("off")
-    cb2 = fig.colorbar(ec2, ax=ax[1], fraction=0.046, pad=0.02)
-    cb2.set_label("abs flow error (veh)")
-    cb2.outline.set_linewidth(0.6)
-    panel_label(ax[1], "b", x=0.0)
+    nx.draw_networkx_nodes(G, pos, ax=d_ax, node_size=330, node_color="#eeeeee",
+                           edgecolors=C["neutral_mid"], linewidths=0.8)
+    nx.draw_networkx_labels(G, pos, ax=d_ax, font_size=12)
+    d_ax.set_title(f"Absolute flow error vs. reference (max {eabs.max():.2f} veh)")
+    d_ax.set_aspect("equal")
+    d_ax.axis("off")
+    cb2 = fig.colorbar(ec2, ax=d_ax, fraction=0.046, pad=0.02)
+    cb2.set_label("abs flow error (veh)", fontsize=19)
+    cb2.ax.tick_params(labelsize=16)
+    cb2.outline.set_linewidth(0.8)
 
-    fig.suptitle("UE flow on the Sioux Falls network, and its (negligible) error vs. ground truth",
-                 fontsize=8.5)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    save_pub(fig, path, svg=False, pdf=False)
+    fig.tight_layout()
+    save_pub(fig, path)
     plt.close(fig)
+    use_pub(slide=True)               # undo the figure-local rc bump
 
 
 # Public entry point: given the precomputed UE-vs-reference comparison table `cmp` and the
-# `metrics` summary, write the per-link CSV, both figures, and the text summary into out_dir.
-# `toy_dir` supplies the network geometry used to lay out the flow maps.
+# `metrics` summary, write the per-link CSV, the validation figure, and the text summary into
+# out_dir. `toy_dir` supplies the network geometry used to lay out the flow maps.
 def save_validation(out_dir, toy_dir, cmp, report, metrics):
-    use_pub()  # apply the shared publication style once before any figure is drawn
+    use_pub(slide=True)  # every 01-sim_val_n_problem_setting figure is slide-first; one shared type scale
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    raw = out / "raw"                 # intermediate data: everything that is not a figure
+    figs = out / "01-benchmark"        # the ground-truth comparison figure
+    raw.mkdir(parents=True, exist_ok=True)
+    figs.mkdir(parents=True, exist_ok=True)
     toy = Path(toy_dir)
     # Node coordinates and edge list define the network layout for the flow maps.
     nodes = pd.read_csv(toy / "network" / "nodes.csv")
@@ -187,10 +174,9 @@ def save_validation(out_dir, toy_dir, cmp, report, metrics):
                      cost_abs_err=(cmp["cost_ue"] - cmp["cost_ref"]).abs())
     tbl = tbl[["from", "to", "volume_ue", "volume_ref", "flow_abs_err",
                "cost_ue", "cost_ref", "cost_abs_err"]].sort_values("flow_abs_err", ascending=False)
-    tbl.to_csv(out / "ue_vs_ref_links.csv", index=False)
+    tbl.to_csv(raw / "ue_vs_ref_links.csv", index=False)
 
-    _overview(cmp, metrics, out / "00_overview")
-    _flow_map(cmp, nodes, edges, out / "01_flow_map")
+    _validation_figure(cmp, metrics, nodes, edges, figs / "01_ue_vs_reference")
 
     # Headline agreement numbers written as a plain-text summary for a quick pass/fail read.
     lines = [
@@ -207,5 +193,5 @@ def save_validation(out_dir, toy_dir, cmp, report, metrics):
         f"final solver rgap       : {metrics['rgap']:.2e}",
         f"MILESTONE               : {metrics.get('status', 'PASS')}",
     ]
-    (out / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (raw / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out

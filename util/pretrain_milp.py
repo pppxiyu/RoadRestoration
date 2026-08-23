@@ -68,7 +68,7 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 import config as P
 from util.evaluate import (build_context, evaluate_schedule,
                            schedule_from_permutation)
-from util.provenance import (fresh_scale_dir, log_dir, results_dir, slot_rows,
+from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, slot_rows,
                              write_run_meta)
 from util.oracle import (_baseline_twoway_flow, compute_horizon, scale_dir,
                          select_oracle_instance)
@@ -76,7 +76,7 @@ from util.scenarios import nominal_durations, sample_scenarios
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT = ROOT / "outputs" / "1-baselines" / "pretrain_milp"
+OUT = ROOT / "outputs" / "02-baselines" / solver_dir("pretrain_milp")
 
 
 # --------------------------------------------------------------------------- #
@@ -428,7 +428,7 @@ def _finish_pretrain_milp(out_dir, rows, trace_rows, segments, T, M, seed, total
     from viz.pretrain_viz import make_process_figures
     make_process_figures(out_dir, pd.DataFrame(trace_rows), milp_opt, segments, T)
 
-    oracle_dir = scale_dir(ROOT / "outputs" / "1-baselines" / "brute-force")
+    oracle_dir = scale_dir(ROOT / "outputs" / "02-baselines" / solver_dir("brute-force"))
     oracle_opt_path = results_dir(oracle_dir) / "oracle_optima.csv"
     if oracle_opt_path.exists():
         from viz.pretrain_viz import make_comparison, make_landscape
@@ -507,7 +507,7 @@ def render_landscape(out_dir=OUT):
     already-saved CSVs; only the instance selection re-solves one baseline UE, and no per-slot evaluation
     UE is re-run. Run this once the oracle for this scale has an oracle optimum to plot against."""
     out_dir = scale_dir(out_dir)
-    oracle_dir = scale_dir(ROOT / "outputs" / "1-baselines" / "brute-force")
+    oracle_dir = scale_dir(ROOT / "outputs" / "02-baselines" / solver_dir("brute-force"))
     disrupted = select_oracle_instance(TOY, P.N_DISRUPTED_ORACLE)
     segments = sorted(int(e) for e in disrupted["edge_id"])
     scenarios = sample_scenarios(disrupted, P.M_SCENARIOS, P.SEED)

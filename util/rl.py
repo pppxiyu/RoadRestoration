@@ -144,7 +144,6 @@ def _scenario_statics(ctx, segments, durations, phi):
         dem_hat={e: dem[e] / dem_max for e in segments},
         dur_raw={e: int(durations[e]) for e in segments},   # planning durations, unnormalized
         d_max=float(d_max),
-        level={e: ctx["level"][e] for e in segments},        # duration level: who reveals whom
         total_work=total_work, sum_H0=float(ctx["H0"].sum()),
     )
 
@@ -157,14 +156,10 @@ def _decision_features(cands, t_now, crew_free, D_now, st, T, dur_belief=None):
 
     INFORMATION STRUCTURE. Everything here is computable at the moment the decision is made.
     Duration inputs (column 2, and the remaining-work numerator) come from `dur_belief`, the
-    agent's CURRENT duration beliefs: the planning expectation for a segment whose level has not
-    produced a completion yet, the realized value once one has. Durations are drawn once per
-    (road_class, severity) level and shared by the level's segments (util.scenarios), so a
-    completion genuinely reveals its whole level -- reading the realized value after that is
-    learning from an observed outcome, not clairvoyance. The caller owns the revelation
-    bookkeeping (_rollout); passing nothing means "nothing revealed", which reproduces pure
-    planning beliefs. The state inputs (t_now, crew_free, D_now) may likewise reflect realized
-    outcomes: they encode only what has already happened."""
+    agent's duration beliefs; since the progressive-revelation mechanism was removed on
+    2026-08-23, callers pass the planning expectations (or nothing, which defaults to them) and
+    realized durations are never read into the state. The state inputs (t_now, crew_free, D_now)
+    may reflect realized outcomes: they encode only what has already happened."""
     if dur_belief is None:
         dur_belief = st["dur_raw"]
     glob = (t_now / T,

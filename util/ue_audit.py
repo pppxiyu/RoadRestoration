@@ -1,6 +1,6 @@
 """
 UE tolerance audit: measures what the evaluation-tier solver settings do to the numbers the
-study actually reads, and writes the data plus a written-up analysis into outputs/0-UE_val/.
+study actually reads, and writes the data plus a written-up analysis into outputs/01-sim_val_n_problem_setting/.
 
 NOT part of any pipeline -- nothing imports this module and no main.py path reaches it. It runs
 only when invoked explicitly:
@@ -39,9 +39,14 @@ exposed a silent early exit in the in-house solver (an uphill bi-conjugate direc
 solve as if converged; see _Network.solve in util/ue.py), which is the kind of defect only an
 external-reference audit catches.
 
-OUTPUT (under outputs/0-UE_val/tolerance_audit/):
-  tolerance_audit.csv   one row per (scenario, slot, configuration): time, iterations, g, g_ref
-  tolerance_audit.md    the generated analysis: methodology, the full table, the reading of it
+OUTPUT:
+  outputs/01-sim_val_n_problem_setting/raw/tolerance_audit.csv
+      one row per (scenario, slot, configuration): time, iterations, g, g_ref
+  outputs/01-sim_val_n_problem_setting/02-tolerance_audit/tolerance_audit.md
+      the generated analysis: methodology, the full table, the reading of it
+  outputs/01-sim_val_n_problem_setting/02-tolerance_audit/*.png
+      the audit figures, rendered from the csv by viz.ue_audit_viz (also refreshable on their
+      own, without AequilibraE, via `python -m viz.ue_audit_viz`)
 """
 import time
 from datetime import date
@@ -58,7 +63,8 @@ from util.scenarios import sample_scenarios
 from util.ue import solve_ue, warm_start_seed
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "outputs" / "0-UE_val" / "tolerance_audit"
+OUT_RAW = ROOT / "outputs" / "01-sim_val_n_problem_setting" / "raw"
+OUT_DOC = ROOT / "outputs" / "01-sim_val_n_problem_setting" / "02-tolerance_audit"
 
 N_SCEN = 2                    # scenarios audited; the 1e-8 references dominate the run time
 REF_RGAP, REF_MAX_ITER = 1e-8, 2000
@@ -157,7 +163,7 @@ def _slot_stream(ctx, order, durations):
 def _audit_order(ctx):
     """The repair order whose recovery supplies the per-slot problems: the delivered rl_nominal
     schedule when one is on disk (the realistic case), ascending edge ids otherwise."""
-    p = (ROOT / "outputs" / "2-RL" / "rl_nominal" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
+    p = (ROOT / "outputs" / "03-RL" / "01-rl_nominal" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
          / "rl_nominal_optima.csv")
     if p.exists():
         return [int(x) for x in pd.read_csv(p)["order"].iloc[0].split("-")], "delivered rl_nominal"
@@ -280,9 +286,9 @@ def _write_md(path, stats, d, viol, order_name):
             f"| {r['flips']}/{r['pairs']} |")
     text = f"""# UE 求解容差审计
 
-生成:{date.today().isoformat()},由 `python -m util.ue_audit` 写出。数据在同目录
-`tolerance_audit.csv`,每行是一个 (scenario, slot, 配置) 的一次求解。重跑本模块会同时刷新
-数据和本文,所以这里的每个数字都由流程生成,不是手抄的。
+生成:{date.today().isoformat()},由 `python -m util.ue_audit` 写出。数据在
+`../raw/tolerance_audit.csv`,每行是一个 (scenario, slot, 配置) 的一次求解。重跑本模块会同时
+刷新数据、本文和同目录的审计图,所以这里的每个数字都由流程生成,不是手抄的。
 
 ## 审计什么
 
@@ -345,15 +351,20 @@ def run_audit():
           f"{N_SCEN} scenarios, reference = AequilibraE bfw @{REF_RGAP:g}/{REF_MAX_ITER}",
           flush=True)
     d, viol = _measure(ctx, scen, order)
-    OUT.mkdir(parents=True, exist_ok=True)
-    d.to_csv(OUT / "tolerance_audit.csv", index=False)
+    OUT_RAW.mkdir(parents=True, exist_ok=True)
+    OUT_DOC.mkdir(parents=True, exist_ok=True)
+    d.to_csv(OUT_RAW / "tolerance_audit.csv", index=False)
     stats = _summarize(d)
-    _write_md(OUT / "tolerance_audit.md", stats, d, viol, order_name)
+    _write_md(OUT_DOC / "tolerance_audit.md", stats, d, viol, order_name)
+    # The audit figures are a pure function of the csv, rendered by a module that can also be
+    # re-run on its own (no AequilibraE needed once the csv exists): python -m viz.ue_audit_viz
+    from viz.ue_audit_viz import render_audit_figures
+    render_audit_figures()
     print(f"\npremise violations: {viol} (must be 0)")
     for r in stats:
         print(f"  {r['label']:44s} {r['ms']:8.1f} ms  lev {r['lev_med']:.2e}  "
               f"d/sig {r['ratio']:.3f}  pp_max {r['pp_max']:.2f}  flips {r['flips']}/{r['pairs']}")
-    print(f"\nwritten: {OUT / 'tolerance_audit.csv'}\n         {OUT / 'tolerance_audit.md'}")
+    print(f"\nwritten: {OUT_RAW / 'tolerance_audit.csv'}\n         {OUT_DOC / 'tolerance_audit.md'}")
     return d
 
 

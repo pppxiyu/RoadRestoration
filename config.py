@@ -88,7 +88,8 @@ UE_MAX_ITER_DEF = 100
 # EXPLORATION-STAGE LOOSENING (2026-08-06): dropped from 1e-6/100 to 1e-2/25 while the solver was
 # AequilibraE, trading ~1% error in the per-slot accessibility g for ~3.7x speed.
 # RETIGHTENED TO 1e-3 + WARM STARTS (2026-08-11), after the in-house solver replaced AequilibraE.
-# The tolerance audit (python -m util.ue_audit; data and write-up under outputs/0-UE_val/) showed
+# The tolerance audit (python -m util.ue_audit; data under outputs/01-sim_val_n_problem_setting/raw/, write-up and
+# figures under outputs/01-sim_val_n_problem_setting/02-tolerance_audit/) showed
 # 1e-2 was quietly corrupting the SHAPE of the recovery curve, not just its level: the error in the
 # slot-to-slot CHANGE of g reached 3.8x the true change at the 90th percentile, and 5 of 50
 # adjacent slot pairs had their direction read backwards (g measured as rising where it truly
@@ -122,7 +123,11 @@ SIM_CACHE = True        # Persistent cross-run, cross-method cache of per-slot U
 # cast as a mixed-integer linear program (MILP) and solved with the traffic state held fixed ---
 # The schedule is found by alternating: hold travel times fixed, solve the MILP for a schedule,
 # then re-solve UE to refresh travel times, and repeat until the schedule settles.
-MILP_MAX_ITER = 20      # Hard stop on the number of fix-travel-times / solve-MILP / refresh-UE iterations.
+MILP_MAX_ITER = 1000    # SAFETY GUARD ONLY on the fix-travel-times / solve-MILP / refresh-UE loop, far
+                        # above where the real terminators fire: the fixed point (schedule unchanged) or
+                        # the MILP_CYCLE_TOL cycle guard, one of which the decaying damping guarantees.
+                        # Raised from 20 on 2026-08-23 (every method must stop by its own rule; a run
+                        # that actually hits this cap is a defect to investigate, not a result).
 MILP_CYCLE_TOL = 3      # Cycle guard: stop only after the SAME schedule recurs this many times. 1 would stop
                         # on the first repeat; a larger value lets the damped loop keep exploring.
 MILP_DAMPING_MODE = "decay"  # How the frozen travel times are relaxed between iterations.

@@ -41,6 +41,7 @@ from pathlib import Path
 import pandas as pd
 
 import config as P
+from util.provenance import solver_dir
 from util.oracle import scale_dir
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -51,9 +52,9 @@ DEFAULT_SEEDS = (P.SEED, 1, 2, 3, 4)
 
 # Where each method's scale folder lives, and how its runner is invoked.
 _METHODS = {
-    "rl_nominal": dict(base=ROOT / "outputs" / "2-RL" / "rl_nominal", optima="rl_nominal_optima.csv"),
-    "rl_saa": dict(base=ROOT / "outputs" / "2-RL" / "rl_saa", optima="rl_saa_optima.csv"),
-    "ga": dict(base=ROOT / "outputs" / "1-baselines" / "ga", optima="ga_optima.csv"),
+    "rl_nominal": dict(base=ROOT / "outputs" / "03-RL" / solver_dir("rl_nominal"), optima="rl_nominal_optima.csv"),
+    "rl_saa": dict(base=ROOT / "outputs" / "03-RL" / solver_dir("rl_saa"), optima="rl_saa_optima.csv"),
+    "ga": dict(base=ROOT / "outputs" / "02-baselines" / solver_dir("ga"), optima="ga_optima.csv"),
 }
 # Subtrees copied into (and back out of) an archive: everything a run produces.
 _PARTS = ("results", "log", "config")

@@ -168,15 +168,6 @@ def build_context(toy_dir, disrupted, ue_cores=None):
     dis = [(int(r.edge_id), int(r.u), int(r.v), int(r.severity))
            for r in disrupted.itertuples(index=False)]
     ctx["disrupted"] = dis
-    # Each segment's duration LEVEL. The duration model draws once per (road_class, severity)
-    # and broadcasts to all of that level's segments (util.scenarios), so completing one segment
-    # reveals every same-level segment's realized duration; the RL rollout reads this map to know
-    # which candidates' durations have been revealed by the completions so far.
-    ctx["level"] = ({int(r.edge_id): (r.road_class, int(r.severity))
-                     for r in disrupted.itertuples(index=False)}
-                    if "road_class" in disrupted.columns else
-                    {int(r.edge_id): ("?", int(r.severity))
-                     for r in disrupted.itertuples(index=False)})
     Gff = nx.DiGraph()
     for r in edges.itertuples(index=False):
         Gff.add_edge(int(r.u), int(r.v), weight=float(r.free_flow_time), eid=int(r.edge_id))

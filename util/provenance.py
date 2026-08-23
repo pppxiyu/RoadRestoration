@@ -26,6 +26,24 @@ from pathlib import Path
 
 import config as P
 
+# Numbered on-disk folder for each solver, in the fixed presentation order (baselines:
+# brute-force, rule-based, MILP, GA; RL: nominal, SAA). Every path that reaches a solver's
+# output folder is built through solver_dir, so the numbering lives in exactly this one table.
+SOLVER_DIR = {
+    "brute-force": "01-brute-force",
+    "rule-based": "02-rule-based",
+    "pretrain_milp": "03-pretrain_milp",
+    "ga": "04-ga",
+    "rl_nominal": "01-rl_nominal",
+    "rl_saa": "02-rl_saa",
+}
+
+
+def solver_dir(name):
+    """The numbered folder a solver's outputs live under (bare name if it is not in the table)."""
+    return SOLVER_DIR.get(name, name)
+
+
 
 def _git_revision(root):
     """Current commit and whether the working tree had uncommitted changes, or None outside a
