@@ -36,6 +36,7 @@ SOLVER_DIR = {
     "ga": "04-ga",
     "rl_nominal": "01-rl_nominal",
     "rl_saa": "02-rl_saa",
+    "rl_s2v": "03-rl_s2v",     # EXPERIMENTAL faithful S2V-DQN; remove with util/rl_s2v.py
 }
 
 

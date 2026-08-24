@@ -24,7 +24,7 @@ be inspected end to end.
 
 `python main.py --solve <names>`: run any solver(s) at the scale config.py declares
 (N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_nominal, rl_saa, compare. `ga-rescore` re-measures GA's committed order under the
+milp, oracle, rl_nominal, rl_saa, rl_s2v (experimental), compare. `ga-rescore` re-measures GA's committed order under the
 current settings without repeating the search, for use after a change of ruler (a UE tolerance or
 engine change makes every F on disk stale while leaving the order it selected valid).
 This is THE entry point for experiments: what runs is chosen
@@ -160,6 +160,11 @@ def solve(names, seed=None, seeds=None):
         elif name in ("rl_nominal", "rl_saa", "rl_saa_per"):
             from util.rl_rank import run_rank
             run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
+        elif name == "rl_s2v":
+            # EXPERIMENTAL faithful S2V-DQN, parallel to the rank-loss RL; the removal recipe
+            # lives in util/rl_s2v.py's module docstring.
+            from util.rl_s2v import run_s2v
+            run_s2v(seed=(P.SEED if seed is None else seed))
         elif name == "tune-search":
             from util.rl_rank import run_search_sweep
             run_search_sweep(seed=(P.SEED if seed is None else seed))
@@ -168,8 +173,8 @@ def solve(names, seed=None, seeds=None):
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_nominal, rl_saa, rl_saa_per, tune-search, "
-                             f"compare")
+                             f"milp, oracle, rl_nominal, rl_saa, rl_saa_per, rl_s2v, "
+                             f"tune-search, compare")
 
 
 if __name__ == "__main__":

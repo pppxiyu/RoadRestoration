@@ -40,7 +40,8 @@ RULE_BASED = ("flow", "demand", "ratio")
 # The searched/learned methods, each owning its own folder. rl_saa is the SAA variant (nominal DQN
 # config + sample-average-approximation training on an LHS-covered world sample + a quantile-
 # regression distributional head); its 5-seed current-config re-run is what admits it here.
-SEARCHED = (("ga", "02-baselines"), ("rl_nominal", "03-RL"), ("rl_saa", "03-RL"))
+SEARCHED = (("ga", "02-baselines"), ("rl_nominal", "03-RL"), ("rl_saa", "03-RL"),
+            ("rl_s2v", "03-RL"))   # rl_s2v: EXPERIMENTAL; remove with util/rl_s2v.py
 
 
 def _discover(base, gdir, N):
@@ -202,7 +203,8 @@ def _compute_accounting(greedy_finals, milp_opt, M):
                               kind="greedy"))
             continue
         n_evals = float(d["n_evals"].mean())
-        kind = "rl" if v.startswith("rl_nominal") else "rl_saa" if v.startswith("rl_saa") else "meta"
+        kind = ("rl" if v.startswith("rl_nominal") else "rl_saa" if v.startswith("rl_saa")
+                else "rl_s2v" if v.startswith("rl_s2v") else "meta")
         stats.append(dict(method=v, mean_F=float(d["F"].mean()), n_evals=n_evals,
                           mean_ue=n_evals * T / M + T, kind=kind))
     stats.append(dict(method="milp", mean_F=float(milp_opt["F_milp"].mean()),

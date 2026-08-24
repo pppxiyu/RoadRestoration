@@ -49,6 +49,8 @@ def _method_colors(cols):
             out[c] = C["purple"]
         elif v == "rl_saa_per":
             out[c] = C["accent2"]
+        elif v == "rl_s2v":
+            out[c] = "#C97B2D"     # EXPERIMENTAL S2V-DQN: orange, outside the shared palette
 
         else:                                              # a static greedy variant
             out[c] = _GREY_RAMP[gi % len(_GREY_RAMP)]
@@ -117,19 +119,25 @@ def make_performance_distribution(out_dir, df, methods):
         patch.set_facecolor(col[c])
         patch.set_alpha(0.30)
         patch.set_edgecolor(col[c])
+    lo, hi = float(df[order].to_numpy().min()), float(df[order].to_numpy().max())
+    span = (hi - lo) or 1.0
     for i, c in enumerate(order, start=1):
         y = df[c].to_numpy()
         ax.scatter(i + rng.uniform(-0.16, 0.16, len(y)), y, s=7, color=col[c], alpha=0.55,
                    edgecolors="none", zorder=3)
         ax.scatter([i], [y.mean()], marker="D", s=16, color=C["neutral_dark"], zorder=4,
                    edgecolors="white", linewidths=0.4)
+        # The three summary numbers on the box itself, so the reader need not cross-reference the
+        # table: mean (the diamond), median (the box line), and best (lowest F, this objective).
+        ax.annotate(f"mean {y.mean():.4f}\nmed  {np.median(y):.4f}\nbest {y.min():.4f}",
+                    (i, y.max()), textcoords="offset points", xytext=(0, 5), ha="center",
+                    va="bottom", fontsize=5.0, color=C["neutral_dark"], linespacing=1.2)
     ax.axhline(1.0, ls=":", lw=0.7, color="0.75", zorder=1)        # pre-disaster level
-    lo, hi = float(df[order].to_numpy().min()), float(df[order].to_numpy().max())
-    ax.set_ylim(lo - 0.06 * (hi - lo), hi + 0.06 * (hi - lo))
+    ax.set_ylim(lo - 0.06 * span, hi + 0.34 * span)               # top headroom for the annotations
     ax.set_xticks(range(1, len(order) + 1))
     ax.set_xticklabels([_label(c) for c in order], rotation=30, ha="right")
     ax.set_ylabel("objective  $F$")
-    ax.set_title(f"per-scenario $F$ distribution  (M={len(df)}; diamond = mean)")
+    ax.set_title(f"per-scenario $F$ distribution  (M={len(df)}; diamond = mean, box line = median)")
     fig.tight_layout()
     save_pub(fig, figs / "performance_distribution")
     plt.close(fig)
@@ -192,6 +200,9 @@ def make_accuracy_compute(out_dir, stats):
             s["_c"], s["_m"] = C["teal"], "^"
         elif s["kind"] == "rl_saa":
             s["_c"], s["_m"] = C["purple"], "v"
+        elif s["kind"] == "rl_s2v":
+            s["_c"], s["_m"] = "#C97B2D", "P"          # EXPERIMENTAL S2V-DQN
+
         else:
             s["_c"], s["_m"] = _GREY_RAMP[gi % len(_GREY_RAMP)], "o"
             gi += 1
