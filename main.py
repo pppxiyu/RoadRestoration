@@ -24,7 +24,7 @@ be inspected end to end.
 
 `python main.py --solve <names>`: run any solver(s) at the scale config.py declares
 (N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_nominal, rl_s2v, rl_s2v_saa (the last two experimental), compare. `ga-rescore` re-measures GA's committed order under the
+milp, oracle, rl_dqn, rl_s2v, rl_s2v_saa64/128[_adaptive] (the last two families experimental), compare. `ga-rescore` re-measures GA's committed order under the
 current settings without repeating the search, for use after a change of ruler (a UE tolerance or
 engine change makes every F on disk stale while leaving the order it selected valid).
 This is THE entry point for experiments: what runs is chosen
@@ -34,7 +34,7 @@ rewrites its own outputs/ folder and refreshes the comparison when it finishes.
 
 Run inside the road_restore conda env:
   python main.py                       # full run (oracle + MILP)
-  python main.py --solve ga,rl_nominal     # chosen solvers at the configured scale
+  python main.py --solve ga,rl_dqn     # chosen solvers at the configured scale
   python main.py --walkthrough         # step-by-step objective walkthrough for one example
 (Equivalent module entry points: `python -m util.oracle`, `python -m util.pretrain_milp`.)
 """
@@ -157,13 +157,28 @@ def solve(names, seed=None, seeds=None):
         elif name == "oracle":
             from util.oracle import run_oracle
             run_oracle()
-        elif name == "rl_nominal":
+        elif name == "rl_dqn":
             from util.rl_rank import run_rank
             run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
-        elif name == "rl_s2v_saa":
-            # EXPERIMENTAL pool-SAA S2V; removal recipe in util/rl_s2v_saa.py's docstring.
-            from util.rl_s2v_saa import run_s2v_saa
-            run_s2v_saa(seed=(P.SEED if seed is None else seed))
+        elif name.startswith("rl_s2v_saa"):
+            # EXPERIMENTAL pool-SAA S2V: one variant per pool size, plus the _adaptive twins
+            # that turn on rl_s2v's deviation-24 observation channels
+            # (rl_s2v_saa64/128[_adaptive], or the bare name for the default pool). Removal
+            # recipe in util/rl_s2v_saa.py's docstring.
+            from util.rl_s2v_saa import POOL_SIZES, run_s2v_saa
+            tail = name[len("rl_s2v_saa"):]
+            adaptive = tail.endswith("_adaptive")
+            if adaptive:
+                tail = tail[:-len("_adaptive")]
+            if tail and int(tail) not in POOL_SIZES:
+                raise SystemExit(f"pool size {tail} is not registered; POOL_SIZES = {POOL_SIZES} "
+                                 f"(add it there and to SOLVER_DIR / SEARCHED first)")
+            hp_run = {}
+            if tail:
+                hp_run["pool_n"] = int(tail)
+            if adaptive:
+                hp_run["adaptive"] = True
+            run_s2v_saa(seed=(P.SEED if seed is None else seed), hp=(hp_run or None))
         elif name == "rl_s2v":
             # EXPERIMENTAL faithful S2V-DQN, parallel to the rank-loss RL; the removal recipe
             # lives in util/rl_s2v.py's module docstring.
@@ -177,7 +192,7 @@ def solve(names, seed=None, seeds=None):
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_nominal, rl_s2v, rl_s2v_saa, "
+                             f"milp, oracle, rl_dqn, rl_s2v, rl_s2v_saa64/128[_adaptive], "
                              f"tune-search, compare")
 
 

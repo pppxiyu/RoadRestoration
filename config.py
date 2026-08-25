@@ -193,8 +193,19 @@ DUR_SD = {
 # The TRUE severity is drawn per scenario from the row of this confusion matrix indexed by the
 # estimate, and it is what the evaluator scores against: it sets the capacity/free-flow retention,
 # whether the road is severed outright (SEVER_SEVERITY), the demand shortfall it drives, AND the
-# cell its repair duration is drawn from. It is NEVER revealed during execution -- a planner sees
-# only the estimate and this distribution, and still commits to one repair order.
+# cell its repair duration is drawn from. The severity LABEL itself is never an input to any
+# solver. Since 2026-08-25 the FIELD STATE it produces is observable during execution (the ban
+# on execution-time observation was lifted): the rl_s2v_saa _adaptive variants read the realized
+# network's live traffic, OD-level disconnection and realized demand shortfall at decision time
+# (util/rl_s2v.py deviation 24), from which truth is inferable but never handed over -- and the
+# durations of unstarted segments remain genuinely unknown (traffic contains no duration
+# information). Plain rl_s2v trains in the nominal world where the channels carry zero signal
+# and was measured unable to use them (its flags are off; the ledger entry has the numbers), and
+# plain rl_s2v_saa keeps them off so the plain-vs-adaptive pair isolates the channel. The
+# planning-side solvers (rules, MILP, GA, rl_dqn) still see only the estimate and this
+# distribution. The run_meta field `severity.revealed_during_execution` stays False because it
+# records LABEL revelation; the observation channel is documented alongside it
+# (technical_notes/05-problem_redefinition.md sec.2b/6.5).
 #
 # WHY: with only duration random, uncertainty moves the COST of a segment but never its
 # IMPORTANCE, so every scenario agrees on the importance ranking and adapting to the scenario is

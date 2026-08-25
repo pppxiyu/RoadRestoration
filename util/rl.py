@@ -10,7 +10,7 @@ HISTORY. This module used to carry the original value-loss DQN trainer. That sol
 superseded by util.rl_rank -- its TD-regression objective optimizes value CALIBRATION while the
 delivered decision argmax_e Q(s, e) needs only the value RANKING, and under function approximation
 a warm-start probe showed it drifting off the known optimum, which no value-stability knob fixed
--- and its training loop, tuned defaults and legacy variant names (rl_nominal_legacy /
+-- and its training loop, tuned defaults and legacy variant names (rl_dqn_legacy /
 rl_stoch_legacy) were removed on 2026-08-10 per the project owner's decision. The run records of
 that era remain the evidence of the comparison; this module keeps only what is shared.
 """

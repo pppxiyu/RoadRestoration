@@ -4,9 +4,9 @@ util.rl_rank and kept deliberately removable.
 
 WHAT THIS IS. Dai et al.'s structure2vec graph embedding parameterizing Q, trained by n-step
 Q-learning over an experience-replay buffer, PLUS the repo's large-margin self-imitation hinge --
-the regularizer rl_nominal uses to hold the greedy argmax onto the best order the search has
+the regularizer rl_dqn uses to hold the greedy argmax onto the best order the search has
 found. The hinge's whole configuration (margin, weight cap, imitation ramp) is taken live from
-RANK_PARAMS_NOMINAL so the two solvers regularize identically.
+RANK_PARAMS_DQN so the two solvers regularize identically.
 
 WHY THE HINGE IS HERE. This module first ran as the FAITHFUL paper reproduction (embedding +
 n-step Q-learning, no hinge -- the `lam=0` special case, which still exists and recovers it
@@ -18,7 +18,7 @@ for, and the large-margin hinge is the mechanism that fixed it there. Adding it 
 it fixes the same drift on the S2V embedding. Setting `lam=0` in the params reverts to the
 faithful baseline.
 
-Still ABSENT relative to rl_nominal (so the embedding stays the thing under test): the flow-prior
+Still ABSENT relative to rl_dqn (so the embedding stays the thing under test): the flow-prior
 residual. Shared now: the hinge, Double DQN, prioritized replay, and the dueling head (the last
 flagged as possibly reverting -- dueling=False removes it cleanly).
 
@@ -41,10 +41,10 @@ DEVIATIONS FROM THE PAPER, all deliberate and recorded in run_meta (`paper_devia
      itself stays time-free; `use_g=False` restores the paper's exact readout.
   4. Reward = the repo's completion-window credit (util.rl._completion_rewards), not the
      per-action marginal objective delta. Both telescope to the episode objective; this one keeps
-     the return scale identical to rl_nominal so diagnostics stay comparable.
+     the return scale identical to rl_dqn so diagnostics stay comparable.
   5. Replay tuples are inserted at EPISODE END, not per step: a decision's window credit depends
      on the NEXT completion, so it is unobservable mid-episode.
-  6. gamma = 0.9995 (project owner's decision: aligned with rl_nominal; the paper's
+  6. gamma = 0.9995 (project owner's decision: aligned with rl_dqn; the paper's
      cumulative-reward-equals-objective reading implies 1.0).
   7. Target network ON by default (project owner's decision: the operational fitted-Q-iteration
      reading, and what the paper's released code does); target_sync=0 restores Algorithm 1's
@@ -55,7 +55,7 @@ DEVIATIONS FROM THE PAPER, all deliberate and recorded in run_meta (`paper_devia
      saved alongside (results/model_best_nominal.pt) as the drift diagnostic.
  10. The eps-greedy anneal is LINEAR over a fixed episode span (an open-ended stop rule cannot
      provide the horizon a linear schedule needs).
- 11. Training is on the ONE nominal world of one damage instance (rl_nominal's regime), not the
+ 11. Training is on the ONE nominal world of one damage instance (rl_dqn's regime), not the
      paper's distribution-over-instances regime -- fair vs. the siblings, but not a test of the
      paper's generalization claim.
  12. Constant learning rate; the paper decays lr exponentially by 0.95 (Appendix D.5).
@@ -73,7 +73,7 @@ DEVIATIONS FROM THE PAPER, all deliberate and recorded in run_meta (`paper_devia
      evaluates it. Not in the paper; a rank-loss sibling default. double_dqn=False restores the
      paper's plain max-Q target.
  17. Prioritized experience replay (Schaul et al. 2016): proportional priorities + annealed IS
-     weights, config from RANK_PARAMS_NOMINAL. The paper uses uniform replay; prioritized=False
+     weights, config from RANK_PARAMS_DQN. The paper uses uniform replay; prioritized=False
      restores it.
  18. Dueling head (Wang et al. 2016): Q = V(s) + A(s,v) - mean_legal(A). Not in the paper; kept
      ISOLATED for possible reversion, dueling=False restores the plain single-head readout.
@@ -125,6 +125,29 @@ DEVIATIONS FROM THE PAPER, all deliberate and recorded in run_meta (`paper_devia
      orders fell from 10 to 5. KEPT as the default on the project owner's instruction. The cost
      of keeping it is that weight sharing is what let the round count change after training;
      untied, the network is fixed at t_emb rounds.
+ 24. EXECUTION-TIME OBSERVATION (2026-08-25, project owner's instruction after lifting the
+     revelation ban; flags feat_obs_traffic / feat_obs_disc / feat_obs_trueD, each a one-flag
+     revert). The agent observes the REALIZED world's field state at decision time: live UE
+     flow and congestion per segment (solved under TRUE severities -- the state a road sensor
+     would report), the OD-level disconnection pattern, and the realized demand-shortfall
+     projection -- each frozen onto the state at decision time like deviation 22, and the last
+     two with a global-dim companion (g grows 4 -> 6). The information rule: field state at
+     slots <= now is observable; the severity/duration LABELS of unstarted segments are never
+     inputs, so disconnection is fed as a B-weighted OD share, never a per-segment severed
+     flag. In the NOMINAL world truth == estimate by construction, so feat_obs_trueD reproduces
+     the belief columns exactly there (asserted in _self_check) and the observation channels
+     only carry signal where a SCENARIO's truth deviates -- i.e. during rl_s2v_saa's pool
+     training and every per-scenario delivery. NOTE the old "live-flow features measured
+     useless" prior does NOT transfer: those were solved under ESTIMATED severities and carried
+     no scenario information by construction. Cost: only feat_obs_traffic solves UE (one per
+     decision state, cold, memoized across episodes by the same capped-completion-prefix +
+     severity-tuple key the slot cache uses); disc is graph reachability, trueD is arithmetic.
+     MEASURED on THIS solver, n10 seed 42: 0.9806 with the channels vs 0.9774 without, and the
+     delivered distinct orders exploded 5 -> 34 -- exactly the predicted failure: nominal
+     training gives the channels zero signal, so the delivery-time observations are inputs no
+     gradient ever shaped and the extra adaptivity is noise. DEFAULT SPLIT since 2026-08-25
+     (project owner's instruction): flags OFF in this solver, ON in rl_s2v_saa via
+     S2V_SAA_PARAMS, whose pool worlds show the channels real daylight every episode.
 
 ISOLATION / REMOVAL. This module only READS from the rest of the repo (util.rl primitives,
 util.rl_rank's build_env / RankPlateauStop / _nstep_rows / _Recorder / EP_CAP, provenance
@@ -147,12 +170,14 @@ import numpy as np
 import pandas as pd
 
 import config as P
-from util.evaluate import accessible_segments, schedule_from_permutation
+from util.evaluate import (_matrix_from_H, accessible_segments, build_damaged_edges,
+                           schedule_from_permutation)
+from util.ue import solve_ue
 from util.oracle import _baseline_twoway_flow, scale_dir
 from util.provenance import (solver_dir, fresh_scale_dir, log_dir, results_dir, slot_rows,
                              write_run_meta)
 from util.rl import _completion_rewards, _evaluate_prefix_cached
-from util.rl_rank import (EP_CAP, FIGURE_REFRESH_EVERY, OUT_DIAG, RANK_PARAMS_NOMINAL,
+from util.rl_rank import (EP_CAP, FIGURE_REFRESH_EVERY, OUT_DIAG, RANK_PARAMS_DQN,
                           STOP_PARAMS, TOY, RankPlateauStop, _nstep_rows,
                           _Recorder, _rollout, build_env)
 
@@ -182,7 +207,7 @@ S2V_PARAMS = dict(
                          # NOTE: the Wang et al. trunk-gradient 1/sqrt(2) rescale (trunk_rescale)
                          # was tried on top of this on 2026-08-24 and REVERTED -- it delivered
                          # 0.9567 vs 0.9473 without it (early stop at 143 eps), matching
-                         # rl_nominal's own finding that the Wang recipe hurts on this problem.
+                         # rl_dqn's own finding that the Wang recipe hurts on this problem.
     # Deviation 22 (2026-08-24): three DYNAMIC node columns, each behind its own flag so each
     # is a one-flag revert (added on the project owner's instruction, with removal expected to be
     # cheap). They close the three observability gaps the 7-dim x_v provably has -- see the
@@ -196,6 +221,36 @@ S2V_PARAMS = dict(
     feat_blocked=True,   # column 9: 1 for pending segments a crew cannot currently reach
                          # (accessibility constraint); constant 0 on instances where the
                          # constraint does not bind, a zero-risk placeholder there
+    # Deviation 24 (2026-08-25): EXECUTION-TIME OBSERVATION of the realized world, added on the
+    # project owner's instruction after the standing ban on execution-time revelation was lifted.
+    # The information rule these implement: the agent may observe the FIELD STATE of the network
+    # at any slot <= now (sensors see traffic), but the severity / duration LABELS of unstarted
+    # segments are never inputs -- disconnection is therefore fed at OD level, never as a
+    # per-segment severed flag. Each flag is a one-flag revert; see the deviation-24 ledger
+    # entry for exactly what each column reads and what it costs.
+    #
+    # OFF here BY MEASUREMENT (2026-08-25, project owner's instruction): this solver trains in
+    # the NOMINAL world, where truth == estimate and every observation column equals its belief
+    # twin, so the channels carry zero training signal here by construction -- at delivery the
+    # scenario observations are then out-of-distribution inputs no gradient ever shaped.
+    # Measured n10 seed 42: 0.9806 with the flags on vs 0.9774 without, delivered distinct
+    # orders 5 -> 34 (adaptive noise, not adaptation). The flags stay ON in rl_s2v_saa
+    # (S2V_SAA_PARAMS overrides them): its pool worlds carry real truth-vs-estimate daylight.
+    feat_obs_traffic=False,  # two columns: live two-way flow / baseline max (same normalizer as
+                             # the static phi column, so their difference reads as "flow lost vs
+                             # normal"), and congestion excess x/(1+x) with
+                             # x = max(cost/free_flow_intact - 1, 0), max over directions.
+                             # The only observation that costs UE solves (one per decision
+                             # state, memoized across episodes).
+    feat_obs_disc=False,     # one column + one global dim: the demand-weighted share of each
+                             # segment's B-associated OD pairs currently DISCONNECTED, and the
+                             # fraction of total demand disconnected. Graph reachability on the
+                             # severed-removed network -- no UE solve.
+    feat_obs_trueD=False,    # one column + one global dim: the REALIZED demand-shortfall
+                             # projection (the evaluator's own D recursion under true
+                             # severities) and its total fraction -- the observed twin of the
+                             # belief columns; their gap is the "world worse/better than
+                             # believed" signal. Pure arithmetic -- no UE solve.
     hop_untied=True,     # Deviation 23: give EACH propagation round its own aggregation matrix
                          # th2^(t) instead of reusing one across all t_emb rounds. False is the
                          # paper's weight-tied structure2vec, byte-identical to before the flag
@@ -205,7 +260,7 @@ S2V_PARAMS = dict(
                          # does not change.
     n_step=2,            # n-step return horizon, inside the paper's per-problem set 1-5
                          # (Table D.9: MVC 5, MAXCUT 1, TSP 1, SCP 2)
-    gamma=0.9995,        # discount, aligned with rl_nominal (deviations 6 and 14)
+    gamma=0.9995,        # discount, aligned with rl_dqn (deviations 6 and 14)
     lr=1e-3,             # CONSTANT Adam step; the paper decays lr by 0.95 (D.5) -- deviation 12
     batch=64,            # replay minibatch (paper Table D.9)
     updates_per_ep=10,   # ~one gradient step per decision, approximating the paper's per-step SGD
@@ -219,28 +274,28 @@ S2V_PARAMS = dict(
                          # not in the paper). Meaningful only with target_sync > 0.
     replay_cap=4000,     # transitions kept, oldest dropped (matches the sibling's buffer)
     # PRIORITIZED EXPERIENCE REPLAY (Schaul et al. 2016), deviation 17. Config taken live from
-    # RANK_PARAMS_NOMINAL as with the hinge: proportional priorities on a plain list (no sum-tree
+    # RANK_PARAMS_DQN as with the hinge: proportional priorities on a plain list (no sum-tree
     # -- the buffer is small), importance-sampling weights annealed by beta. The paper uses UNIFORM
     # replay, so prioritized=False restores it.
-    prioritized=bool(RANK_PARAMS_NOMINAL["prioritized"]),
-    per_alpha=float(RANK_PARAMS_NOMINAL["per_alpha"]),       # priority exponent
-    per_beta0=float(RANK_PARAMS_NOMINAL["per_beta0"]),       # IS-weight exponent at episode 0...
-    per_beta_eps=float(RANK_PARAMS_NOMINAL["per_beta_eps"]), # ...annealed to 1 over ~this many eps
-    per_eps=float(RANK_PARAMS_NOMINAL["per_eps"]),           # floor added to each |TD| priority
+    prioritized=bool(RANK_PARAMS_DQN["prioritized"]),
+    per_alpha=float(RANK_PARAMS_DQN["per_alpha"]),       # priority exponent
+    per_beta0=float(RANK_PARAMS_DQN["per_beta0"]),       # IS-weight exponent at episode 0...
+    per_beta_eps=float(RANK_PARAMS_DQN["per_beta_eps"]), # ...annealed to 1 over ~this many eps
+    per_eps=float(RANK_PARAMS_DQN["per_eps"]),           # floor added to each |TD| priority
     # LARGE-MARGIN RANKING HINGE (added 2026-08-23 on the project owner's instruction). Its whole
-    # configuration is TAKEN LIVE from RANK_PARAMS_NOMINAL so this solver regularizes exactly as
-    # rl_nominal does ("reference the current RL"). The exemplar is the best-by-F nominal order so
+    # configuration is TAKEN LIVE from RANK_PARAMS_DQN so this solver regularizes exactly as
+    # rl_dqn does ("reference the current RL"). The exemplar is the best-by-F nominal order so
     # far; the term demands every rival action fall at least `margin` below the exemplar's Q, and
     # its weight climbs a geometric ramp lam(ep)=min(lam, lam0*lam_growth^(ep-1)). lam=0 removes
     # the term and recovers the FAITHFUL paper reproduction (see the module docstring).
-    lam=float(RANK_PARAMS_NOMINAL["lam"]),               # hinge weight cap / terminal weight
-    margin=float(RANK_PARAMS_NOMINAL["margin"]),         # m: exemplar action vs each rival gap
-    lam0=float(RANK_PARAMS_NOMINAL["lam0"]),             # imitation ramp start...
-    lam_growth=float(RANK_PARAMS_NOMINAL["lam_growth"]), # ...geometric growth/episode, capped at lam
+    lam=float(RANK_PARAMS_DQN["lam"]),               # hinge weight cap / terminal weight
+    margin=float(RANK_PARAMS_DQN["margin"]),         # m: exemplar action vs each rival gap
+    lam0=float(RANK_PARAMS_DQN["lam0"]),             # imitation ramp start...
+    lam_growth=float(RANK_PARAMS_DQN["lam_growth"]), # ...geometric growth/episode, capped at lam
 )
 
 # The plateau rule probes every episode here (the nominal best-so-far score is free), so the
-# shared STOP_PARAMS patience -- calibrated in PROBES -- must be widened exactly as rl_nominal's
+# shared STOP_PARAMS patience -- calibrated in PROBES -- must be widened exactly as rl_dqn's
 # override widens it, and for the same reason (see STOP_OVERRIDES in util.rl_rank).
 S2V_STOP_OVERRIDES = dict(patience_P=100, stable_K=100)   # 2026-08-24: 75 -> 100, repo-wide
 
@@ -281,19 +336,35 @@ def _graph_tensors(env, toy_dir=TOY, hp=None):
     flow = _baseline_twoway_flow(toy_dir, cores=1)     # cores=1: bit-stable, as in build_env
     phi_all = np.array([flow.get(tuple(sorted(mp["end_of"][e])), 0.0) for e in segs_all],
                        dtype=np.float32)
-    phi_all /= (phi_all.max() or 1.0)
+    # The raw baseline maximum is kept: the deviation-24 live-flow column divides by the SAME
+    # normalizer, so static phi and observed flow stay on one scale and their difference reads
+    # as "flow lost vs normal".
+    phi_max = float(phi_all.max() or 1.0)
+    phi_all = phi_all / phi_max
     # Dynamic-column layout (deviation 22). Enabled columns are appended after the 7 base
     # columns in a fixed order, so disabling one shifts the ones after it -- the indices here are
     # the single authority and the rollout / _state_x read them, never hard-coded positions.
     fl = dict(S2V_PARAMS, **(hp or {}))
     n_feat = 7
     col_proj = col_rec = col_blocked = None
+    col_oflow = col_ocong = col_odisc = col_otrue = None
     if bool(fl.get("feat_shortfall")):
         col_proj, n_feat = n_feat, n_feat + 1
     if bool(fl.get("feat_recency")):
         col_rec, n_feat = n_feat, n_feat + 1
     if bool(fl.get("feat_blocked")):
         col_blocked, n_feat = n_feat, n_feat + 1
+    # Deviation-24 observation columns, appended after deviation 22's in the same fixed order.
+    if bool(fl.get("feat_obs_traffic")):
+        col_oflow, n_feat = n_feat, n_feat + 1
+        col_ocong, n_feat = n_feat, n_feat + 1
+    if bool(fl.get("feat_obs_disc")):
+        col_odisc, n_feat = n_feat, n_feat + 1
+    if bool(fl.get("feat_obs_trueD")):
+        col_otrue, n_feat = n_feat, n_feat + 1
+    # The global block g grows with the two observation totals, in this fixed order:
+    # [t/T, crew_gap, belief_shortfall, remaining_work] + [realized_shortfall?] + [disc_demand?].
+    g_dim = 4 + (1 if col_otrue is not None else 0) + (1 if col_odisc is not None else 0)
     xs = np.zeros((n, n_feat), dtype=np.float32)       # cols 0..6: pending, under, done, phi, sev, dur, dem
     xs[:, 3] = phi_all
     for e in env["segs"]:
@@ -304,8 +375,19 @@ def _graph_tensors(env, toy_dir=TOY, hp=None):
     # (env["seg_idx"]), and the denominator is each segment's full-drop level sum_r B[r,e] H0_r.
     ctx = env["ctx"]
     den = ctx["B"].T @ ctx["H0"]
+    # Deviation-24 constants: the intact per-edge free-flow time (the congestion column's
+    # reference), the (u,v)->edge_id map for folding directed UE links back onto segments, and
+    # the observation memos -- ue_memo keyed exactly like the slot cache (slot,
+    # capped-completion-prefix, severity tuple), disc_memo keyed by the severed subset, and the
+    # actual-UE-solve counter the compute accounting reports. Mutable on purpose: they persist
+    # across every rollout of a training run.
+    fft0 = {int(r.edge_id): float(r.free_flow_time) for r in ctx["edges"].itertuples(index=False)}
+    pair_eid = {tuple(sorted(uv)): e for e, uv in ctx["access"]["ends"].items()}
     return dict(segs_all=segs_all, idx=idx, A=A, deg=A.sum(axis=1), xs=xs, n_feat=n_feat,
                 col_proj=col_proj, col_rec=col_rec, col_blocked=col_blocked,
+                col_oflow=col_oflow, col_ocong=col_ocong, col_odisc=col_odisc,
+                col_otrue=col_otrue, g_dim=g_dim, phi_max=phi_max, fft0=fft0,
+                pair_eid=pair_eid, obs=dict(ue_memo={}, disc_memo={}, solves=[0]),
                 B=ctx["B"], den=den, rho=float(P.RHO))
 
 
@@ -333,11 +415,134 @@ def _state_x(gt, state):
         blocked = set(state["pending"]) - set(state["cand"])
         for e in blocked:
             x[gt["idx"][e], gt["col_blocked"]] = 1.0
+    # Deviation-24 observation columns, frozen onto the state at decision time exactly like
+    # proj/rec above: flow and congestion cover ALL segments (network-wide sensing), the
+    # disconnection and realized-shortfall projections exist for the damaged set only.
+    if gt["col_oflow"] is not None:
+        for e, v in state.get("oflow", {}).items():
+            x[gt["idx"][e], gt["col_oflow"]] = v
+        for e, v in state.get("ocong", {}).items():
+            x[gt["idx"][e], gt["col_ocong"]] = v
+    if gt["col_odisc"] is not None:
+        for e, v in state.get("odisc", {}).items():
+            x[gt["idx"][e], gt["col_odisc"]] = v
+    if gt["col_otrue"] is not None:
+        for e, v in state.get("otrue", {}).items():
+            x[gt["idx"][e], gt["col_otrue"]] = v
     return x
 
 
+# --------------------------------------------------------------------------- #
+# Execution-time observation (deviation 24)
+# --------------------------------------------------------------------------- #
+def _sev_true_of(env, durations):
+    """The severities the OBSERVATION runs under, resolved exactly as
+    util.evaluate.evaluate_schedule resolves scoring: a util.scenarios.Scenario carries the truth
+    on `.sev`; the nominal world (a plain dict) carries none and the instance ESTIMATES stand in.
+    One resolution rule means the agent always observes the world it is scored in -- a third
+    possibility is exactly the silent state/score mismatch this project treats as the worst
+    failure mode."""
+    dis = env["ctx"]["disrupted"]
+    return ({int(e): int(v) for e, v in getattr(durations, "sev", {}).items()}
+            or {int(eid): int(s) for (eid, _, _, s) in dis})
+
+
+def _make_observer(env, gt, durations):
+    """One episode's field-state observer: returns advance(t, comp) -> the deviation-24
+    observations at slot t, given the completions recorded so far (comp maps segment ->
+    completion slot; entries may exceed t -- a crew's busy-until is already state the rollout
+    legally knows). Everything here is computable from the history up to t: the damage state at
+    any slot j <= t is fixed by the completions <= j, so no future information can leak in.
+
+    Maintains the evaluator's OWN realized demand-shortfall recursion (true severities), advanced
+    slot by slot exactly as evaluate_schedule advances it. Per call it returns:
+      D_true  -- the realized shortfall vector at slot t (feat_obs_trueD);
+      disc    -- per-OD boolean: destination unreachable from origin on the severed-removed
+                 network (feat_obs_disc). The network is built by the SAME build_damaged_edges
+                 the evaluator uses, so what counts as severed has a single authority; memoized
+                 by the severed subset (reachability ignores capacity degradation).
+      flow/cong -- per-segment live two-way flow (÷ the baseline maximum, the static phi
+                 column's normalizer) and congestion excess x/(1+x), x = max(cost/fft0 - 1, 0)
+                 over the two directions (feat_obs_traffic). One COLD UE solve per distinct
+                 (slot, capped completion prefix, severity tuple) -- the slot cache's own
+                 invariant, see util/sim_cache.py -- memoized in gt["obs"]["ue_memo"]. Cold on
+                 purpose: deterministic and key-cacheable, and the warm-chain difference is
+                 inside the solver tolerance anyway. A severed segment reads flow 0, cong 0 --
+                 a sensor on a closed road, not a severity label.
+    """
+    ctx = env["ctx"]
+    dis = ctx["disrupted"]
+    H0, B = ctx["H0"], ctx["B"]
+    sev_true = _sev_true_of(env, durations)
+    sev_key = tuple(sev_true[eid] for (eid, _, _, _) in dis)
+    need_ue = gt["col_oflow"] is not None
+    box = dict(k=0, D=np.zeros(len(H0)))
+
+    def _damaged_at(j, comp):
+        return {eid: sev_true[eid] for (eid, _, _, _) in dis
+                if not (eid in comp and comp[eid] <= j)}
+
+    def advance(t, comp):
+        while box["k"] < t:                            # evaluate_schedule's recursion, verbatim
+            box["k"] += 1
+            dmg_j = _damaged_at(box["k"], comp)
+            v = np.zeros(len(dis))
+            for j, (eid, _, _, _) in enumerate(dis):
+                if eid in dmg_j:
+                    v[j] = sev_true[eid]
+            box["D"] = np.maximum(B @ v, P.RHO * box["D"])
+        dmg = _damaged_at(t, comp)
+        out = dict(D_true=box["D"].copy())
+        if gt["col_odisc"] is not None:
+            severed = frozenset(e for e, s in dmg.items() if s >= P.SEVER_SEVERITY)
+            dm = gt["obs"]["disc_memo"]
+            if severed not in dm:
+                edges_now = build_damaged_edges(ctx, {e: sev_true[e] for e in severed})
+                adj = {}
+                for r in edges_now.itertuples(index=False):
+                    adj.setdefault(int(r.u), []).append(int(r.v))
+                    adj.setdefault(int(r.v), []).append(int(r.u))
+                reach = {}
+                for o in ctx["origins_unique"]:
+                    seen, stack = {o}, [o]
+                    while stack:
+                        nd = stack.pop()
+                        for nb in adj.get(nd, ()):
+                            if nb not in seen:
+                                seen.add(nb)
+                                stack.append(nb)
+                    reach[o] = seen
+                dm[severed] = np.array([d not in reach[o] for (o, d) in ctx["od_pairs"]])
+            out["disc"] = dm[severed]
+        if need_ue:
+            key = (t, tuple(min(comp.get(eid, t + 1), t + 1) for (eid, _, _, _) in dis), sev_key)
+            tm = gt["obs"]["ue_memo"]
+            if key not in tm:
+                H = np.clip(H0 - box["D"], 0.0, None)
+                links, _ = solve_ue(build_damaged_edges(ctx, dmg), _matrix_from_H(H, ctx),
+                                    ctx["zone_ids"], rgap=P.UE_RGAP, max_iter=P.UE_MAX_ITER,
+                                    quiet=True, cores=1)
+                gt["obs"]["solves"][0] += 1
+                vol, cng = {}, {}
+                for a, b, vv, cc in zip(links["from"].to_numpy(), links["to"].to_numpy(),
+                                        links["volume"].to_numpy(), links["cost"].to_numpy()):
+                    eid = gt["pair_eid"].get(tuple(sorted((int(a), int(b)))))
+                    if eid is None:
+                        continue
+                    vol[eid] = vol.get(eid, 0.0) + float(vv)
+                    cng[eid] = max(cng.get(eid, 0.0),
+                                   max(float(cc) / gt["fft0"][eid] - 1.0, 0.0))
+                tm[key] = ({e: vol.get(e, 0.0) / gt["phi_max"] for e in gt["segs_all"]},
+                           {e: cng.get(e, 0.0) / (1.0 + cng.get(e, 0.0))
+                            for e in gt["segs_all"]})
+            out["flow"], out["cong"] = tm[key]
+        return out
+
+    return advance
+
+
 def _build_s2v_net(p, t_emb, use_g, torch, nn, dueling=False, readout_hidden=0, in_dim=7,
-                   hop_untied=False):
+                   hop_untied=False, g_dim=4):
     """The paper's parameterization, verbatim plus the optional th8 global block. All linear maps
     bias-free as in the paper's equations. Forward returns Q for EVERY vertex; the caller gathers
     the pending candidates, which is the legality mask.
@@ -376,7 +581,8 @@ def _build_s2v_net(p, t_emb, use_g, torch, nn, dueling=False, readout_hidden=0, 
             self.th4 = nn.Parameter(torch.randn(p) * 0.1)
             self.th6 = nn.Linear(p, p, bias=False)
             self.th7 = nn.Linear(p, p, bias=False)
-            self.th8 = nn.Linear(4, p, bias=False) if use_g else None
+            # g_dim = gt["g_dim"]: 4 base dims plus the deviation-24 observation totals.
+            self.th8 = nn.Linear(g_dim, p, bias=False) if use_g else None
             # th5: the Eq.-4 readout head. With readout_hidden > 0 it is a small MLP
             # (Linear -> relu -> Linear, deviation 21) instead of the paper's single linear.
             self.th5 = _head(3 * p if use_g else 2 * p)
@@ -421,14 +627,22 @@ def _s2v_rollout(env, gt, pick, durations=None):
     tagged-graph state this solver's network consumes, not a hand-crafted feature matrix.
 
     Returns (perm, start, states, picks): `states` are dicts carrying the world tags -- the
-    pending, under-repair and done tuples -- plus the 4-dim global block g and `cand`, the
-    ACCESSIBLE subset of pending that forms the action set; picks index into cand. Duration BELIEFS stay at the planning expectation throughout, exactly
-    as in _rollout."""
+    pending, under-repair and done tuples -- plus the global block g (4 base dims + the enabled
+    deviation-24 observation totals), the frozen observation maps, and `cand`, the ACCESSIBLE
+    subset of pending that forms the action set; picks index into cand. Duration BELIEFS stay at
+    the planning expectation throughout, exactly as in _rollout; what the deviation-24 channels
+    add is the OBSERVED field state of this episode's world, never its labels."""
     ctx, st, T = env["ctx"], env["st"], env["T"]
     durations = env["nominal"] if durations is None else durations
     dis_l, sev, B = ctx["disrupted"], ctx["severity_vec"], ctx["B"]
     seg_idx = env["seg_idx"]
     access = ctx["access"]
+    # Deviation-24 field-state observer for THIS episode's world (None when every observation
+    # flag is off). Fresh per episode -- its shortfall recursion starts at onset -- while its
+    # expensive memos persist across episodes inside gt["obs"].
+    obs_fn = (_make_observer(env, gt, durations)
+              if (gt["col_oflow"] is not None or gt["col_odisc"] is not None
+                  or gt["col_otrue"] is not None) else None)
     remaining = list(env["segs"])
     crew = [1] * P.C_MAX
     start, perm, states, picks = {}, [], [], []
@@ -463,9 +677,31 @@ def _s2v_rollout(env, gt, pick, durations=None):
                     v[seg_idx[e]] = sev[seg_idx[e]]
             D = np.maximum(B @ v, P.RHO * D)
         bel = st["dur_raw"]
-        g = np.array([t / T, (max(crew) - t) / T, float(D.sum()) / st["sum_H0"],
-                      sum(bel[e] for e in remaining) / st["total_work"]], dtype=np.float32)
         under = tuple(e for e, c in comp.items() if c > t)
+        # Deviation-24 observations at slot t, frozen onto the state like proj/rec below. The
+        # projections reuse the SAME B-projection and denominator as the belief column, so the
+        # otrue-vs-proj gap is a like-for-like "world worse/better than believed" signal; the
+        # disconnection share is B-weighted demand, an OD-level quantity that never becomes a
+        # per-segment severed label. g grows by the two totals in _graph_tensors' fixed order.
+        oflow, ocong, odisc, otrue = {}, {}, {}, {}
+        g_ext = []
+        if obs_fn is not None:
+            ob = obs_fn(t, comp)
+            if gt["col_otrue"] is not None:
+                BDt = gt["B"].T @ ob["D_true"]
+                otrue = {e: (float(BDt[j] / gt["den"][j]) if gt["den"][j] > 0 else 0.0)
+                         for e, j in seg_idx.items()}
+                g_ext.append(float(ob["D_true"].sum()) / st["sum_H0"])
+            if gt["col_odisc"] is not None:
+                num = gt["B"].T @ (ctx["H0"] * ob["disc"])
+                odisc = {e: (float(num[j] / gt["den"][j]) if gt["den"][j] > 0 else 0.0)
+                         for e, j in seg_idx.items()}
+                g_ext.append(float(ctx["H0"][ob["disc"]].sum()) / st["sum_H0"])
+            if gt["col_oflow"] is not None:
+                oflow, ocong = ob["flow"], ob["cong"]
+        g = np.array([t / T, (max(crew) - t) / T, float(D.sum()) / st["sum_H0"],
+                      sum(bel[e] for e in remaining) / st["total_work"]] + g_ext,
+                     dtype=np.float32)
         # Dynamic node columns (deviation 22), FROZEN onto the state at decision time so replayed
         # states re-embed exactly what was observable when the decision was made. proj carries
         # WHERE the current shortfall sits (B-projection of the belief-D the recursion above
@@ -483,7 +719,7 @@ def _s2v_rollout(env, gt, pick, durations=None):
                    for e in env["segs"]}
         state = dict(pending=tuple(remaining), under=under,
                      done=tuple(e for e in comp if comp[e] <= t), g=g, cand=cand,
-                     proj=proj, rec=rec)
+                     proj=proj, rec=rec, oflow=oflow, ocong=ocong, odisc=odisc, otrue=otrue)
         states.append(state)
         i = pick(cand, state)
         picks.append(i)
@@ -517,9 +753,28 @@ def _self_check(env, gt, Qf, torch):
     perm_b, start_b, feats, _, _ = _rollout(env, fp, n_lag=0)
     assert perm_a == perm_b and start_a == start_b, "s2v rollout schedules differently than rl_rank"
     for s, X in zip(states, feats):
-        assert np.allclose(s["g"], np.asarray(X)[0, 4:8], atol=1e-6), (
+        assert np.allclose(s["g"][:4], np.asarray(X)[0, 4:8], atol=1e-6), (
             "s2v rollout's global state diverged from rl_rank._rollout's -- the copied "
             "schedule/demand recursion has drifted")
+    # Deviation-24 invariants, on the same nominal rollout. In the NOMINAL world truth ==
+    # estimate by construction, so the observed-truth channel must REPRODUCE the belief channel
+    # exactly -- any daylight means the observer's recursion drifted from the rollout's (the
+    # silent state corruption this check exists to catch).
+    if gt["col_otrue"] is not None and gt["col_proj"] is not None:
+        for s in states:
+            assert all(abs(s["otrue"][e] - s["proj"].get(e, 0.0)) < 1e-9 for e in s["otrue"]), \
+                "nominal-world realized-shortfall projection != belief projection"
+            assert abs(float(s["g"][4]) - float(s["g"][2])) < 1e-9, \
+                "nominal-world realized-shortfall total != belief total"
+    if gt["col_oflow"] is not None:
+        st0 = states[0]
+        for eid, _, _, sv in env["ctx"]["disrupted"]:
+            if sv >= P.SEVER_SEVERITY:                 # nominal world: estimate IS the truth
+                assert st0["oflow"][eid] == 0.0 and st0["ocong"][eid] == 0.0, (
+                    "a severed segment shows traffic -- the observation read the wrong network")
+        assert 0.0 < max(st0["ocong"].values()) < 1.0, "no congestion reading anywhere at onset"
+        assert all(np.isfinite(v) and v >= 0.0 for v in st0["oflow"].values()), \
+            "live-flow column contains a non-finite or negative reading"
     res = _evaluate_prefix_cached(start_a, env["nominal"], env["T"], env["ctx"], {})
     rew, _ = _completion_rewards(list(perm_a), start_a, env["nominal"], res["terms"], env["T"],
                                  env["phi"])
@@ -573,10 +828,10 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
     hop_untied = bool(hp["hop_untied"])
     net = _build_s2v_net(p, t_emb, use_g, torch, nn, dueling=dueling,
                          readout_hidden=readout_hidden, in_dim=gt["n_feat"],
-                         hop_untied=hop_untied)
+                         hop_untied=hop_untied, g_dim=gt["g_dim"])
     tgt = _build_s2v_net(p, t_emb, use_g, torch, nn, dueling=dueling,
                          readout_hidden=readout_hidden, in_dim=gt["n_feat"],
-                         hop_untied=hop_untied)
+                         hop_untied=hop_untied, g_dim=gt["g_dim"])
     tgt.load_state_dict(net.state_dict())
     opt = torch.optim.Adam(net.parameters(), lr=float(hp["lr"]))
 
@@ -654,7 +909,7 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
         # LINEAR eps anneal (deviation 10): eps-greedy from the very first episode, as in the
         # paper -- no forced-greedy episode 0 and no prior to start from.
         eps = max(eps_min, eps0 - (eps0 - eps_min) * ep / max(1, anneal))
-        # Imitation ramp, exactly rl_nominal's: min(lam_cap, lam0*lam_growth^(ep-1)); constant
+        # Imitation ramp, exactly rl_dqn's: min(lam_cap, lam0*lam_growth^(ep-1)); constant
         # lam_cap when no ramp is configured. 0 when the hinge is off.
         lam_ep = (0.0 if not use_hinge else
                   lam_cap if lam_growth is None else
@@ -689,7 +944,7 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
                 prio = prio[-cap:]
 
         # The hinge exemplar: the best-by-F nominal order so far, rolled once per episode into its
-        # decision states (rl_nominal recomputes states_for(best_perm) per update; here the order
+        # decision states (rl_dqn recomputes states_for(best_perm) per update; here the order
         # is fixed for the whole episode, so one rollout serves every update -- cheaper, identical
         # exemplar). None until the first order is scored, or whenever the hinge is off.
         ex = states_for(best_perm) if (use_hinge and best_perm is not None) else None
@@ -742,7 +997,7 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
             if sync > 0 and gstep % sync == 0:
                 tgt.load_state_dict(net.state_dict())
 
-        # Plateau probe, the rl_nominal wiring: score = best-so-far nominal F (free), order = the
+        # Plateau probe, the rl_dqn wiring: score = best-so-far nominal F (free), order = the
         # greedy policy's nominal rollout; the frozen-scenario diagnostic every probe_every
         # episodes, list-scheduling the greedy order as the cheap proxy, and NEVER into the stop.
         gperm, _, _, _ = _s2v_rollout(env, gt, greedy)
@@ -771,7 +1026,7 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
     if rec is not None:
         rec.finish(net)
 
-    # Delivery: the FINAL policy rolled inside each frozen scenario, exactly rl_nominal's
+    # Delivery: the FINAL policy rolled inside each frozen scenario, exactly rl_dqn's
     # semantics (observed history only, beliefs at the planning expectation).
     per_scenario = []
     for d in env["scen"]:
@@ -783,7 +1038,7 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
               f"{(time.perf_counter() - t0) / 60:.1f} min", flush=True)
     return dict(order=order, per_scenario=per_scenario, net=net, best_net_sd=best_sd,
                 episodes=ep, n_evals=len(memo), outcome=outcome, best_score=best_F, hp=hp,
-                seed=seed)
+                seed=seed, obs_solves=int(gt["obs"]["solves"][0]))
 
 
 # --------------------------------------------------------------------------- #
@@ -820,7 +1075,10 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                    # Serial-equivalent compute, the nominal-variant convention: every distinct
                    # order the search scored costs T UE solves, amortised over the M scenarios,
                    # plus this scenario's own evaluation (see run_rank / _compute_accounting).
-                   ue_total=r["n_evals"] * env["T"] / len(env["scen"]) + env["T"],
+                   # The deviation-24 live-traffic reads are REAL solves too and are charged the
+                   # same amortised way (obs_solves counts actual solver calls, memo hits free).
+                   ue_total=((r["n_evals"] * env["T"] + r.get("obs_solves", 0))
+                             / len(env["scen"]) + env["T"]),
                    order="-".join(map(str, order_m)),
                    durations="-".join(str(int(dur[e])) for e in env["segs"]))
         row["policy_order_nominal"] = "-".join(map(str, r["order"]))
@@ -848,7 +1106,7 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                        "global temporal block th8*g at the readout (use_g)",
                        "reward = completion-window credit (equal in sum to the objective)",
                        "replay tuples inserted at episode end (mid-episode unobservable)",
-                       "gamma=0.9995 aligned with rl_nominal (paper reading implies 1.0)",
+                       "gamma=0.9995 aligned with rl_dqn (paper reading implies 1.0)",
                        "target network on by default (paper code practice; 0 = Algorithm 1)",
                        "Adam instead of SGD",
                        "plateau stopping + final-policy delivery instead of fixed budget + "
@@ -861,16 +1119,20 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                        "interleaving (forced by episode-end reward observability)",
                        "n-step window discounted internally by the shared helper (paper sums "
                        "the window undiscounted); ~1e-3 relative at gamma=0.9995, n<=2",
-                       "large-margin ranking hinge from RANK_PARAMS_NOMINAL (the current "
+                       "large-margin ranking hinge from RANK_PARAMS_DQN (the current "
                        "default; lam=0 removes it and restores the paper's method)",
                        "Double DQN target (online selects, target evaluates); not in the paper, "
                        "double_dqn=False restores the plain max-Q target",
-                       "prioritized experience replay from RANK_PARAMS_NOMINAL; paper uses "
+                       "prioritized experience replay from RANK_PARAMS_DQN; paper uses "
                        "uniform replay, prioritized=False restores it",
                        "dueling head V(s)+A(s,v)-mean_legal(A) (Wang et al. 2016); not in the "
                        "paper, isolated for reversion, dueling=False restores single head",
                        "deeper readout: th5 (and dueling value head) as a small MLP with "
-                       "hidden width readout_hidden; 0 restores the paper's single linear"])
+                       "hidden width readout_hidden; 0 restores the paper's single linear",
+                       "execution-time observation channels (deviation 24) exist behind the "
+                       "feat_obs_* flags but are OFF in this solver by measurement (nominal "
+                       "training gives them zero signal; 0.9806 on vs 0.9774 off); they are ON "
+                       "in rl_s2v_saa -- the hp block records this run's actual flags"])
     try:                                               # final redraw, now that run_meta exists
         from viz.rank_viz import make_rank_figures
         make_rank_figures(vdir, v)

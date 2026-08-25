@@ -161,12 +161,12 @@ def _slot_stream(ctx, order, durations):
 
 
 def _audit_order(ctx):
-    """The repair order whose recovery supplies the per-slot problems: the delivered rl_nominal
+    """The repair order whose recovery supplies the per-slot problems: the delivered rl_dqn
     schedule when one is on disk (the realistic case), ascending edge ids otherwise."""
-    p = (ROOT / "outputs" / "03-rl" / "01-rl_nominal" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
-         / "rl_nominal_optima.csv")
+    p = (ROOT / "outputs" / "03-rl" / "01-rl_dqn" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
+         / "rl_dqn_optima.csv")
     if p.exists():
-        return [int(x) for x in pd.read_csv(p)["order"].iloc[0].split("-")], "delivered rl_nominal"
+        return [int(x) for x in pd.read_csv(p)["order"].iloc[0].split("-")], "delivered rl_dqn"
     return sorted(int(e) for (e, _, _, _) in ctx["disrupted"]), "ascending edge id"
 
 

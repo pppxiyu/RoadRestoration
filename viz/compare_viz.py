@@ -18,9 +18,18 @@ import numpy as np
 from viz.style import C, save_pub, use_pub
 
 # The darkening grey ramp is reserved for the static greedy variants. The full per-method mapping
-# (grey ramp / GA red / rl_nominal teal / rl_s2v orange / rl_s2v_saa purple / MILP dark blue /
+# (grey ramp / GA red / rl_dqn teal / rl_s2v orange / rl_s2v_saa purple / MILP dark blue /
 # oracle red) lives in _method_colors below.
 _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
+
+# The pool-SAA family shares one hue and separates by depth, so a reader sees several settings of
+# one method rather than several methods. Deeper = larger training pool. The _adaptive twins
+# (deviation-24 observation channels on) take their own hue with the same depth rule, so
+# plain-vs-adaptive reads as two families of one method; _SAA_COLORS is the single lookup every
+# consumer uses.
+_SAA_RAMP = {"rl_s2v_saa64": "#B9A7D6", "rl_s2v_saa128": "#5B4383"}
+_SAA_ADPT = {"rl_s2v_saa64_adaptive": "#D9A0BC", "rl_s2v_saa128_adaptive": "#A34A72"}
+_SAA_COLORS = {**_SAA_RAMP, **_SAA_ADPT}
 
 
 def _label(c):
@@ -30,7 +39,7 @@ def _label(c):
 def _method_colors(cols):
     """Static greedy rules share a darkening grey ramp (context). GA, being a population
     metaheuristic rather than a static ranker, reuses the signal red, which cannot collide
-    because the oracle is never drawn in the same figure as GA. The nominal RL DQN takes the
+    because the oracle is never drawn in the same figure as GA. rl_dqn, the rank-loss DQN, takes the
     teal accent, and the experimental S2V solvers take orange (rl_s2v) and purple (rl_s2v_saa).
     The MILP is the emphasis blue (method under test), and the oracle keeps the signal red
     where it appears."""
@@ -43,12 +52,12 @@ def _method_colors(cols):
             out[c] = C["signal"]
         elif v == "ga":
             out[c] = C["signal"]
-        elif v == "rl_nominal":
+        elif v == "rl_dqn":
             out[c] = C["teal"]
         elif v == "rl_s2v":
             out[c] = "#C97B2D"     # EXPERIMENTAL S2V-DQN: orange, outside the shared palette
-        elif v == "rl_s2v_saa":
-            out[c] = C["purple"]   # EXPERIMENTAL pool-SAA S2V: the SAA purple
+        elif v in _SAA_COLORS:
+            out[c] = _SAA_COLORS[v]  # EXPERIMENTAL pool-SAA S2V: one color per (pool, adaptive)
 
         else:                                              # a static greedy variant
             out[c] = _GREY_RAMP[gi % len(_GREY_RAMP)]
@@ -57,7 +66,8 @@ def _method_colors(cols):
 
 
 def make_performance_distribution(out_dir, df, methods):
-    """The DISTRIBUTION of each method's per-scenario F, one box per method, ranked best-first.
+    """The DISTRIBUTION of each method's per-scenario F, one box per method, ranked so the BEST
+    method (lowest mean F, this objective being minimized) sits at the RIGHT-hand end.
 
     The summary table reports a mean, which does not answer the question this figure exists
     for: how far a method's scenarios SPREAD. That matters twice over. A mean separating two methods by less than their
@@ -73,7 +83,10 @@ def make_performance_distribution(out_dir, df, methods):
     use_pub()
     figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
-    order = sorted(methods, key=lambda c: df[c].mean())            # best (lowest F) first
+    # Descending mean: the worst method is leftmost and the best (lowest F) lands on the RIGHT,
+    # so the eye travels toward the winner. The other comparison figures keep their own orders --
+    # this one is read as a ranking, they are not.
+    order = sorted(methods, key=lambda c: df[c].mean(), reverse=True)
     col = _method_colors(order)
     rng = np.random.RandomState(0)                                 # fixed jitter: redraws match
 
@@ -161,10 +174,10 @@ def make_accuracy_compute(out_dir, stats):
     yspan = (max(ys) - min(ys)) or 1.0
 
     # Family shapes: references (rules + MILP) circle, GA square, all RL triangle.
-    _SHAPE = {"greedy": "o", "milp": "o", "meta": "s",
-              "rl": "^", "rl_s2v": "^", "rl_s2v_saa": "^"}
+    _SHAPE = {"greedy": "o", "milp": "o", "meta": "s", "rl": "^", "rl_s2v": "^",
+              **{k: "^" for k in _SAA_COLORS}}
     _COLOR = {"milp": C["accent"], "meta": C["good"], "rl": C["teal"],
-              "rl_s2v": "#C97B2D", "rl_s2v_saa": C["purple"]}   # greedy rules take the grey ramp
+              "rl_s2v": "#C97B2D", **_SAA_COLORS}   # greedy rules take the grey ramp
     gi = 0
     handles = []
     for s in stats:

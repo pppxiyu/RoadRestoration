@@ -32,8 +32,12 @@ DESIGN, and the literature it stands on (the three signals are deliberately SEPA
      BECAUSE the pool is fixed.
 
 Everything else -- the S2V network (t_emb=4 coverage, readout MLP), the hinge configuration, PER,
-Double DQN, dueling, the eps schedule -- is taken LIVE from util.rl_s2v.S2V_PARAMS, so this
-solver differs from rl_s2v in exactly one axis: the training worlds.
+Double DQN, dueling, the eps schedule -- is taken LIVE from util.rl_s2v.S2V_PARAMS, so the PLAIN
+variants differ from rl_s2v in exactly one axis: the training worlds. The ADAPTIVE variants
+(rl_s2v_saa{pool}_adaptive, hp adaptive=True) additionally switch on rl_s2v's deviation-24
+observation channels -- parallel methods with their own folders and comparison columns, because
+only pool-world training can teach those channels (nominal-world rl_s2v measured 0.9806 with
+them vs 0.9774 without; see S2V_SAA_PARAMS' adaptive entry).
 
 ISOLATION / REMOVAL. Self-contained trainer + runner; READ-ONLY imports. It DEPENDS ON
 util.rl_s2v (network builder, graph tensors, rollout, self-check, params) -- deleting rl_s2v
@@ -76,8 +80,34 @@ S2V_SAA_PARAMS = dict(
                          # through pool-recurrence memoization.
     batch_worlds=4,      # worlds rolled per episode (sampled from the pool). Decouples per-
                          # episode cost from pool size -- the pool can be large while an episode
-                         # stays ~4x the nominal solver's cost.
+                         # stays ~4x rl_s2v's single-world cost.
+    # THE ADAPTIVE AXIS (2026-08-25, project owner's instruction). adaptive=True switches on
+    # rl_s2v's deviation-24 observation channels (live traffic, OD disconnection, realized
+    # shortfall) AND renames the variant rl_s2v_saa{pool}_adaptive with its own folders and
+    # comparison columns -- a PARALLEL METHOD, never an overwrite. The observation flags are
+    # DERIVED from this one knob in train_s2v_saa, so name and configuration cannot disagree.
+    # adaptive=False is byte-identical to the pre-deviation-24 configuration (n_feat 10,
+    # g_dim 4), which is what keeps the on-disk pool64/pool128 results valid without a rerun.
+    # WHY the axis lives here and not in rl_s2v: the channels only carry signal where training
+    # worlds have truth-vs-estimate daylight -- the nominal world has none by construction
+    # (rl_s2v measured 0.9806 with them vs 0.9774 without, distinct orders 5 -> 34, i.e.
+    # out-of-distribution noise at delivery), the pool worlds have it every episode.
+    adaptive=False,
 )
+
+# The pool size is the design's central quantity, so each size is a SEPARATE METHOD rather than a
+# setting one run overwrites: they get their own folders (outputs/03-rl/03-rl_s2v_saa/pool{n}/)
+# and their own comparison columns, so the size-vs-quality trend is on disk instead of only in a
+# chat log. Adding a size means adding it here and to util.provenance.SOLVER_DIR +
+# util.compare.SEARCHED; the run itself needs no other change.
+POOL_SIZES = (64, 128)
+
+
+def variant_name(pool_n, adaptive=False):
+    """The method name for a (pool size, adaptive) pair: rl_s2v_saa64, rl_s2v_saa128_adaptive,
+    ... -- the single authority, used for the folder, the optima file, the figures and the
+    comparison column."""
+    return f"rl_s2v_saa{int(pool_n)}" + ("_adaptive" if adaptive else "")
 
 
 def _merge_stop_saa(stop_params):
@@ -102,6 +132,11 @@ def train_s2v_saa(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_p
         raise ValueError(f"unknown rl_s2v_saa hyperparameters {sorted(unknown)}; valid keys are "
                          f"{sorted(S2V_SAA_PARAMS)}")
     hp = dict(S2V_SAA_PARAMS, **(hp or {}))
+    adaptive = bool(hp["adaptive"])
+    if adaptive:
+        # The observation flags are DERIVED from the adaptive knob, never set directly: one
+        # switch names the variant and equips it, so the two cannot drift apart.
+        hp = dict(hp, feat_obs_traffic=True, feat_obs_disc=True, feat_obs_trueD=True)
     sp = _merge_stop_saa(stop_params)
     torch.manual_seed(seed)                            # sibling seed derivations
     rng = np.random.RandomState(seed * 7 + 1)
@@ -132,10 +167,10 @@ def train_s2v_saa(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_p
     hop_untied = bool(hp["hop_untied"])
     net = _build_s2v_net(p, t_emb, use_g, torch, nn, dueling=dueling,
                          readout_hidden=readout_hidden, in_dim=gt["n_feat"],
-                         hop_untied=hop_untied)
+                         hop_untied=hop_untied, g_dim=gt["g_dim"])
     tgt = _build_s2v_net(p, t_emb, use_g, torch, nn, dueling=dueling,
                          readout_hidden=readout_hidden, in_dim=gt["n_feat"],
-                         hop_untied=hop_untied)
+                         hop_untied=hop_untied, g_dim=gt["g_dim"])
     tgt.load_state_dict(net.state_dict())
     opt = torch.optim.Adam(net.parameters(), lr=float(hp["lr"]))
 
@@ -183,7 +218,7 @@ def train_s2v_saa(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_p
 
     rec = None
     if rec_dir is not None:
-        rec = _Recorder(rec_dir, "rl_s2v_saa", None, None, 0.0, torch,
+        rec = _Recorder(rec_dir, variant_name(pool_n, adaptive), None, None, 0.0, torch,
                         flush_every=FIGURE_REFRESH_EVERY)
 
     stop = RankPlateauStop(sp["ep_min"], sp["patience_P"], sp["stable_K"], sp["tol"])
@@ -320,7 +355,7 @@ def train_s2v_saa(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_p
                         td_abs_mean=_m(ep_td), since_improve=stop.since_improve,
                         stable=stop.stable)
         if verbose and ep % 25 == 0:
-            print(f"  [rl_s2v_saa] ep {ep}  eps={eps:.3f}  lam={lam_ep:.3f}  "
+            print(f"  [{variant_name(pool_n, adaptive)}] ep {ep}  eps={eps:.3f}  lam={lam_ep:.3f}  "
                   f"F_val={('%.4f' % F_val) if F_val is not None else '-'}  "
                   f"best_val={best_val:.4f}  pool evals={len(memo)}  "
                   f"since_improve={stop.since_improve}", flush=True)
@@ -337,25 +372,29 @@ def train_s2v_saa(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_p
         per_scenario.append((list(gp), gs))
     order = list(_s2v_rollout(env, gt, greedy)[0])     # nominal-world summary only
     if verbose:
-        print(f"  [rl_s2v_saa] stopped at ep {ep} ({outcome}) in "
+        print(f"  [{variant_name(pool_n, adaptive)}] stopped at ep {ep} ({outcome}) in "
               f"{(time.perf_counter() - t0) / 60:.1f} min", flush=True)
     return dict(order=order, per_scenario=per_scenario, net=net, best_net_sd=best_sd,
                 episodes=ep, n_evals=len(memo), outcome=outcome, best_score=best_val, hp=hp,
-                seed=seed)
+                seed=seed, obs_solves=int(gt["obs"]["solves"][0]))
 
 
 # --------------------------------------------------------------------------- #
 def run_s2v_saa(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp=None,
                 stop_params=None):
-    """Train rl_s2v_saa to a validation plateau and write its canonical results to
-    outputs/03-rl/{solver_dir('rl_s2v_saa')}/n{N}/, then refresh the comparison."""
+    """Train one pool-size variant to a validation plateau and write its canonical results to
+    outputs/03-rl/{solver_dir(variant)}/n{N}/ (i.e. .../03-rl_s2v_saa/pool{n}/n{N}/), then
+    refresh the comparison. The pool size names the variant, so sizes never overwrite each
+    other."""
     import torch
     N = P.N_DISRUPTED_ORACLE if N is None else N
+    merged = dict(S2V_SAA_PARAMS, **(hp or {}))
+    pool_n, adaptive = int(merged["pool_n"]), bool(merged["adaptive"])
+    v = variant_name(pool_n, adaptive)
     env = build_env(toy_dir, N=N, M=M)
     print(f"instance: {len(env['segs'])} segments {env['segs']}; M={M}; T={env['T']} "
-          f"(T_train={env['T_train']}); seed={seed}; ep_cap={ep_cap}; variant=rl_s2v_saa",
+          f"(T_train={env['T_train']}); seed={seed}; ep_cap={ep_cap}; variant={v}",
           flush=True)
-    v = "rl_s2v_saa"
     vdir = scale_dir(OUT_DIAG / solver_dir(v), N)
     vdir.mkdir(parents=True, exist_ok=True)
     fresh_scale_dir(vdir, subdirs=("log",), figures=True)   # stage 1: diagnostics only
@@ -376,8 +415,10 @@ def run_s2v_saa(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP
                    # costing ~T_train UE solves -- the honest input to the comparison's
                    # n_evals * T / M + T compute axis (T_train >= T slightly understates; the
                    # frozen-scenario diagnostic probes are deliberately not charged, matching
-                   # every sibling).
-                   ue_total=r["n_evals"] * env["T_train"] / len(env["scen"]) + env["T"],
+                   # every sibling). The deviation-24 live-traffic reads are real solves too and
+                   # are charged the same amortised way (obs_solves = actual solver calls).
+                   ue_total=((r["n_evals"] * env["T_train"] + r.get("obs_solves", 0))
+                             / len(env["scen"]) + env["T"]),
                    order="-".join(map(str, order_m)),
                    durations="-".join(str(int(dur[e])) for e in env["segs"]))
         row["policy_order_nominal"] = "-".join(map(str, r["order"]))
@@ -410,7 +451,15 @@ def run_s2v_saa(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP
                        "hinge exemplars: per-world best trajectories (self-imitation, Oh et al. "
                        "ICML 2018), enabled by pool recurrence",
                        "network/hinge/PER/ddqn/dueling config taken live from rl_s2v: the ONE "
-                       "axis changed vs rl_s2v is the training worlds"])
+                       "axis changed vs rl_s2v is the training worlds",
+                       ("execution-time observation (rl_s2v deviation 24): ON -- adaptive "
+                        "variant; the pool worlds carry true severities, so the channels see "
+                        "truth-vs-estimate daylight during training (nominal-world rl_s2v "
+                        "measured unable to use them: 0.9806 on vs 0.9774 off)"
+                        if adaptive else
+                        "execution-time observation (rl_s2v deviation 24): OFF -- plain "
+                        "variant, byte-identical to the pre-deviation-24 configuration; the "
+                        "_adaptive twin carries the channels")])
     try:
         from viz.rank_viz import make_rank_figures
         make_rank_figures(vdir, v)

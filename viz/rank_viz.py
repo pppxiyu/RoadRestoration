@@ -13,7 +13,7 @@ Four figures per run, all reading outputs/03-rl/{solver}/n{N}/log/:
                   validation worlds the stopping rule reads, and, dashed, the frozen evaluation
                   scenarios recorded purely as a diagnostic), which differ by variant because the
                   two variants do not
-                  have comparable per-episode objectives: the nominal variant's F is measured in
+                  have comparable per-episode objectives: rl_dqn's F is measured in
                   one fixed world so its best-so-far F is meaningful, while the stochastic
                   variant's
                   episode F comes from a freshly drawn world and is not comparable across episodes,
@@ -27,7 +27,7 @@ Four figures per run, all reading outputs/03-rl/{solver}/n{N}/log/:
   {v}_qmc         (after delivery) the delivered policy's predicted Q against the realized
                   Monte-Carlo return, which is where a ranking loss is expected to rank well while
                   staying mis-calibrated in level
-  {v}_value_estimate  (after delivery; nominal variant) the value estimate max_e Q(s0, e) across
+  {v}_value_estimate  (after delivery; rl_dqn only) the value estimate max_e Q(s0, e) across
                   training against the recorded scenF probes in return units -- van Hasselt et al.
                   (2016) Figure 3 top row, realized side as sparse recorded points, nothing
                   re-evaluated
@@ -69,7 +69,7 @@ def _scen_line(ax, tr):
     """The M frozen evaluation scenarios -- the ruler every method is finally compared on --
     recorded as a DIAGNOSTIC and drawn for BOTH variants. It answers "what would this run have
     delivered at episode k?" after the fact. Dashed to mark that it drives nothing: stopping reads
-    the best-so-far order (nominal variant) or the validation worlds (stochastic), never this
+    the best-so-far order (rl_dqn) or the validation worlds (a validation-world solver), never this
     curve."""
     if "scenF" not in tr or not tr["scenF"].notna().any():
         return
@@ -155,7 +155,7 @@ def _objective(ax, tr, variant, traces=()):
         if "best_F" in tr and tr["best_F"].notna().any():
             ax.plot(ep, tr["best_F"], color=C["signal"], lw=1.4, zorder=3,
                     label="best so far (nominal)")
-        # The nominal variant needs this line MORE than the stochastic one, not less: every other
+        # A nominal-world solver needs this line MORE than a validation-world one, not less: every other
         # curve on this axis is a nominal-world F, so without it the figure never shows the number
         # the method is actually judged by.
         _scen_line(ax, tr)

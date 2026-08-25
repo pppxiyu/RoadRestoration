@@ -25,8 +25,13 @@ retention of the damaged link, whether the link is severed outright (config.SEVE
 which point it leaves the routing network and can disconnect a zone), and the demand shortfall
 the segment drives. With only durations random, every scenario agrees on which segment matters
 most and adapting to the scenario is worth almost nothing -- measured at 0.0011 across
-near-optimal orders. The true severity is NEVER revealed during execution: a planner sees the
-estimate and this law, and still commits to a single repair order.
+near-optimal orders. The true severity LABEL is never an input to any solver. What IS observable
+during execution (since 2026-08-25, when the observation ban was lifted) is the field state the
+truth produces: the rl_s2v family reads the realized network's live traffic, OD disconnection
+and realized shortfall at decision time (util/rl_s2v.py deviation 24). This module still
+supplies the truth only through a Scenario's `.sev` -- SCORING and the deviation-24 observer
+both resolve it from there by one shared rule -- so the observation channel is deliberate and
+cannot widen by accident.
 
 The estimate is what PLANNING reads (expected_durations and nominal_durations marginalize over
 the confusion, so the nominal world is the planner's honest point estimate) and the truth is

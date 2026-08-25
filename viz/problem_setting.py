@@ -24,8 +24,10 @@ Figures documenting the CURRENT problem setting:
   04_severity_law       THE SEVERITY LAW: what a reported severity ESTIMATE implies about the
                         true severity (config.SEVERITY_CONFUSION), and what each true severity
                         does to the road -- capacity and free-flow speed retained, or removal
-                        from the network entirely. The truth is drawn per scenario and never
-                        revealed, so this is the whole of what a planner knows about it.
+                        from the network entirely. The truth is drawn per scenario; its LABEL is
+                        never an input, though since 2026-08-25 the field state it produces is
+                        observable during execution (rl_s2v deviation 24). For the planning-side
+                        solvers this figure is still the whole of what is known.
 
 THE DURATION LAW is config.py's per-segment truncated-lognormal law, rendered through
 util.scenarios (sample_scenarios for the frozen sample, _cell_pmf for the exact per-cell
@@ -33,9 +35,12 @@ distributions) -- the SAME code path every solver is scored under, so these figu
 drift from the ruler. The 2026-08-24 redefinition (per-segment independence, the lognormal
 cells, the crew-accessibility constraint -- a scheduling-model constraint, with the damage
 instance NOT designed around it) and the second redefinition of the same day (severity is a
-reported ESTIMATE, the truth drawn per scenario and never revealed) are both recorded in
-technical_notes/05-problem_redefinition.md. Everywhere below, a segment's severity is its
-ESTIMATE -- the truth is a property of a scenario, not of the instance.
+reported ESTIMATE, the truth drawn per scenario and not observed by any solver) are both
+recorded in technical_notes/05-problem_redefinition.md. Everywhere below, a segment's severity
+is its ESTIMATE -- the truth is a property of a scenario, not of the instance. Whether the truth
+is observable during execution is a live design question as of 2026-08-25, not a fixed rule, so
+these figures state what the CURRENT setting does and the run_meta field
+`severity.revealed_during_execution` carries the same fact in machine-readable form.
 
 Raw tables behind the figures (outputs/01-sim_val_n_problem_setting/raw/):
   problem_setting_segments.csv   one row per damaged segment: endpoints, class, severity,
@@ -393,7 +398,16 @@ def render_problem_setting(n=None):
         dur_trunc_mult=P.DUR_TRUNC_MULT,
         severity=dict(reported="the instance's severity column is a rapid-assessment ESTIMATE",
                       confusion={str(k): v for k, v in P.SEVERITY_CONFUSION.items()},
+                      # LABEL revelation: still never happens -- no solver is handed a true
+                      # severity or an unstarted segment's duration.
                       revealed_during_execution=False,
+                      # What IS observable since 2026-08-25 (the observation ban was lifted):
+                      # the realized network's field state during execution -- live traffic,
+                      # OD-level disconnection, realized demand shortfall. Currently exploited
+                      # by the rl_s2v_saa _adaptive variants only (util/rl_s2v.py deviation 24;
+                      # plain rl_s2v measured unable to learn the channels, and plain
+                      # rl_s2v_saa keeps them off so the pair isolates the channel).
+                      field_state_observable="traffic state at slots <= now (2026-08-25)",
                       note="true severity is drawn per scenario; it sets capacity/speed "
                            "retention, severing, the demand shortfall and the duration cell"),
         instance=dict(selection="flow-ranked: two highest-baseline-flow segments severed at "

@@ -36,14 +36,14 @@ itself produced, not an external demonstration:
 also fixed the drift during the diagnosis but lost both hyperparameter searches to margin and was
 removed on 2026-08-10; the historical comparison lives in the run records, not in this module.)
 
-THE VARIANT. One solver lives here, "rl_nominal": it trains in the nominal world with the
+THE VARIANT. One solver lives here, "rl_dqn": it trains in the nominal world with the
 best-by-F order found so far as its exemplar, and delivers the FINAL policy rolled out per
 scenario -- the nominal-world order is kept only as a summary. (A stochastic sibling "rl_saa",
 which trained on a fixed SAA sample of sampled worlds, was removed on 2026-08-24: its role --
 training on many worlds rather than one -- is filled by util/rl_s2v_saa.py, which does the same
 thing on the S2V embedding and was designed from scratch for it. The old variant's results are
 in the run records, not in this module.)
-F values from different worlds are not comparable, so the nominal variant's single best-by-F
+F values from different worlds are not comparable, so rl_dqn's single best-by-F
 exemplar does not exist there; instead a top-K buffer holds the lowest-F_w trajectories seen and
 the ranking loss imitates one SAMPLED from it. Sampling rather than always taking the buffer
 minimum is what keeps a single lucky world -- one whose durations happened to be short -- from
@@ -51,7 +51,7 @@ becoming the training target: an action reinforced across several buffered traje
 was good in several different worlds.
 
 STOPPING. Both variants stop on a plateau rather than at a fixed episode count (RankPlateauStop),
-so a converged run does not keep burning evaluations. The nominal variant watches the best order it
+so a converged run does not keep burning evaluations. rl_dqn watches the best order it
 has found so far, which costs nothing extra. The stochastic variant has no such cross-world best, so
 it watches the greedy policy's mean F over VALIDATION worlds drawn once up front from a dedicated
 RNG stream. Those worlds are deliberately disjoint from the M evaluation scenarios: stopping on the
@@ -96,7 +96,7 @@ from util.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
-OUT_DIAG = ROOT / "outputs" / "03-rl"   # this solver owns outputs/03-rl/01-rl_nominal/n{N}/
+OUT_DIAG = ROOT / "outputs" / "03-rl"   # this solver owns outputs/03-rl/01-rl_dqn/n{N}/
 _N_FEAT = 8                          # base per-candidate features; see util.rl._decision_features
 
 # Feature-column names, in the order _decision_features emits them. Carried here because every
@@ -125,7 +125,7 @@ FEAT_COLS = ["phi", "sev", "dur", "dem_hat", "t_frac", "crew_gap", "demand_short
 # stochastic variant delivered 0.937 at one seed and ~0.951 at another under the same
 # configuration), which exceeds the gap between competing methods. Single-seed numbers from this
 # module are not evidence; report a multi-seed mean and spread.
-RANK_PARAMS_NOMINAL = dict(
+RANK_PARAMS_DQN = dict(
     # ARCHITECTURE (adopted 2026-08-13, replacing the row architecture as the default).
     # Classic DQN wiring after Mnih et al. (2015): the STATE goes in and one Q comes out per
     # action, instead of scoring one (state, candidate) PAIR per network call. The action set here
@@ -232,7 +232,7 @@ RANK_PARAMS_NOMINAL = dict(
                          # _nbr_cols for the exact columns and _current_flow for their UE cost.
 )
 
-# Search-coverage screen (run with `python main.py --solve tune-search`). The nominal variant
+# Search-coverage screen (run with `python main.py --solve tune-search`). rl_dqn
 # plateaus having evaluated ~113 DISTINCT orders where the GA evaluates 423, and its shortfall
 # against the GA on the scenario mean equals its shortfall on the NOMINAL objective, four
 # measurements running. So the gap is search coverage, not training budget and not transfer. Each
@@ -282,7 +282,7 @@ SEARCH_SWEEP = {
     "n_lag-2":           dict(n_lag=2),
 }
 
-# Plateau stopping. patience_P and stable_K are counted in PROBES, not episodes: rl_nominal
+# Plateau stopping. patience_P and stable_K are counted in PROBES, not episodes: rl_dqn
 # probes every episode (its best-so-far order is already computed, so a probe is free). The
 # probe_every and n_val keys below cost it nothing and are kept because util/rl_s2v_saa.py, which
 # probes on validation worlds, reads this same block. ep_cap is the outer guard, not the intended
@@ -301,17 +301,17 @@ STOP_PARAMS = dict(
 )
 
 # Per-variant overrides. patience_P is counted in PROBES, and solvers probe on different cadences
-# -- rl_nominal every episode (its best-so-far order is free to read), a validation-world solver
+# -- rl_dqn every episode (its best-so-far order is free to read), a validation-world solver
 # every `probe_every` episodes -- so one number means very different budgets. Keeping the override
 # per variant stops a change to one from silently rescaling another: patience_P=45 is 45 EPISODES
-# for rl_nominal, but would be 45*25 = 1125 episodes for a solver probing every 25.
+# for rl_dqn, but would be 45*25 = 1125 episodes for a solver probing every 25.
 #
-# rl_nominal's 45 (raised from the shared 10 on 2026-08-10) is a search-budget decision, not a tuning
+# rl_dqn's 45 (raised from the shared 10 on 2026-08-10) is a search-budget decision, not a tuning
 # one: at patience 10 the run stopped at episode 61 having scored only ~60 distinct orders, while
 # the GA it is compared against scores 423. The nominal objective it reaches was worse than the
 # GA's by exactly the amount it trails on the scenario mean, so the gap was search breadth, and
 # breadth is what this buys.
-# rl_nominal raised again on 2026-08-10: at patience_P=45 the run still stopped at episode 76, because
+# rl_dqn raised again on 2026-08-10: at patience_P=45 the run still stopped at episode 76, because
 # stable_K=25 fired first -- the two are near-redundant for this variant (the margin loss imitates
 # the best-so-far order, so a frozen best order freezes the greedy order a few episodes later), and
 # the
@@ -321,7 +321,7 @@ STOP_PARAMS = dict(
 # 2026-08-24: both raised 75 -> 100 on the project owner's decision, as the standing value for
 # every per-episode-probing RL solver from here on (rl_s2v and rl_am carry the same 100/100).
 STOP_OVERRIDES = {
-    "rl_nominal": dict(patience_P=100, stable_K=100),
+    "rl_dqn": dict(patience_P=100, stable_K=100),
 }
 EP_CAP = 1000            # outer guard only; the plateau rule is what should end a run. Deliberately
                          # far above where the plateau fires, so a run that hits this cap is a
@@ -690,9 +690,12 @@ def _rollout(env, pick, n_lag, durations=None):
 
     `durations` is the world the rollout EXECUTES in (the nominal world by default). Duration
     beliefs stay at the planning expectation throughout: realized durations shape the schedule as
-    crews free up, but are never read into the state. (The retired progressive-revelation
-    mechanism stays retired: under the 2026-08-24 per-segment-independent lognormal law a
-    completion genuinely reveals nothing about other segments' durations.)"""
+    crews free up, but are never read into the state. (The progressive-revelation mechanism this
+    solver once had is still absent. Its original retirement argument -- under the 2026-08-24
+    per-segment-independent lognormal law a completion reveals nothing about OTHER segments'
+    durations -- remains true and still bounds how much a revelation channel can pay here. What
+    changed on 2026-08-25 is only that building such a channel is no longer excluded; see
+    technical_notes/05-problem_redefinition.md sec.6.5 for the three levers and their costs.)"""
     ctx, st, T = env["ctx"], env["st"], env["T"]
     durations = env["nominal"] if durations is None else durations
     dis_l, sev, B, H0 = ctx["disrupted"], ctx["severity_vec"], ctx["B"], ctx["H0"]
@@ -921,7 +924,7 @@ def _hinge(Qf, net, ex_feats, ex_picks, margin, torch):
     return ml / len(ex_feats)
 
 
-def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None,
+def train(env, variant="rl_dqn", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None,
           stop_params=None, verbose=True):
     """Train one variant to a plateau and return the delivery plus its diagnostics.
 
@@ -933,7 +936,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     import torch.nn as nn
     torch.set_num_threads(1)
 
-    base = {"rl_nominal": RANK_PARAMS_NOMINAL}[variant]
+    base = {"rl_dqn": RANK_PARAMS_DQN}[variant]
     hp = dict(base, **(hp or {}))
     prioritized = bool(hp.get("prioritized", False))
     sp = _merge_stop(variant, stop_params)
@@ -948,9 +951,16 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     lam0, lam_growth = hp.get("lam0"), hp.get("lam_growth")   # imitation ramp; None -> constant LAM
     sync = int(hp["target_sync"])
     if "reveal" in hp:
-        raise ValueError("the progressive-revelation mechanism was removed from the code on "
-                         "2026-08-23 -- drop the 'reveal' key (beliefs always stay at the "
-                         "planning expectation now)")
+        # NOT a policy ban -- the standing exclusion of execution-time observation was lifted on
+        # 2026-08-25 and this is now open work. The key is still rejected because the mechanism it
+        # used to switch on was deleted from this solver on 2026-08-23, so honouring it would be a
+        # silent no-op: the run would look revelation-enabled and score with beliefs pinned at the
+        # planning expectation. Re-implement the channel first, then delete this guard.
+        raise ValueError("'reveal' has no implementation in rl_rank -- the progressive-revelation "
+                         "mechanism was deleted on 2026-08-23 and beliefs stay at the planning "
+                         "expectation, so this key would silently do nothing. Build the channel "
+                         "(technical_notes/05-problem_redefinition.md sec.6.5) and remove this "
+                         "guard, or drop the key.")
     env["st"]["n_lag"] = n_lag
     # Feature width follows the hp: 8 base columns, plus 6 when the two message-passing rounds
     # are on. A module global because every consumer (net sizing, the state assembler, the lag
@@ -1276,7 +1286,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
             if gstep % sync == 0:
                 tgt.load_state_dict(net.state_dict())
 
-        # --- plateau probe. The nominal variant watches its best-so-far order (free). The
+        # --- plateau probe. rl_dqn watches its best-so-far order (free). The
         # stochastic
         # one has no cross-world best, so it scores the greedy policy on VALIDATION worlds, which
         # are disjoint from the evaluation scenarios by construction.
@@ -1287,7 +1297,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
         # DIAGNOSTIC ONLY, and recorded for BOTH variants: the greedy policy scored on the M frozen
         # EVALUATION scenarios -- the ruler every method is finally compared on. It answers "what
         # would this run have delivered at episode k?" without re-training, which no other recorded
-        # curve can: the nominal variant's best-so-far F is a NOMINAL-world number and the
+        # curve can: rl_dqn's best-so-far F is a NOMINAL-world number and the
         # stochastic
         # variant's validation curve uses different worlds and a different horizon.
         #
@@ -1326,7 +1336,7 @@ def train(env, variant="rl_nominal", hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_di
     # --- delivery: the FINAL policy, rolled INSIDE each scenario (both variants) ---
     # What training produces is a POLICY, not an order, so it is delivered as one: rolled inside a
     # given scenario it meets that scenario's own states and chooses differently, and the M delivered
-    # decisions differ from one another. The nominal variant used to lock ONE nominal rollout and
+    # decisions differ from one another. rl_dqn used to lock ONE nominal rollout and
     # apply that same order to every scenario, which threw the policy away and delivered a static
     # order it never needed to be a policy to produce.
     #
@@ -1415,7 +1425,7 @@ def _value_est_record(vdir, variant):
         log_dir(vdir) / f"{variant}_value_est.csv", index=False)
 
 
-def run_rank(variants=("rl_nominal",), toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED,
+def run_rank(variants=("rl_dqn",), toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED,
              ep_cap=EP_CAP, hp=None, stop_params=None):
     """Train each variant to a plateau and write its canonical results and diagnostics.
 
@@ -1511,7 +1521,7 @@ def run_rank(variants=("rl_nominal",), toy_dir=TOY, N=None, M=P.M_SCENARIOS, see
     return out
 
 
-def run_search_sweep(configs=None, variant="rl_nominal", N=None, M=P.M_SCENARIOS, seed=P.SEED,
+def run_search_sweep(configs=None, variant="rl_dqn", N=None, M=P.M_SCENARIOS, seed=P.SEED,
                   ep_cap=EP_CAP):
     """Screen search-coverage knobs (SEARCH_SWEEP), each as an ordinary full run.
 
@@ -1519,11 +1529,11 @@ def run_search_sweep(configs=None, variant="rl_nominal", N=None, M=P.M_SCENARIOS
     does and REPLACES what was there -- when the sweep ends, that folder holds the last config, not
     a winner. What survives the sweep is the ranked table, written to log/search_sweep.csv and read
     back from each run's own run_meta before the next run overwrites it. Adopting a schedule means
-    editing RANK_PARAMS_NOMINAL and rerunning, which is the same thing every other tuning decision here
+    editing RANK_PARAMS_DQN and rerunning, which is the same thing every other tuning decision here
     has meant.
 
     Screening is NOT adopting: this is one seed, and this solver's seed spread exceeds the
-    between-method gaps (see the caveat on RANK_PARAMS_NOMINAL). A winner here is a candidate to confirm
+    between-method gaps (see the caveat on RANK_PARAMS_DQN). A winner here is a candidate to confirm
     across seeds, not a result.
     """
     configs = SEARCH_SWEEP if configs is None else configs
