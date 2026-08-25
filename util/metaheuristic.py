@@ -82,7 +82,7 @@ def _worker_eval(task):
     the exact objective."""
     perm, durations, T = task
     try:
-        start = schedule_from_permutation(list(perm), durations)
+        start = schedule_from_permutation(list(perm), durations, access=_W["ctx"]["access"])
         res = evaluate_schedule(start, durations, T, _W["ctx"])
         return float(res["F"]), float(res["F1"]), float(res["F2"])
     except Exception:
@@ -350,12 +350,13 @@ def _rescore_committed(v, ctx, segments, scenarios, T, M, seed, nominal):
     solve_ue = n_evals * T
 
     # F_nominal under the current ruler, so this file holds one ruler throughout.
-    F_nom = evaluate_schedule(schedule_from_permutation(list(perm), nominal), nominal, T, ctx)["F"]
+    F_nom = evaluate_schedule(schedule_from_permutation(list(perm), nominal,
+                                                        access=ctx["access"]), nominal, T, ctx)["F"]
 
     rows, slots = [], []
     for m, dur in enumerate(scenarios):
         t_s = time.perf_counter()
-        start = schedule_from_permutation(list(perm), dur)
+        start = schedule_from_permutation(list(perm), dur, access=ctx["access"])
         res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
         slots.extend(slot_rows(m, res))
         row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],
@@ -494,7 +495,7 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
             rows, slots = [], []
             for m, dur in enumerate(scenarios):
                 t_s = time.perf_counter()
-                start = schedule_from_permutation(list(perm), dur)
+                start = schedule_from_permutation(list(perm), dur, access=ctx["access"])
                 res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
                 slots.extend(slot_rows(m, res))         # recovery curve, at no extra UE cost
                 row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],
@@ -512,7 +513,7 @@ def run_metaheuristic(variants=("ga",), toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIO
                 rows.append(row)
             # Optima + per-slot slots live in the variant's OWN numbered tree,
             # outputs/02-baselines/04-ga/n{N}/ (results/ and log/), beside its diagnostics --
-            # mirroring outputs/02-baselines/03-pretrain_milp and the two outputs/03-RL solver
+            # mirroring outputs/02-baselines/03-pretrain_milp and the two outputs/03-rl solver
             # folders. compare.py discovers each method's optima from its own folder, so nothing
             # has to sit in the shared rule-based pool any more.
             diag = scale_dir(OUT_DIAG / solver_dir(v))

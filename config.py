@@ -52,7 +52,7 @@ M_SCENARIOS = 50        # Number of random damage scenarios every method is fina
 SEED = 42               # RNG seed, fixed so the scenario sampling is reproducible.
 # How the M evaluation scenarios (the frozen ruler every method is scored on) are drawn:
 #   "iid" -- independent Monte Carlo draws (the historical default).
-#   "lhs" -- probability-stratified Latin Hypercube over the per-level duration marginals, which
+#   "lhs" -- probability-stratified Latin Hypercube over the per-segment duration marginals, which
 #            covers the uncertainty space far more evenly at M=50 and so estimates each method's
 #            E[F] with lower variance (util.scenarios.saa_lhs_sample). Same distribution, stratified
 #            draw. This is a CHANGE OF RULER: every F on disk becomes stale and all methods must be
@@ -163,12 +163,64 @@ MILP_WARM_START = True  # Seed iteration 0 of the alternating loop from the flow
                         # loop can converge to a schedule worse than the baseline (e.g. F > 1). False
                         # restores the old edge-id cold start.
 
-# --- Base restoration-duration support sets (in slots), keyed by (road_class, severity) ---
-# Each entry lists the candidate repair durations for a road of that class and damage severity;
-# heavier damage and larger road classes take longer. A concrete duration is drawn from this set.
-DURATION_SUPPORT = {
-    ("local", 1): [1],        ("local", 2): [2, 3],     ("local", 3): [4, 5],
-    ("major", 1): [2, 3],     ("major", 2): [4, 5],     ("major", 3): [6, 7, 8],
-    ("highway", 1): [4, 5],   ("highway", 2): [6, 7, 8], ("highway", 3): [9, 10, 11],
+# --- Restoration-duration law: per-cell lognormal, drawn PER SEGMENT (2026-08-24 redesign) ---
+# A cell is the pair (road_class, initial severity estimate); both attributes are public
+# information. A segment's duration is d = max(1, round(X)) with X lognormal, X truncated above
+# at DUR_TRUNC_MULT * mean (renormalized), each segment drawing INDEPENDENTLY from its cell --
+# unlike the retired support-set law, two same-cell segments realize different durations.
+# Cells are parameterized by target mean and sd (slots) of the untruncated lognormal:
+#   tau^2 = ln(1 + sd^2/mean^2),  nu = ln(mean) - tau^2/2.
+# Design constraints (see technical_notes/05-problem_redefinition.md for the full rationale):
+#   * mean and sd both rise along road class and along severity (heavier repairs: longer, wider);
+#   * neighbouring cells overlap heavily, so cross-cell duration inversions are routine;
+#   * three EQUAL-MEAN, different-sd pairs exist by construction -- (local,2)~(major,1),
+#     (local,3)~(highway,1), (major,3)~(highway,2) -- the configurations where a mean-only
+#     (nominal) planner is indifferent but a distribution-aware one is not.
+# The lognormal's right tail is the "hidden damage discovered mid-repair" blowout: under these
+# sds a draw beyond twice the cell mean has probability ~2-4% per segment.
+DUR_MEAN = {
+    ("local", 1): 2.0,  ("local", 2): 4.0,  ("local", 3): 6.0,
+    ("major", 1): 4.0,  ("major", 2): 7.0,  ("major", 3): 10.0,
+    ("highway", 1): 6.0, ("highway", 2): 10.0, ("highway", 3): 14.0,
 }
-ETA = [0.8, 1.0, 1.2]   # Crew-efficiency multipliers on the base duration: a slow, typical, or fast crew (given).
+DUR_SD = {
+    ("local", 1): 1.0,  ("local", 2): 1.8,  ("local", 3): 2.4,
+    ("major", 1): 2.2,  ("major", 2): 3.2,  ("major", 3): 3.8,
+    ("highway", 1): 3.2, ("highway", 2): 4.5, ("highway", 3): 5.5,
+}
+# --- Severity is an ESTIMATE, not ground truth (2026-08-24, second redefinition) ---
+# The `severity` column of the damage instance is what a post-disaster rapid assessment REPORTS.
+# The TRUE severity is drawn per scenario from the row of this confusion matrix indexed by the
+# estimate, and it is what the evaluator scores against: it sets the capacity/free-flow retention,
+# whether the road is severed outright (SEVER_SEVERITY), the demand shortfall it drives, AND the
+# cell its repair duration is drawn from. It is NEVER revealed during execution -- a planner sees
+# only the estimate and this distribution, and still commits to one repair order.
+#
+# WHY: with only duration random, uncertainty moves the COST of a segment but never its
+# IMPORTANCE, so every scenario agrees on the importance ranking and adapting to the scenario is
+# worth almost nothing (measured: perfect adaptation was worth 0.0011 across near-optimal orders,
+# and the class-contrast lever was measured too weak to change that). True severity moves
+# importance itself -- a segment revealed as severity 3 leaves the network entirely and can
+# disconnect a zone -- which is the mechanism that makes the best order genuinely scenario-
+# dependent. Set every row to a one-hot vector to recover the deterministic-severity law exactly.
+SEVERITY_CONFUSION = {          # estimated severity -> P(true severity = 1, 2, 3)
+    1: [0.70, 0.25, 0.05],
+    2: [0.15, 0.70, 0.15],
+    3: [0.05, 0.25, 0.70],
+}
+
+DUR_TRUNC_MULT = 2.5    # Upper truncation of each cell's lognormal at this multiple of its mean
+                        # (~0.5-1.5% of mass cut, renormalized). Keeps the right tail -- the lever
+                        # that separates distribution-aware from mean-only planning -- while giving
+                        # every scenario a finite worst case, which is what bounds the scoring
+                        # horizon T and hence the per-evaluation UE cost.
+
+# --- Crew accessibility constraint (2026-08-24) ---
+# A damaged segment can be worked on only if one of its endpoints is reachable from the depot
+# through the currently passable network. Passable = undamaged edges + completed repairs; every
+# still-damaged or under-repair segment blocks crew passage regardless of severity. This is a
+# CONSTRAINT of the scheduling model, applied to every method by util.evaluate
+# (schedule_from_permutation) and mirrored by every solver's internal rollout; the damage
+# instance is NOT designed around it -- whether and where it binds is an empirical property of
+# the instance.
+ACCESS_DEPOT = 1        # Crews enter the network from this node.

@@ -52,8 +52,7 @@ DEFAULT_SEEDS = (P.SEED, 1, 2, 3, 4)
 
 # Where each method's scale folder lives, and how its runner is invoked.
 _METHODS = {
-    "rl_nominal": dict(base=ROOT / "outputs" / "03-RL" / solver_dir("rl_nominal"), optima="rl_nominal_optima.csv"),
-    "rl_saa": dict(base=ROOT / "outputs" / "03-RL" / solver_dir("rl_saa"), optima="rl_saa_optima.csv"),
+    "rl_nominal": dict(base=ROOT / "outputs" / "03-rl" / solver_dir("rl_nominal"), optima="rl_nominal_optima.csv"),
     "ga": dict(base=ROOT / "outputs" / "02-baselines" / solver_dir("ga"), optima="ga_optima.csv"),
 }
 # Subtrees copied into (and back out of) an archive: everything a run produces.
@@ -63,7 +62,7 @@ _PARTS = ("results", "log", "config")
 def _run_once(method, s, N, M):
     """Invoke the method's own runner for one search seed. Each runner clears and rewrites its
     scale folder exactly as in a normal single run -- nothing here is a special training path."""
-    if method in ("rl_nominal", "rl_saa"):
+    if method == "rl_nominal":
         from util.rl_rank import run_rank
         run_rank(variants=(method,), N=N, M=M, seed=s)
     elif method == "ga":
@@ -198,7 +197,7 @@ def run_seed_sweep(method, seeds=DEFAULT_SEEDS, N=None, M=P.M_SCENARIOS, resume=
     summary.insert(0, "delivered", ["<- delivered"] + [""] * (len(summary) - 1))
     summary.to_csv(hist / "seeds_summary.csv", index=False)
 
-    if method in ("rl_nominal", "rl_saa"):         # redraw with the across-seed band now available
+    if method == "rl_nominal":                    # redraw with the across-seed band now available
         from viz.rank_viz import make_rank_figures
         make_rank_figures(vdir, method)
 

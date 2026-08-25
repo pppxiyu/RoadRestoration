@@ -27,7 +27,7 @@ from pathlib import Path
 import config as P
 
 # Numbered on-disk folder for each solver, in the fixed presentation order (baselines:
-# brute-force, rule-based, MILP, GA; RL: nominal, SAA). Every path that reaches a solver's
+# brute-force, rule-based, MILP, GA; RL: nominal, S2V, pool-SAA S2V). Every path that reaches a solver's
 # output folder is built through solver_dir, so the numbering lives in exactly this one table.
 SOLVER_DIR = {
     "brute-force": "01-brute-force",
@@ -35,8 +35,8 @@ SOLVER_DIR = {
     "pretrain_milp": "03-pretrain_milp",
     "ga": "04-ga",
     "rl_nominal": "01-rl_nominal",
-    "rl_saa": "02-rl_saa",
-    "rl_s2v": "03-rl_s2v",     # EXPERIMENTAL faithful S2V-DQN; remove with util/rl_s2v.py
+    "rl_s2v": "02-rl_s2v",     # EXPERIMENTAL faithful S2V-DQN; remove with util/rl_s2v.py
+    "rl_s2v_saa": "03-rl_s2v_saa",   # EXPERIMENTAL pool-SAA S2V; remove with util/rl_s2v_saa.py
 }
 
 
@@ -66,7 +66,7 @@ def _git_revision(root):
 # --------------------------------------------------------------------------- #
 # The output layout. Every n{N} scale folder of every method has exactly this shape (method
 # folders sit under a numbered group and take their numbered names from SOLVER_DIR above,
-# e.g. outputs/02-baselines/03-pretrain_milp/n{N}/, outputs/03-RL/01-rl_nominal/n{N}/):
+# e.g. outputs/02-baselines/03-pretrain_milp/n{N}/, outputs/03-rl/01-rl_nominal/n{N}/):
 #
 #   outputs/{group}/{NN-method}/n{N}/
 #     results/    what the run DELIVERS: the optima table, the delivered solution/order, the

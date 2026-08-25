@@ -122,7 +122,7 @@ def run_greedy(variants=("demand", "ratio", "flow"), toy_dir=TOY, out_dir=OUT,
         for v in variants:
             t0 = time.perf_counter()                                     # time each variant honestly (its own F evaluation)
             order = orders[v]
-            start = schedule_from_permutation(order, dur)
+            start = schedule_from_permutation(order, dur, access=ctx["access"])
             res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
             slots[v].extend(slot_rows(m, res))          # recovery curve, at no extra UE cost
             row = dict(scenario=m, F=res["F"], F1=res["F1"], F2=res["F2"],

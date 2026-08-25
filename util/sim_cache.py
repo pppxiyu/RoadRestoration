@@ -185,8 +185,7 @@ def _iter_canonical_runs(N):
     groups = {f"02-baselines/{solver_dir('rule-based')}": ("flow", "demand", "ratio"),
               f"02-baselines/{solver_dir('ga')}": ("ga",),
               f"02-baselines/{solver_dir('pretrain_milp')}": ("milp",),
-              f"03-RL/{solver_dir('rl_nominal')}": ("rl_nominal",),
-              f"03-RL/{solver_dir('rl_saa')}": ("rl_saa",)}
+              f"03-rl/{solver_dir('rl_nominal')}": ("rl_nominal",)}
     for rel, methods in groups.items():
         d = ROOT / "outputs" / rel / f"n{N}"
         for m in methods:

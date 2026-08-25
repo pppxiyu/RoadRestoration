@@ -91,21 +91,84 @@ def build_damaged_edges(ctx, damaged):
 
 
 # --------------------------------------------------------------------------- #
-# Schedule construction (work-conserving) and the F2 objective
+# Crew accessibility, schedule construction, and the F2 objective
 # --------------------------------------------------------------------------- #
-def schedule_from_permutation(perm, durations, c_max=P.C_MAX):
-    """Turn a priority ordering of segments into concrete start slots by greedy scheduling.
+def build_access(edges, disrupted_eids, depot=None):
+    """The static structure behind crew accessibility (config's accessibility block): the full
+    node adjacency with edge ids, the damaged set, and the depot. Built once per instance by
+    build_context (ctx["access"]) and consumed by accessible_segments; solvers thread it, they
+    never rebuild it."""
+    adj = {}
+    ends = {}
+    for r in edges.itertuples(index=False):
+        u, v, eid = int(r.u), int(r.v), int(r.edge_id)
+        adj.setdefault(u, []).append((v, eid))
+        adj.setdefault(v, []).append((u, eid))
+        ends[eid] = (u, v)
+    depot = P.ACCESS_DEPOT if depot is None else int(depot)
+    if depot not in adj:
+        raise ValueError(f"access depot node {depot} is not in the network")
+    return dict(adj=adj, ends=ends, damaged=frozenset(int(e) for e in disrupted_eids),
+                depot=depot)
 
-    `perm` lists the disrupted edge_ids in the order they should be repaired. Work is shared
-    among c_max interchangeable crews under a work-conserving rule (no crew sits idle while
-    repairs remain): each segment is handed to whichever crew frees up earliest, and the
-    first repair may begin at slot 1. Returns {edge_id: start_slot}."""
+
+def accessible_segments(access, blocked, candidates):
+    """Which of `candidates` a crew can currently reach: those with an endpoint reachable from
+    the depot through passable edges. Passable = every edge not in `blocked`; `blocked` is the
+    set of edge_ids that currently stop a crew -- segments still awaiting repair plus segments
+    under repair (a torn-up road carries no crew traffic, whatever its severity). Completed
+    repairs are simply absent from `blocked` and so passable again. One BFS per call."""
+    blocked = set(blocked)
+    seen = {access["depot"]}
+    stack = [access["depot"]]
+    while stack:
+        node = stack.pop()
+        for nbr, eid in access["adj"][node]:
+            if eid in blocked or nbr in seen:
+                continue
+            seen.add(nbr)
+            stack.append(nbr)
+    ends = access["ends"]
+    return {e for e in candidates if ends[e][0] in seen or ends[e][1] in seen}
+
+
+def schedule_from_permutation(perm, durations, c_max=P.C_MAX, *, access):
+    """Turn a priority ordering of segments into concrete start slots by greedy scheduling
+    UNDER THE ACCESSIBILITY CONSTRAINT.
+
+    `perm` lists the disrupted edge_ids in priority order. Work is shared among c_max
+    interchangeable crews; the first repair may begin at slot 1. At each decision point the
+    crew takes the highest-priority segment it can REACH (skip semantics: an inaccessible
+    segment is passed over, not waited for), so one priority list realizes different
+    processing orders in different scenarios -- whichever gates happen to fall early open
+    different parts of the cluster. Only when no unstarted segment is accessible does a crew
+    idle, until the next completion opens new frontier. `access` is ctx["access"] and is
+    deliberately REQUIRED: an ungated schedule is not a legal object in this problem, and a
+    call site that forgot the constraint must fail loudly rather than quietly score the wrong
+    problem. Returns {edge_id: start_slot}."""
     crew_free = [1] * c_max
-    start = {}
-    for e in perm:
+    start, comp = {}, {}
+    pending = list(perm)
+    while pending:
+        t = min(crew_free)
+        blocked = set(pending) | {e for e, c in comp.items() if c > t}
+        acc = accessible_segments(access, blocked, pending)
+        if not acc:
+            busy = [c for c in crew_free if c > t]
+            if not busy:
+                raise RuntimeError(
+                    f"accessibility deadlock at slot {t}: none of {sorted(pending)} is "
+                    f"reachable and no repair is underway -- the damaged set must keep a "
+                    f"frontier on the depot side (config CLUSTER_EDGES / ACCESS_DEPOT)")
+            nxt = min(busy)                       # idle crews wait for the next completion
+            crew_free = [max(c, nxt) for c in crew_free]
+            continue
+        e = next(x for x in pending if x in acc)  # highest-priority accessible segment
         c = int(np.argmin(crew_free))
         start[e] = crew_free[c]
-        crew_free[c] = start[e] + durations[e]   # this crew stays busy until the repair completes
+        crew_free[c] = start[e] + durations[e]    # this crew stays busy until completion
+        comp[e] = crew_free[c]
+        pending.remove(e)
     return start
 
 
@@ -148,6 +211,9 @@ def build_context(toy_dir, disrupted, ue_cores=None):
     ctx = dict(toy_dir=str(toy_dir), edges=edges, zone_ids=zone_ids, od_pairs=od_pairs, H0=H0,
                oi=oi, di=di, nz=len(zone_ids), edge_row=edge_row,
                origins_unique=sorted({o for o, _ in od_pairs}))
+    # Crew accessibility: the static structure every gated schedule construction reads
+    # (build_access above). Lives in ctx so all solvers share one instance of the constraint.
+    ctx["access"] = build_access(edges, [int(e) for e in disrupted["edge_id"]])
 
     # Baseline OD travel times at onset: solve UE on the intact network under normal demand
     # H0. These serve as the reference times against which F1 later scores degradation, so they
@@ -201,6 +267,12 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
     dis = ctx["disrupted"]
     H0, B = ctx["H0"], ctx["B"]
     base_u = ctx["baseline_u"]
+    # TRUE severities for this scenario. A util.scenarios.Scenario carries them on `.sev`; a plain
+    # duration dict (the NOMINAL world every searching solver optimizes against) carries none, and
+    # then the instance's reported ESTIMATES stand in -- which is exactly the planning world's
+    # definition. Scoring therefore reads the truth and planning reads the estimate, with no third
+    # possibility: `dis` is only consulted for the segment list and its endpoints below.
+    sev_true = {int(e): int(v) for e, v in getattr(durations, "sev", {}).items()} or                {int(eid): int(s) for (eid, _, _, s) in dis}
 
     # F2 is pure schedule arithmetic and needs no traffic model.
     F2 = f2_value(start, durations)
@@ -214,6 +286,11 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
     # for why that prefix is the correct invariant. Disabled when the caller needs the per-slot
     # travel-time vectors (return_u): a cached term cannot reconstruct them.
     comp = tuple(start[eid] + durations[eid] for (eid, _, _, _) in dis)
+    # The slot term depends on the realized SEVERITIES as well as the completion prefix (they set
+    # capacity retention, severing and the demand shortfall), so they belong in the cache key.
+    # Leaving them out would serve a term computed under different damage physics -- the exact
+    # silent-wrong-number failure the cache is designed never to have.
+    sev_key = tuple(sev_true[eid] for (eid, _, _, _) in dis)
     psc = None if return_u else _sim_cache.for_ctx(ctx)
     # Warm-start chain (config.UE_WARM_START): the last SOLVED slot's equilibrium links and its
     # routed demand (demand zeroed on OD pairs that were disconnected, whose trips went unrouted),
@@ -227,8 +304,9 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
     for k in range(1, T + 1):
         # Damage state at slot k: a segment is still broken while k has not yet reached its
         # completion slot start+duration; v_vec carries the severity, or 0 once restored.
-        damaged = {eid: s for (eid, _, _, s) in dis if k < start[eid] + durations[eid]}
-        v_vec = np.array([s if (eid in damaged) else 0.0 for (eid, _, _, s) in dis])
+        damaged = {eid: sev_true[eid] for (eid, _, _, _) in dis
+                   if k < start[eid] + durations[eid]}
+        v_vec = np.array([sev_true[eid] if (eid in damaged) else 0.0 for (eid, _, _, _) in dis])
         # Demand shortfall D and the demand H that survives it. `target` is the shortfall the
         # current damage would cause; D jumps up to it at once when damage worsens but only
         # decays geometrically (retaining fraction RHO each slot) as damage clears, capturing
@@ -237,7 +315,7 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
         D = np.maximum(target, P.RHO * D)
         H = np.clip(H0 - D, 0.0, None)
         if psc is not None:
-            hit = psc.get((k, tuple(min(c, k + 1) for c in comp)))
+            hit = psc.get((k, tuple(min(c, k + 1) for c in comp), sev_key))
             if hit is not None:
                 warm = None                       # no links from a cached term: chain breaks
                 terms.append(hit)
@@ -279,7 +357,7 @@ def evaluate_schedule(start, durations, T, ctx, collect_traces=False, return_u=F
         den = float(np.sum(H * base_u))
         term = float(np.sum(H * u_tilde) / den) if den > 0 else 1.0
         if psc is not None:
-            psc.put((k, tuple(min(c, k + 1) for c in comp)), term)
+            psc.put((k, tuple(min(c, k + 1) for c in comp), sev_key), term)
         terms.append(term)
         active.append(len(damaged) > 0)
         if collect_traces:

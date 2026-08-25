@@ -45,10 +45,16 @@ def _evaluate_prefix_cached(start, durations, T, ctx, slot_cache, collect_traces
     dis = ctx["disrupted"]
     H0, B = ctx["H0"], ctx["B"]
     base_u = ctx["baseline_u"]
-    sev = ctx["severity_vec"]
+    # TRUE severities for this world, exactly as util.evaluate.evaluate_schedule resolves them: a
+    # util.scenarios.Scenario carries them, a plain duration dict (the nominal world) falls back
+    # to ctx["severity_vec"], the instance's reported estimates. The equivalence this function
+    # promises against evaluate_schedule holds only if both read the same severities.
+    sev = (np.array([float(durations.sev[int(eid)]) for (eid, _, _, _) in dis])
+           if hasattr(durations, "sev") else ctx["severity_vec"])
 
     F2 = f2_value(start, durations)
     comp = tuple(start[eid] + durations[eid] for (eid, _, _, _) in dis)   # completion slot per segment, in dis order
+    sev_key = tuple(int(x) for x in sev)          # severities are part of the slot term's identity
 
     D = np.zeros(len(H0))
     terms, active, traces = [], [], []
@@ -63,7 +69,7 @@ def _evaluate_prefix_cached(start, durations, T, ctx, slot_cache, collect_traces
         target = B @ v_vec
         D = np.maximum(target, P.RHO * D)         # shortfall: jumps with damage, decays at RHO
         H = np.clip(H0 - D, 0.0, None)
-        key = (k, tuple(min(c, k + 1) for c in comp))
+        key = (k, tuple(min(c, k + 1) for c in comp), sev_key)
         term = slot_cache.get(key)
         if term is None:
             # L2: the persistent cross-run store (config.SIM_CACHE). Same key, shared by every
@@ -74,7 +80,7 @@ def _evaluate_prefix_cached(start, durations, T, ctx, slot_cache, collect_traces
                 if term is not None:
                     slot_cache[key] = term
         if term is None:
-            damaged = {eid: s for (eid, _, _, s), st in zip(dis, still) if st}
+            damaged = {eid: int(sv) for (eid, _, _, _), sv, st in zip(dis, sev, still) if st}
             dmg_edges = build_damaged_edges(ctx, damaged)
             x0 = None
             if P.UE_WARM_START and warm is not None:
@@ -148,7 +154,7 @@ def _scenario_statics(ctx, segments, durations, phi):
     )
 
 
-def _decision_features(cands, t_now, crew_free, D_now, st, T, dur_belief=None):
+def _decision_features(cands, t_now, crew_free, D_now, st, T, dur_belief=None, work_set=None):
     """Feature matrix x(s, e) for every candidate segment e at one decision point. Row layout
     (all roughly [0, 1]): [phi_hat_e, sev_hat_e, dur_belief_e, dem_hat_e, t/T, crew-gap, demand-
     shortfall fraction, remaining-work fraction]. Column 0 doubles as the flow prior that the
@@ -165,7 +171,14 @@ def _decision_features(cands, t_now, crew_free, D_now, st, T, dur_belief=None):
     glob = (t_now / T,
             (max(crew_free) - t_now) / T,                        # how much longer the other crew is busy
             float(D_now.sum()) / st["sum_H0"],                    # demand currently suppressed
-            sum(dur_belief[e] for e in cands) / st["total_work"])
+            sum(dur_belief[e] for e in (cands if work_set is None else work_set))
+            / st["total_work"])                                  # remaining-work fraction: under the
+                                                                 # accessibility constraint the rows
+                                                                 # are only the REACHABLE candidates,
+                                                                 # so callers pass the full remaining
+                                                                 # set here to keep this global's
+                                                                 # meaning (work left, not work
+                                                                 # reachable)
     X = np.empty((len(cands), _N_FEAT))
     for i, e in enumerate(cands):
         X[i, 0] = st["phi_hat"][e]

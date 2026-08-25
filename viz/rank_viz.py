@@ -8,7 +8,7 @@ deliberate: an external plotting script keyed to column names drifts out of sync
 recorder changes one, and fails silently if its errors are swallowed. Keeping the figures a
 by-product of the same flush that writes the data makes that drift impossible to miss.
 
-Four figures per run, all reading outputs/03-RL/{01-rl_nominal,02-rl_saa}/n{N}/log/:
+Four figures per run, all reading outputs/03-rl/{solver}/n{N}/log/:
   {v}_objective   the objective curves (for the stochastic variant this includes BOTH rulers: the
                   validation worlds the stopping rule reads, and, dashed, the frozen evaluation
                   scenarios recorded purely as a diagnostic), which differ by variant because the
@@ -134,16 +134,20 @@ def _objective(ax, tr, variant, traces=()):
     if traces:
         _seed_band(ax, traces, "best_F", C["signal"], "best so far")
         _seed_band(ax, traces, "scenF", C["teal"], "evaluation")
-    if variant.startswith("rl_saa"):
+    # WHICH curves exist is a property of the RUN, read off its trace, not of the variant's
+    # name. A solver that probes on validation worlds records F_val and is judged by it; a
+    # nominal-world solver records best_F. Name-matching here was a live defect: rl_s2v_saa
+    # probes on validation worlds but its name does not start with the retired "rl_saa", so it
+    # was drawn with the nominal curve set and its own selection signal never appeared.
+    if "F_val" in tr and tr["F_val"].notna().any():
         ax.plot(ep, tr["F"], color=C["neutral_light"], lw=0.8,
-                label="episode F (in its own drawn world)")
+                label="episode F (in its own training worlds)")
         if "buf_bestF" in tr and tr["buf_bestF"].notna().any():
             ax.plot(ep, tr["buf_bestF"], color=C["accent2"], lw=1.1,
                     label="best F in the imitation buffer")
-        if "F_val" in tr and tr["F_val"].notna().any():
-            p = tr.dropna(subset=["F_val"])
-            ax.plot(p["episode"], p["F_val"], color=C["signal"], lw=1.4, marker="o", ms=2.5,
-                    label="greedy policy, validation worlds")
+        p = tr.dropna(subset=["F_val"])
+        ax.plot(p["episode"], p["F_val"], color=C["signal"], lw=1.4, marker="o", ms=2.5,
+                label="greedy policy, validation worlds")
         _scen_line(ax, tr)
     else:
         ax.plot(ep, tr["F"], color=C["neutral_light"], lw=0.6, alpha=0.45, zorder=1,

@@ -36,8 +36,7 @@ import numpy as np
 import pandas as pd
 
 import config as P
-from util.evaluate import (build_context, evaluate_schedule, makespan_slot,
-                           schedule_from_permutation)
+from util.evaluate import build_context, evaluate_schedule, schedule_from_permutation
 from util.io import load_toy_network, od_to_matrix
 from util.provenance import config_dir, log_dir, results_dir, solver_dir
 from util.scenarios import sample_scenarios
@@ -47,11 +46,6 @@ ROOT = Path(__file__).resolve().parent.parent
 TOY = ROOT / "data" / "siouxfalls_toy"
 OUT = ROOT / "outputs" / "02-baselines" / solver_dir("brute-force")
 
-# The exact horizon walks all N! permutations. 8! = 40320 is still a subsecond sweep, but the
-# factorial makes every further segment ~10x dearer, so larger instances switch to the Graham
-# bound inside compute_horizon.
-HORIZON_ENUM_MAX = 8
-
 # Every parameter that affects the objective F is listed here. A short hashed "fingerprint" of
 # these values (see _param_fingerprint) is stored with each cached result and re-checked on the
 # next run: the problem SIZE (N_DISRUPTED_ORACLE) alone names the cache folder — one folder per
@@ -60,14 +54,15 @@ HORIZON_ENUM_MAX = 8
 FINGERPRINT_PARAMS = [
     "N_DISRUPTED_ORACLE", "MU", "CAP_RETAIN", "SPEED_RETAIN", "SEVER_SEVERITY",
     "F1_ACTIVE_ONLY", "RHO", "KAPPA", "UPEN_FACTOR", "DELTA_T_H", "C_MAX",
-    "M_SCENARIOS", "SEED", "UE_RGAP", "UE_MAX_ITER", "DURATION_SUPPORT", "ETA",
+    "M_SCENARIOS", "SEED", "UE_RGAP", "UE_MAX_ITER",
+    "DUR_MEAN", "DUR_SD", "DUR_TRUNC_MULT", "ACCESS_DEPOT",
 ]
 
 
 def _param_fingerprint():
     """Build the parameter fingerprint. Returns (values, sha1_hex): the dict of every
-    objective-affecting parameter together with a SHA-1 digest of it. DURATION_SUPPORT is keyed by
-    tuples, which JSON cannot use as object keys, so those keys are stringified first. Hashing the
+    objective-affecting parameter together with a SHA-1 digest of it. DUR_MEAN / DUR_SD are keyed
+    by tuples, which JSON cannot use as object keys, so those keys are stringified first. Hashing the
     JSON with sort_keys=True makes the digest independent of dict ordering, so identical parameter
     values always produce the same fingerprint."""
     values = {}
@@ -126,8 +121,10 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
     link mattered equally, any repair order would score about the same and the instance would be a
     weak test. The two highest-flow edges are marked severity 3 (fully severed, the most damaged
     state); the remaining picks are spread across lower-flow edges at severity 2 or 1
-    (progressively lighter damage). The choice is deterministic. Writes
-    disrupted_segments_oracle{n}.csv and returns the resulting DataFrame."""
+    (progressively lighter damage). The choice is deterministic, and it is NOT tailored to the
+    crew-accessibility constraint: that constraint is part of the scheduling model
+    (util.evaluate), and whether it binds on a given instance is an empirical property, not a
+    design input. Writes disrupted_segments_oracle{n}.csv and returns the resulting DataFrame."""
     toy = Path(toy_dir)
     edges = pd.read_csv(toy / "network" / "edges.csv")
     flow = _baseline_twoway_flow(toy)
@@ -150,29 +147,21 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
 
 
 def compute_horizon(segments, scenarios):
-    """Return the global time horizon T: the largest completion time — the makespan, i.e. the
-    slot at which the last segment finishes — taken over every schedule and every scenario.
-    Setting T to this maximum guarantees that every enumerated schedule finishes within the
-    horizon, and that all schedules are scored over one identical time window so their objectives
-    are directly comparable.
+    """Return the global time horizon T: an upper bound on the completion slot of ANY priority
+    order under any of the given scenarios, so no schedule is ever truncated and all schedules
+    are scored over one identical time window.
 
-    Up to HORIZON_ENUM_MAX segments this is exact: enumerate every permutation and take the
-    largest makespan. Beyond that the N! enumeration is infeasible, so the classical Graham
-    list-scheduling bound stands in: with m crews, any work-conserving list schedule completes
-    within (sum_e d_e + (m-1) max_e d_e) / m, plus one slot because repairs here start at slot 1
-    rather than time zero. The bound is never below the exact horizon, so no schedule is ever
-    truncated; the shared scoring window is merely somewhat longer than strictly necessary."""
-    if len(segments) > HORIZON_ENUM_MAX:
-        m = P.C_MAX
-        T = 0
-        for dur in scenarios:
-            d = [int(dur[e]) for e in segments]
-            T = max(T, 1 + -(-(sum(d) + (m - 1) * max(d)) // m))   # 1 + ceil(.../m), integer-exact
-        return T
+    Under the accessibility constraint (2026-08-24 redesign) the classical Graham bound no
+    longer applies: a crew can be forced to idle while the only reachable segments are already
+    under repair, so a gated schedule can run longer than any work-conserving one. What always
+    holds instead is full serialization -- whenever a crew idles, the frontier it is waiting on
+    is under repair by another crew, so work never stops entirely and the last completion is at
+    most 1 + sum_e d_e (repairs start at slot 1, not time zero). That serial bound is exact
+    coverage for the pathological order and an overshoot for good ones; the overshoot costs
+    tail slots in which the network is already repaired, which every method pays identically."""
     T = 0
-    for perm in itertools.permutations(segments):
-        for dur in scenarios:
-            T = max(T, makespan_slot(schedule_from_permutation(list(perm), dur), dur))
+    for dur in scenarios:
+        T = max(T, 1 + sum(int(dur[e]) for e in segments))
     return T
 
 
@@ -209,7 +198,8 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
     # --- time one full schedule evaluation to estimate the per-UE-solve cost, then extrapolate to
     # the whole enumeration; --probe stops here so the runtime can be sized before committing ---
     t0 = time.perf_counter()
-    evaluate_schedule(schedule_from_permutation(list(perms[0]), scenarios[0]), scenarios[0], T, ctx)
+    evaluate_schedule(schedule_from_permutation(list(perms[0]), scenarios[0],
+                                            access=ctx["access"]), scenarios[0], T, ctx)
     dt = time.perf_counter() - t0
     s_ue = dt / T
     total = len(perms) * M
@@ -241,7 +231,7 @@ def run_oracle(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED, probe=Fal
             continue
         t_scen = time.perf_counter()
         for perm in perms:
-            start = schedule_from_permutation(list(perm), dur)
+            start = schedule_from_permutation(list(perm), dur, access=ctx["access"])
             t_ev = time.perf_counter()
             res = evaluate_schedule(start, dur, T, ctx)
             row = dict(scenario=m, perm="-".join(map(str, perm)),

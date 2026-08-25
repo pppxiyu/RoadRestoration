@@ -224,7 +224,8 @@ def alternating_optimize(ctx, durations, segments, T, damping=None, warm_order=N
         return d
 
     seed_order = list(warm_order) if warm_order is not None else list(segments)  # warm start: flow-greedy order if given, else edge-id packing order
-    start = schedule_from_permutation(seed_order, durations)           # initial (iteration 0) work-conserving schedule
+    start = schedule_from_permutation(seed_order, durations,
+                                      access=ctx["access"])              # initial (iteration 0) schedule, gated
     res = evaluate_schedule(start, durations, T, ctx, return_u=True)
     history = [(dict(start), res)]
     trace = [_row(0, res, float("nan"), start)]                       # iteration 0 is the initial evaluation, before any MILP, so it has no surrogate value
@@ -368,7 +369,7 @@ def run_pretrain_milp(toy_dir=TOY, out_dir=OUT, M=P.M_SCENARIOS, seed=P.SEED):
     solve_ue = (n_iter + 1) * T                      # UE solves the nominal alternating run cost
     for m, dur in enumerate(scenarios):
         t_s = time.perf_counter()
-        start = schedule_from_permutation(order, dur)
+        start = schedule_from_permutation(order, dur, access=ctx["access"])
         res = evaluate_schedule(start, dur, T, ctx, collect_traces=True)
         slots.extend(slot_rows(m, res))                 # recovery curve, at no extra UE cost
         row = dict(scenario=m, F_milp=res["F"], F1=res["F1"], F2=res["F2"],
@@ -470,13 +471,13 @@ def level_a(toy_dir=TOY, seed=P.SEED, scenario=0):
     dur = scenarios[scenario]
     T = compute_horizon(segments, scenarios)
 
-    start0 = schedule_from_permutation(list(segments), dur)
+    start0 = schedule_from_permutation(list(segments), dur, access=ctx["access"])
     u_tilde = evaluate_schedule(start0, dur, T, ctx, return_u=True)["u_tilde"]
     c, alpha = precompute_c(ctx, u_tilde, dur, segments, T)
 
     best_wc, best_perm = -np.inf, None
     for perm in itertools.permutations(segments):
-        s = schedule_from_permutation(list(perm), dur)
+        s = schedule_from_permutation(list(perm), dur, access=ctx["access"])
         v = _surrogate_value(s, c, segments, T)
         if v > best_wc:
             best_wc, best_perm = v, s

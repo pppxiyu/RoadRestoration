@@ -150,7 +150,7 @@ def _slot_stream(ctx, order, durations):
     """Yield (slot, demand H, still-damaged map) along one schedule's recovery, replicating the
     demand-shortfall recursion of the evaluators."""
     H0, B, sev, dis = ctx["H0"], ctx["B"], ctx["severity_vec"], ctx["disrupted"]
-    start = schedule_from_permutation(order, durations)
+    start = schedule_from_permutation(order, durations, access=ctx["access"])
     comp = [start[eid] + durations[eid] for (eid, _, _, _) in dis]
     D = np.zeros(len(H0))
     for k in range(1, max(comp) + 1):
@@ -163,7 +163,7 @@ def _slot_stream(ctx, order, durations):
 def _audit_order(ctx):
     """The repair order whose recovery supplies the per-slot problems: the delivered rl_nominal
     schedule when one is on disk (the realistic case), ascending edge ids otherwise."""
-    p = (ROOT / "outputs" / "03-RL" / "01-rl_nominal" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
+    p = (ROOT / "outputs" / "03-rl" / "01-rl_nominal" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
          / "rl_nominal_optima.csv")
     if p.exists():
         return [int(x) for x in pd.read_csv(p)["order"].iloc[0].split("-")], "delivered rl_nominal"

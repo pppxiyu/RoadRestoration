@@ -24,7 +24,7 @@ be inspected end to end.
 
 `python main.py --solve <names>`: run any solver(s) at the scale config.py declares
 (N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_nominal, rl_saa, rl_s2v (experimental), compare. `ga-rescore` re-measures GA's committed order under the
+milp, oracle, rl_nominal, rl_s2v, rl_s2v_saa (the last two experimental), compare. `ga-rescore` re-measures GA's committed order under the
 current settings without repeating the search, for use after a change of ruler (a UE tolerance or
 engine change makes every F on disk stale while leaving the order it selected valid).
 This is THE entry point for experiments: what runs is chosen
@@ -79,7 +79,7 @@ def walkthrough():
     perm = segments                                   # example repair priority: segments in ascending edge-id order (arbitrary but reproducible)
     # A "work-conserving" schedule assigns the crews greedily so no crew sits idle while a
     # segment still waits; the makespan is the slot at which the last repair finishes (horizon T).
-    start = schedule_from_permutation(perm, durations, P.C_MAX)
+    start = schedule_from_permutation(perm, durations, P.C_MAX, access=ctx["access"])
     T = makespan_slot(start, durations)
 
     print(f"Disrupted segments E = {segments};  C_max={P.C_MAX} crews;  dt={P.DELTA_T_H} h;  mu={P.MU}")
@@ -157,9 +157,13 @@ def solve(names, seed=None, seeds=None):
         elif name == "oracle":
             from util.oracle import run_oracle
             run_oracle()
-        elif name in ("rl_nominal", "rl_saa", "rl_saa_per"):
+        elif name == "rl_nominal":
             from util.rl_rank import run_rank
             run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
+        elif name == "rl_s2v_saa":
+            # EXPERIMENTAL pool-SAA S2V; removal recipe in util/rl_s2v_saa.py's docstring.
+            from util.rl_s2v_saa import run_s2v_saa
+            run_s2v_saa(seed=(P.SEED if seed is None else seed))
         elif name == "rl_s2v":
             # EXPERIMENTAL faithful S2V-DQN, parallel to the rank-loss RL; the removal recipe
             # lives in util/rl_s2v.py's module docstring.
@@ -173,7 +177,7 @@ def solve(names, seed=None, seeds=None):
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_nominal, rl_saa, rl_saa_per, rl_s2v, "
+                             f"milp, oracle, rl_nominal, rl_s2v, rl_s2v_saa, "
                              f"tune-search, compare")
 
 
