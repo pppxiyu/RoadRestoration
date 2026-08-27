@@ -3,12 +3,15 @@ Figures documenting the CURRENT problem setting:
 
     python -m viz.problem_setting
 
-  01_nominal_setting    the NOMINAL scenario, everything a solver optimizing that one world
-                        faces: the damaged network (map, with the crew depot and the initially
-                        unreachable interior), what each severity level does to a road's
-                        capacity and free-flow speed, the nominal repair time of each damaged
-                        segment, and the travel demand each segment suppresses while it stays
-                        broken. The damage physics and the demand-shortfall rule are MODELING
+  01a_damaged_network   line width = ROAD CLASS, color = severity (changed from flow width
+                        2026-08-26 on the project owner's instruction).
+                        the NOMINAL scenario as FOUR standalone figures (split 2026-08-25 on
+  01b_damage_physics    the project owner's instruction; was one 4-panel 01_nominal_setting).
+  01c_nominal_durations 01a is the damaged network map with the crew depot and initially
+  01d_demand_drops      unreachable interior; 01b what each severity does to a road's capacity
+                        and free-flow speed; 01c the nominal repair time of each damaged
+                        segment; 01d the travel demand each segment suppresses while broken.
+                        The damage physics and the demand-shortfall rule are MODELING
                         ASSUMPTIONS (config.py flags them as such); the network, BPR parameters
                         and OD demand are given by the open Sioux Falls data.
   02_scenario_setting   the same repair-time dimension ACROSS ALL M evaluation scenarios --
@@ -22,12 +25,13 @@ Figures documenting the CURRENT problem setting:
                         shade = severity, shared with 02.
 
   04_severity_law       THE SEVERITY LAW: what a reported severity ESTIMATE implies about the
-                        true severity (config.SEVERITY_CONFUSION), and what each true severity
-                        does to the road -- capacity and free-flow speed retained, or removal
-                        from the network entirely. The truth is drawn per scenario; its LABEL is
-                        never an input, though since 2026-08-25 the field state it produces is
-                        observable during execution (rl_s2v deviation 24). For the planning-side
-                        solvers this figure is still the whole of what is known.
+                        true severity (config.SEVERITY_CONFUSION). The truth is drawn per
+                        scenario; its LABEL is never an input, though since 2026-08-25 the
+                        field state it produces is observable during execution (rl_s2v
+                        deviation 24). What each true severity does to the road
+                        (capacity/speed retention, severing) lives in config.py's damage block
+                        and the run_meta -- its panel was removed 2026-08-25 on the project
+                        owner's instruction.
 
 THE DURATION LAW is config.py's per-segment truncated-lognormal law, rendered through
 util.scenarios (sample_scenarios for the frozen sample, _cell_pmf for the exact per-cell
@@ -92,18 +96,27 @@ def _cell_color(road_class, severity):
 # ----------------------------------------------------------------------------------------- #
 # 01  the nominal scenario: network, damage physics, nominal repair time, demand drop
 # ----------------------------------------------------------------------------------------- #
+#: Line width per road class on the network map. Width carries the CLASS (a fixed property of
+#: the road: capacity, free-flow speed, BPR parameters) rather than pre-disaster flow, which is
+#: an equilibrium OUTCOME and only loosely tracks class here -- measured over the 38 segments the
+#: class rank correlates 0.508 with flow and the ranges overlap heavily (highway 9.0k-46.3k,
+#: major 12.5k-36.8k, local 10.5k-25.0k; the quietest segment in the network is a highway).
+_CLASS_LW = {"local": 1.6, "major": 3.6, "highway": 6.4}
+
+
 def _map_panel(a, dis, ctx, phi):
-    """The damaged network. Line width carries pre-disaster flow, color the severity; the two
+    """The damaged network. Line width carries the ROAD CLASS, color the severity; the two
     severed (severity-3) edges are the two highest-flow links, so the damage hits both busy
     corridors and lighter roads whose repair can afford to wait. The depot triangle marks where
-    crews enter the network (the accessibility constraint's reference point)."""
+    crews enter the network (the accessibility constraint's reference point). `phi` is still
+    taken so the panel keeps one signature with its callers, and remains available if a future
+    version wants to encode flow again."""
     nodes = pd.read_csv(Path(TOY) / "network" / "nodes.csv")
     pos = {int(r.node_id): (r.x, r.y) for r in nodes.itertuples(index=False)}
     sev_of = {int(r.edge_id): int(r.severity) for r in dis.itertuples(index=False)}
-    fmax = max(phi.values())
     for r in ctx["edges"].itertuples(index=False):
         eid, u, v = int(r.edge_id), int(r.u), int(r.v)
-        w = 1.2 + 7.0 * phi.get(eid, 0.0) / fmax
+        w = _CLASS_LW[str(r.road_class)]
         if eid in sev_of:
             # A white casing under each damaged edge lifts even the palest severity color
             # off the grey background without changing the severity ramp itself.
@@ -137,26 +150,34 @@ def _map_panel(a, dis, ctx, phi):
                       Line2D([], [], color=C["accent"], marker="^", ls="", ms=12,
                              markeredgecolor="white",
                              label=f"crew depot (node {P.ACCESS_DEPOT})")],
-             loc="upper center", bbox_to_anchor=(0.38, -0.01), ncol=2, fontsize=15)
+             loc="lower left", frameon=False, fontsize=18)
+    # BOTH legends sit INSIDE the axes. Anchoring one below the axes (the previous
+    # bbox_to_anchor=(0.5, -0.01)) does not survive fig.tight_layout(): the axes is expanded to
+    # fill the figure and the legend lands off-canvas at negative y, where the tight bounding box
+    # does not recover it. The map's left half is empty, so both fit without covering the network.
+    # A second legend also needs the first re-attached as a plain artist, since one axes holds
+    # only one `legend_`.
+    a.add_artist(a.get_legend())
+    a.legend(handles=[Line2D([], [], color=C["neutral_mid"], lw=_CLASS_LW[rc], label=rc)
+                      for rc in ("highway", "major", "local")],
+             loc="upper left", frameon=False, fontsize=16,
+             title="road class", title_fontsize=16)
 
 
-def _nominal_setting(dis, ctx, phi, nom, drops, path):
-    """One figure, the whole nominal world: the map spans the tall left column; the right
-    column stacks the damage physics, the nominal repair times, and the demand drops. The two
-    per-segment panels share one segment order (ascending nominal duration) so a segment can
-    be followed across them."""
-    sev_of = {int(r.edge_id): int(r.severity) for r in dis.itertuples(index=False)}
-    order = sorted(sev_of, key=lambda e: (nom[e], e))
-
-    fig = plt.figure(figsize=(14.8, 12.0))
-    gs = fig.add_gridspec(3, 2, width_ratios=[1.12, 1.0], hspace=0.52, wspace=0.16)
-    a = fig.add_subplot(gs[:, 0])
+def _nominal_map(dis, ctx, phi, path):
+    """The damaged network on its own (was the left column of the old 01_nominal_setting)."""
+    fig, a = plt.subplots(figsize=(9.6, 8.4))
     _map_panel(a, dis, ctx, phi)
+    fig.tight_layout()
+    save_pub(fig, path)
+    plt.close(fig)
 
-    # Right, top -- the damage physics, exactly the rule build_damaged_edges applies: at or
-    # above SEVER_SEVERITY the road leaves the network entirely (nothing retained), below it
-    # capacity is scaled by CAP_RETAIN and free-flow speed by SPEED_RETAIN.
-    b = fig.add_subplot(gs[0, 1])
+
+def _nominal_damage_physics(dis, path):
+    """The damage physics on its own: exactly the rule build_damaged_edges applies -- at or
+    above SEVER_SEVERITY the road leaves the network entirely (nothing retained), below it
+    capacity is scaled by CAP_RETAIN and free-flow speed by SPEED_RETAIN."""
+    fig, b = plt.subplots(figsize=(9.6, 5.4))
     sevs = [1, 2, 3]
     x = np.arange(len(sevs))
     capr = [0.0 if s >= P.SEVER_SEVERITY else P.CAP_RETAIN[s] for s in sevs]
@@ -166,32 +187,59 @@ def _nominal_setting(dis, ctx, phi, nom, drops, path):
     b.set_xticks(x)
     b.set_xticklabels([f"severity {s}" + ("\n(severed: road removed)"
                                           if s >= P.SEVER_SEVERITY else "") for s in sevs],
-                      fontsize=14)
-    b.set_ylabel("fraction retained")
+                      fontsize=19)
+    b.tick_params(axis="y", labelsize=19)
+    b.set_ylabel("fraction retained", fontsize=21)
     b.set_ylim(0, 1.0)
-    b.legend(fontsize=14)
+    b.legend(fontsize=18)
+    fig.tight_layout()
+    save_pub(fig, path)
+    plt.close(fig)
 
-    # Right, middle -- the nominal repair time of each segment: the single duration vector the
-    # nominal world uses (expected duration rounded to whole slots).
-    c = fig.add_subplot(gs[1, 1])
+
+def _nominal_durations(dis, nom, path):
+    """The nominal repair time of each damaged segment on its own: the single duration vector
+    the nominal world uses (expected duration rounded to whole slots), segments in ascending
+    nominal duration (shared with the demand-drop figure so a segment tracks across them)."""
+    sev_of = {int(r.edge_id): int(r.severity) for r in dis.itertuples(index=False)}
+    order = sorted(sev_of, key=lambda e: (nom[e], e))
+    fig, c = plt.subplots(figsize=(9.6, 5.4))
     c.bar(range(len(order)), [nom[e] for e in order],
           color=[severity_color(sev_of[e]) for e in order], edgecolor="white", lw=1.0)
     c.set_xticks(range(len(order)))
-    c.set_xticklabels([str(e) for e in order], fontsize=14)
-    c.set_xlabel("damaged segment")
-    c.set_ylabel("nominal repair\nduration (slots)")
+    c.set_xticklabels([str(e) for e in order], fontsize=18)
+    c.tick_params(axis="y", labelsize=19)
+    c.set_xlabel("damaged segment", fontsize=21)
+    c.set_ylabel("nominal repair\nduration (slots)", fontsize=21)
+    c.legend(handles=[Line2D([], [], color=severity_color(s), lw=8,
+                             label=f"severity {s}" + (" (severed)" if s >= P.SEVER_SEVERITY
+                                                      else "")) for s in (1, 2, 3)],
+             fontsize=18, loc="upper left")
+    fig.tight_layout()
+    save_pub(fig, path)
+    plt.close(fig)
 
-    # Right, bottom -- the demand drop each segment triggers while unrepaired: the column sum
-    # of the shortfall matrix B, i.e. the per-slot demand suppressed across every OD pair
-    # whose free-flow shortest path uses the segment. Same segment order as the middle panel.
-    d = fig.add_subplot(gs[2, 1])
+
+def _nominal_demand_drops(dis, drops, nom, path):
+    """The demand drop each segment triggers while unrepaired, on its own: the column sum of
+    the shortfall matrix B -- the per-slot demand suppressed across every OD pair whose
+    free-flow shortest path uses the segment. Same segment order as the nominal-duration
+    figure."""
+    sev_of = {int(r.edge_id): int(r.severity) for r in dis.itertuples(index=False)}
+    order = sorted(sev_of, key=lambda e: (nom[e], e))
+    fig, d = plt.subplots(figsize=(9.6, 5.4))
     d.bar(range(len(order)), [drops[e] for e in order],
           color=[severity_color(sev_of[e]) for e in order], edgecolor="white", lw=1.0)
     d.set_xticks(range(len(order)))
-    d.set_xticklabels([str(e) for e in order], fontsize=14)
-    d.set_xlabel("damaged segment")
-    d.set_ylabel("demand drop\n(trips per slot)")
-
+    d.set_xticklabels([str(e) for e in order], fontsize=18)
+    d.tick_params(axis="y", labelsize=19)
+    d.set_xlabel("damaged segment", fontsize=21)
+    d.set_ylabel("demand drop\n(trips per slot)", fontsize=21)
+    d.legend(handles=[Line2D([], [], color=severity_color(s), lw=8,
+                             label=f"severity {s}" + (" (severed)" if s >= P.SEVER_SEVERITY
+                                                      else "")) for s in (1, 2, 3)],
+             fontsize=18, loc="upper left")
+    fig.tight_layout()
     save_pub(fig, path)
     plt.close(fig)
 
@@ -260,7 +308,7 @@ def _duration_cells(dis, path, raw_csv=None):
                       for (c, sv) in order for k, pr in _cell_pmf((c, sv))]).to_csv(
             raw_csv, index=False)
 
-    fig, a = plt.subplots(figsize=(13.0, 8.2))
+    fig, a = plt.subplots(figsize=(14.2, 8.8))
     h = 1.65                                       # peak height in row units: rows interleave
     for i, (c, sv) in enumerate(order):
         y0 = -i
@@ -276,13 +324,14 @@ def _duration_cells(dis, path, raw_csv=None):
         a.plot([m, m], [y0, y0 + 0.55], color=C["neutral_dark"], lw=2.0, zorder=2 * i + 4)
     a.set_yticks([-i for i in range(len(order))])
     a.set_yticklabels([f"{c} road, severity {sv}  ({n_of.get((c, sv), 0)} damaged)"
-                       for c, sv in order], fontsize=15)
+                       for c, sv in order], fontsize=20)
     a.set_ylim(-len(order) + 0.6, h + 0.35)
     a.set_xlim(0, kmax + 1)
-    a.set_xlabel("repair duration (slots)")
+    a.tick_params(axis="x", labelsize=20)
+    a.set_xlabel("repair duration (slots)", fontsize=22)
     a.legend(handles=[Line2D([], [], color=C["neutral_dark"], lw=2.0,
                              label="cell mean (exact)")],
-             loc="upper right", fontsize=14, frameon=False)
+             loc="upper right", fontsize=19, frameon=False)
     fig.tight_layout()
     save_pub(fig, path)
     plt.close(fig)
@@ -292,18 +341,15 @@ def _duration_cells(dis, path, raw_csv=None):
 # 04  the severity law: estimate -> true severity, and what a true severity does
 # ----------------------------------------------------------------------------------------- #
 def _severity_law(dis, path):
-    """Left: each reported severity ESTIMATE as a row of probabilities over the TRUE severity
-    (config.SEVERITY_CONFUSION), the row labels carrying how many of this instance's segments
-    are exposed to that row. Right: what a true severity does to the road -- the capacity and
-    free-flow speed it retains, or removal from the network at SEVER_SEVERITY. Together these
-    are the whole mechanism by which a scenario changes WHICH segment matters, as opposed to
-    merely how long it takes: a segment reported light but truly severed leaves the routing
-    network and can disconnect a zone."""
+    """ONE panel: each reported severity ESTIMATE as a group of probabilities over the TRUE
+    severity (config.SEVERITY_CONFUSION), the tick labels carrying how many of this instance's
+    segments are exposed to that estimate. (The former second panel -- capacity/speed retained
+    per true severity -- was removed on the project owner's instruction, 2026-08-25; those
+    constants remain on record in config.py's damage block and in the run_meta.)"""
     n_est = {}
     for r in dis.itertuples(index=False):
         n_est[int(r.severity)] = n_est.get(int(r.severity), 0) + 1
-    fig, (a, b) = plt.subplots(1, 2, figsize=(15.6, 4.8),
-                               gridspec_kw={"width_ratios": [1.25, 1]})
+    fig, a = plt.subplots(figsize=(9.6, 4.8))
     x = np.arange(3)
     w = 0.26
     for j, s_true in enumerate((1, 2, 3)):
@@ -316,20 +362,6 @@ def _severity_law(dis, path):
     a.set_ylabel("P(true severity | estimate)")
     a.set_ylim(0, 0.88)
     a.legend(fontsize=14, ncol=3, loc="upper center")
-
-    sevs = [1, 2, 3]
-    xb = np.arange(len(sevs))
-    capr = [0.0 if s >= P.SEVER_SEVERITY else P.CAP_RETAIN[s] for s in sevs]
-    spdr = [0.0 if s >= P.SEVER_SEVERITY else P.SPEED_RETAIN[s] for s in sevs]
-    b.bar(xb - 0.19, capr, width=0.34, color=C["accent"], label="capacity retained")
-    b.bar(xb + 0.19, spdr, width=0.34, color=C["teal"], label="free-flow speed retained")
-    b.set_xticks(xb)
-    b.set_xticklabels([f"true severity {s}" + ("\n(severed: road removed)"
-                                               if s >= P.SEVER_SEVERITY else "")
-                       for s in sevs], fontsize=15)
-    b.set_ylabel("fraction retained")
-    b.set_ylim(0, 1.0)
-    b.legend(fontsize=14)
     fig.tight_layout()
     save_pub(fig, path)
     plt.close(fig)
@@ -337,13 +369,17 @@ def _severity_law(dis, path):
 
 # ----------------------------------------------------------------------------------------- #
 def render_problem_setting(n=None):
-    """Render the three problem-setting figures plus the raw tables behind them, for instance
-    size `n` (default: config's N_DISRUPTED_ORACLE, overridden at CALL time so the config value
-    is never edited). Every size uses the SAME deterministic generation law
-    (util.oracle.select_oracle_instance: the two highest-baseline-flow segments fully severed at
-    severity 3, the rest spread across lower-flow segments at alternating severity 2/1; same
-    duration law, same demand model) -- an n13 or n16 setting is the n10 recipe at a larger n,
-    not a separate design. Output lands in 03-problem_setting/n{n}/ beside the other sizes."""
+    """Render the problem-setting figures plus the raw tables behind them, for instance size
+    `n` (default: config's N_DISRUPTED_ORACLE, overridden at CALL time so the config value is
+    never edited). All sizes share ONE deterministic generator and ONE law
+    (util.oracle.select_oracle_instance; same duration cells, same severity confusion, same
+    demand model), but since 2026-08-26 the generator has two recipes: n < 16 keeps the
+    original rule (two highest-flow segments severed, the rest spread down the flow ranking at
+    alternating severity 2/1), while n >= 16 amplifies what the scenario draw can change on the
+    project owner's instruction -- non-critical picks stay in the upper half of the flow
+    ranking and estimates skew 2:1 toward severity 2, the confusion matrix's
+    maximum-uncertainty row. Output lands in 03-problem_setting/n{n}/ beside the other
+    sizes."""
     use_pub(slide=True)
     # Everything EXCEPT the panel titles goes bigger still; the titles keep the slide scale.
     plt.rcParams.update({"font.size": 17, "axes.labelsize": 20,
@@ -372,7 +408,10 @@ def render_problem_setting(n=None):
     fig_dir = OUT_FIG / f"n{len(segs)}"
     fig_dir.mkdir(parents=True, exist_ok=True)
     OUT_RAW.mkdir(parents=True, exist_ok=True)
-    _nominal_setting(dis, ctx, phi, nom, drops, fig_dir / "01_nominal_setting")
+    _nominal_map(dis, ctx, phi, fig_dir / "01a_damaged_network")
+    _nominal_damage_physics(dis, fig_dir / "01b_damage_physics")
+    _nominal_durations(dis, nom, fig_dir / "01c_nominal_durations")
+    _nominal_demand_drops(dis, drops, nom, fig_dir / "01d_demand_drops")
     _scenario_setting(dis, segs, scen, nom, T, fig_dir / "02_scenario_setting")
     _severity_law(dis, fig_dir / "04_severity_law")
     _duration_cells(dis, fig_dir / "03_duration_cells",

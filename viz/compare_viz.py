@@ -29,7 +29,11 @@ _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 # consumer uses.
 _SAA_RAMP = {"rl_s2v_saa64": "#B9A7D6", "rl_s2v_saa128": "#5B4383"}
 _SAA_ADPT = {"rl_s2v_saa64_adaptive": "#D9A0BC", "rl_s2v_saa128_adaptive": "#A34A72"}
-_SAA_COLORS = {**_SAA_RAMP, **_SAA_ADPT}
+# Cross-scale zero-shot transfers (util/transfer.py): a hue of their own -- olive, used by no
+# native family -- so a transferred policy reads as foreign at a glance. One entry per transfer.
+_XFER = {"rl_s2v_saa64_adaptive_from_n10": "#8A8B3A",
+         "rl_s2v_saa64_adaptive_from_n16": "#5E5F22"}
+_SAA_COLORS = {**_SAA_RAMP, **_SAA_ADPT, **_XFER}
 
 
 def _label(c):
@@ -65,7 +69,7 @@ def _method_colors(cols):
     return out
 
 
-def make_performance_distribution(out_dir, df, methods):
+def make_performance_distribution(out_dir, df, methods, n_orders=None):
     """The DISTRIBUTION of each method's per-scenario F, one box per method, ranked so the BEST
     method (lowest mean F, this objective being minimized) sits at the RIGHT-hand end.
 
@@ -79,7 +83,11 @@ def make_performance_distribution(out_dir, df, methods):
     an outlier, because a method's extreme scenarios are part of what is being measured, not
     contamination. Every scenario is also drawn as a jittered point, because at this sample size
     the points are the evidence and the box is only a summary of them. The mean is marked separately from the median so a skewed method is visible
-    as the gap between the two."""
+    as the gap between the two.
+
+    `n_orders` maps a method to how many DISTINCT repair orders it delivered across the
+    scenarios; where it is known the count joins the box annotation, since a method's spread
+    reads differently when one committed order produced it than when fifty different ones did."""
     use_pub()
     figs = Path(out_dir)
     figs.mkdir(parents=True, exist_ok=True)
@@ -90,15 +98,18 @@ def make_performance_distribution(out_dir, df, methods):
     col = _method_colors(order)
     rng = np.random.RandomState(0)                                 # fixed jitter: redraws match
 
-    fig, ax = plt.subplots(figsize=(0.85 * len(order) + 1.8, 3.2))
+    n_orders = n_orders or {}
+    # Boxes sit closer together (widths 0.72 in a unit spacing) and the canvas is scaled for
+    # slide-size type rather than the old thumbnail proportions.
+    fig, ax = plt.subplots(figsize=(1.25 * len(order) + 2.2, 6.4))
     # whis=(0, 100): the whiskers reach the MINIMUM and MAXIMUM, so no scenario is classified as
     # an outlier and none is excluded from the box's reach. The 1.5-IQR convention would declare a
     # tail scenario an outlier and stop the whisker short of it, which is exactly the wrong reading
     # here -- a method's bad scenarios are a property of the method, not contamination to trim.
-    bp = ax.boxplot([df[c] for c in order], widths=0.55, patch_artist=True, whis=(0, 100),
-                    medianprops=dict(color=C["neutral_dark"], lw=1.1),
-                    whiskerprops=dict(color=C["neutral_dark"], lw=0.8),
-                    capprops=dict(color=C["neutral_dark"], lw=0.8))
+    bp = ax.boxplot([df[c] for c in order], widths=0.72, patch_artist=True, whis=(0, 100),
+                    medianprops=dict(color=C["neutral_dark"], lw=1.8),
+                    whiskerprops=dict(color=C["neutral_dark"], lw=1.3),
+                    capprops=dict(color=C["neutral_dark"], lw=1.3))
     for patch, c in zip(bp["boxes"], order):
         patch.set_facecolor(col[c])
         patch.set_alpha(0.30)
@@ -107,19 +118,24 @@ def make_performance_distribution(out_dir, df, methods):
     span = (hi - lo) or 1.0
     for i, c in enumerate(order, start=1):
         y = df[c].to_numpy()
-        ax.scatter(i + rng.uniform(-0.16, 0.16, len(y)), y, s=7, color=col[c], alpha=0.55,
+        ax.scatter(i + rng.uniform(-0.2, 0.2, len(y)), y, s=16, color=col[c], alpha=0.55,
                    edgecolors="none", zorder=3)
-        ax.scatter([i], [y.mean()], marker="D", s=16, color=C["neutral_dark"], zorder=4,
-                   edgecolors="white", linewidths=0.4)
-        # The three summary numbers on the box itself, so the reader need not cross-reference the
-        # table: mean (the diamond), median (the box line), and best (lowest F, this objective).
-        ax.annotate(f"mean {y.mean():.4f}\nmed  {np.median(y):.4f}\nbest {y.min():.4f}",
-                    (i, y.max()), textcoords="offset points", xytext=(0, 5), ha="center",
-                    va="bottom", fontsize=5.0, color=C["neutral_dark"], linespacing=1.2)
-    ax.set_ylim(lo - 0.06 * span, hi + 0.34 * span)               # top headroom for the annotations
+        ax.scatter([i], [y.mean()], marker="D", s=44, color=C["neutral_dark"], zorder=4,
+                   edgecolors="white", linewidths=0.7)
+        # The summary numbers on the box itself, so the reader need not cross-reference the
+        # table: mean (the diamond), median (the box line), best (lowest F, this objective), and
+        # -- where known -- how many distinct orders the method actually delivered.
+        txt = f"mean {y.mean():.4f}\nmed  {np.median(y):.4f}\nbest {y.min():.4f}"
+        if c in n_orders:
+            txt += f"\norders {n_orders[c]}"
+        ax.annotate(txt, (i, y.max()), textcoords="offset points", xytext=(0, 7), ha="center",
+                    va="bottom", fontsize=11.5, color=C["neutral_dark"], linespacing=1.25)
+    ax.set_ylim(lo - 0.06 * span, hi + 0.46 * span)               # top headroom for the annotations
+    ax.set_xlim(0.4, len(order) + 0.6)                            # trim the default side padding
     ax.set_xticks(range(1, len(order) + 1))
-    ax.set_xticklabels([_label(c) for c in order], rotation=30, ha="right")
-    ax.set_ylabel("objective  $F$")
+    ax.set_xticklabels([_label(c) for c in order], rotation=30, ha="right", fontsize=15)
+    ax.tick_params(axis="y", labelsize=15)
+    ax.set_ylabel("objective  $F$", fontsize=18)
     fig.tight_layout()
     save_pub(fig, figs / "performance_distribution")
     plt.close(fig)
