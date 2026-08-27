@@ -121,7 +121,9 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
     link mattered equally, any repair order would score about the same and the instance would be a
     weak test. The two highest-flow edges are marked severity 3 (fully severed, the most damaged
     state); the remaining picks are spread across lower-flow edges at severity 2 or 1
-    (progressively lighter damage). The choice is deterministic, and it is NOT tailored to the
+    (progressively lighter damage) -- except at n >= 16, which since 2026-08-26 uses the
+    amplified-randomness recipe documented inline below (project owner's instruction).
+    The choice is deterministic, and it is NOT tailored to the
     crew-accessibility constraint: that constraint is part of the scheduling model
     (util.evaluate), and whether it binds on a given instance is an empirical property, not a
     design input. Writes disrupted_segments_oracle{n}.csv and returns the resulting DataFrame."""
@@ -135,10 +137,26 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
     n_crit = min(2, n)
     picks = list(range(n_crit))                                  # highest-flow "critical" edges
     rest = n - n_crit
-    if rest > 0:                                                 # spread remaining picks over lower-flow edges
-        picks += [int(round(x)) for x in np.linspace(len(ranked) // 5, len(ranked) - 1, rest)]
+    if n >= 16:
+        # AMPLIFIED-RANDOMNESS recipe for the large instance (2026-08-26, project owner's
+        # instruction: "适当放大随机性的影响" -- moderately amplify what the scenario draw can
+        # change). The LAW is untouched -- same duration cells, same severity confusion -- the
+        # amplification is entirely in WHICH segments carry it: (a) the non-critical picks come
+        # from the upper half of the flow ranking instead of reaching down to the quietest
+        # edges, so a severity surprise lands on a road whose loss actually moves the
+        # objective; (b) estimates skew 2:1 toward severity 2 -- the confusion matrix's
+        # maximum-uncertainty row (15% truly severed, 15% milder than reported) -- instead of
+        # alternating evenly. Both raise the truth-vs-estimate interaction without touching the
+        # n10 recipe below, which stays exactly the pre-2026-08-26 rule.
+        if rest > 0:
+            picks += [int(round(x)) for x in np.linspace(n_crit, len(ranked) // 2, rest)]
+        sev_rest = [2 if i % 3 != 2 else 1 for i in range(rest)]
+    else:
+        if rest > 0:                                             # spread remaining picks over lower-flow edges
+            picks += [int(round(x)) for x in np.linspace(len(ranked) // 5, len(ranked) - 1, rest)]
+        sev_rest = [2 if i % 2 == 0 else 1 for i in range(rest)]
     sub = ranked.iloc[picks].copy().reset_index(drop=True)
-    sub["severity"] = [3] * n_crit + [2 if i % 2 == 0 else 1 for i in range(rest)]
+    sub["severity"] = [3] * n_crit + sev_rest
     sub["level_id"] = sub["road_class"] + "-S" + sub["severity"].astype(str)
     out = (sub[["edge_id", "u", "v", "road_class", "severity", "level_id"]]
            .sort_values("edge_id").reset_index(drop=True))

@@ -48,8 +48,12 @@ SEARCHED = (("ga", "02-baselines"), ("rl_dqn", "03-rl"),
             ("rl_s2v_saa128", "03-rl"),   # size so the size-vs-quality trend is on disk; remove
                                           # the family with util/rl_s2v_saa.py
             ("rl_s2v_saa64_adaptive", "03-rl"),   # the _adaptive twins: deviation-24 observation
-            ("rl_s2v_saa128_adaptive", "03-rl"))  # channels on -- parallel methods, own columns
+            ("rl_s2v_saa128_adaptive", "03-rl"),  # channels on -- parallel methods, own columns
                                                   # (missing files are skipped until first run)
+            # Cross-scale zero-shot transfers (util/transfer.py), present only at the scale
+            # they were delivered on -- the from_n suffix is the model's provenance.
+            ("rl_s2v_saa64_adaptive_from_n10", "03-rl"),
+            ("rl_s2v_saa64_adaptive_from_n16", "03-rl"))
 
 
 def _discover(base, gdir, N):
@@ -103,10 +107,17 @@ def run_compare(N=None):
             f"{min(counts.values())}-scenario intersection.")
 
     # each method -> a column named by its bare stem (flow/demand/ratio/ga/rl/...); then MILP; then oracle if present
-    methods, df = [], None
+    # `n_orders` counts the DISTINCT repair orders a method delivered across the scenarios: 1 for
+    # a method that commits to a single order, more for an adaptive policy. It is read here
+    # because this is where the per-method files are already open; the figure only receives the
+    # counts. A method whose file has no `order` column (none today) simply gets no count.
+    methods, df, n_orders = [], None, {}
     for f in files:
         col = f.stem[: -len("_optima")]
-        d = pd.read_csv(f)[["scenario", "F"]].rename(columns={"F": col})
+        raw = pd.read_csv(f)
+        if "order" in raw.columns:
+            n_orders[col] = int(raw["order"].nunique())
+        d = raw[["scenario", "F"]].rename(columns={"F": col})
         df = d if df is None else df.merge(d, on="scenario")
         methods.append(col)
     if have_milp:
@@ -149,7 +160,7 @@ def run_compare(N=None):
     # Every figure that belongs in the comparison is drawn HERE, not by hand: run_compare clears
     # this folder before rewriting it, so a figure produced outside the refresh is deleted by the
     # next one.
-    make_performance_distribution(out, df, methods)                 # how far those F values spread
+    make_performance_distribution(out, df, methods, n_orders=n_orders)   # how far F spreads
     if have_oracle:                                                 # gap to the true optimum, small scales only
         make_gap_to_oracle(out, df, methods)
 

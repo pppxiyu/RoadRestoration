@@ -160,6 +160,13 @@ def solve(names, seed=None, seeds=None):
         elif name == "rl_dqn":
             from util.rl_rank import run_rank
             run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
+        elif "_from_n" in name:
+            # Cross-scale zero-shot transfer: <variant>_from_n<src> delivers the model trained
+            # at n<src> onto the CURRENT scale (config's N_DISRUPTED_ORACLE, i.e. --n). Checked
+            # before the rl_s2v_saa branch because these names share its prefix.
+            from util.transfer import run_transfer
+            variant, src = name.rsplit("_from_n", 1)
+            run_transfer(variant, int(src))
         elif name.startswith("rl_s2v_saa"):
             # EXPERIMENTAL pool-SAA S2V: one variant per pool size, plus the _adaptive twins
             # that turn on rl_s2v's deviation-24 observation channels
@@ -197,6 +204,12 @@ def solve(names, seed=None, seeds=None):
 
 
 if __name__ == "__main__":
+    # `--n <k>`: run at instance size k by overriding config.N_DISRUPTED_ORACLE AT RUNTIME --
+    # the override path util/metaheuristic.py documents as the supported large-n route (the
+    # config VALUE is never edited; every runner and refresh_comparison reads the attribute at
+    # call time, and provenance still reads n off the instance, so folders cannot mislabel).
+    if "--n" in sys.argv:
+        P.N_DISRUPTED_ORACLE = int(sys.argv[sys.argv.index("--n") + 1])
     if "--walkthrough" in sys.argv:
         walkthrough()
     elif "--solve" in sys.argv:

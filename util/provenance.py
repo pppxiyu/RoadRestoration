@@ -45,6 +45,11 @@ SOLVER_DIR = {
     "rl_s2v_saa128": "03-rl_s2v_saa/pool128",
     "rl_s2v_saa64_adaptive": "04-rl_s2v_saa_adaptive/pool64",
     "rl_s2v_saa128_adaptive": "04-rl_s2v_saa_adaptive/pool128",
+    # Cross-scale zero-shot transfers (util/transfer.py): the name carries the source scale so
+    # a transferred policy can never be mistaken for one trained at the scale it is scored on.
+    # One explicit entry per transfer actually run -- this table stays a closed allowlist.
+    "rl_s2v_saa64_adaptive_from_n10": "05-transfer/rl_s2v_saa64_adaptive_from_n10",
+    "rl_s2v_saa64_adaptive_from_n16": "05-transfer/rl_s2v_saa64_adaptive_from_n16",
 }
 
 
