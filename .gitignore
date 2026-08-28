@@ -35,3 +35,9 @@ Thumbs.db
 
 # persistent simulation cache (regenerable; can be large)
 /cache/
+
+# Archived artifacts of things removed from the project (the n10/n16 scales, the rl_dqn
+# solver and the cross-scale transfer, retired 2026-08-27). Kept on disk so a deleted
+# result or trained checkpoint can still be recovered, out of git for the same reason
+# /outputs/ is: it is ~36 MB of generated artifacts, 20 of them model checkpoints.
+/legacy/
