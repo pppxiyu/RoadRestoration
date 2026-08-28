@@ -34,16 +34,16 @@ SOLVER_DIR = {
     "rule-based": "02-rule-based",
     "pretrain_milp": "03-pretrain_milp",
     "ga": "04-ga",
-    "rl_s2v": "02-rl_s2v",     # EXPERIMENTAL faithful S2V-DQN; remove with util/rl_s2v.py
+    "rl_s2v": "01-rl_s2v",     # EXPERIMENTAL faithful S2V-DQN; remove with util/rl_s2v.py
     # EXPERIMENTAL pool-SAA S2V, one entry per pool size (util.rl_s2v_saa.POOL_SIZES). They
     # nest under one saa folder so the size sweep reads as a family rather than unrelated
     # methods; remove the whole family with util/rl_s2v_saa.py. The _adaptive twins are the
     # same trainer with rl_s2v's deviation-24 observation channels on (hp adaptive=True) --
     # parallel methods in their own family folder, so plain and adaptive never overwrite.
-    "rl_s2v_saa64": "03-rl_s2v_saa/pool64",
-    "rl_s2v_saa128": "03-rl_s2v_saa/pool128",
-    "rl_s2v_saa64_adaptive": "04-rl_s2v_saa_adaptive/pool64",
-    "rl_s2v_saa128_adaptive": "04-rl_s2v_saa_adaptive/pool128",
+    "rl_s2v_saa64": "02-rl_s2v_saa/pool64",
+    "rl_s2v_saa128": "02-rl_s2v_saa/pool128",
+    "rl_s2v_saa64_adaptive": "03-rl_s2v_saa_adaptive/pool64",
+    "rl_s2v_saa128_adaptive": "03-rl_s2v_saa_adaptive/pool128",
 }
 
 
@@ -73,7 +73,7 @@ def _git_revision(root):
 # --------------------------------------------------------------------------- #
 # The output layout. Every n{N} scale folder of every method has exactly this shape (method
 # folders sit under a numbered group and take their numbered names from SOLVER_DIR above,
-# e.g. outputs/02-baselines/03-pretrain_milp/n{N}/, outputs/03-rl/02-rl_s2v/n{N}/):
+# e.g. outputs/02-baselines/03-pretrain_milp/n{N}/, outputs/03-rl/01-rl_s2v/n{N}/):
 #
 #   outputs/{group}/{NN-method}/n{N}/
 #     results/    what the run DELIVERS: the optima table, the delivered solution/order, the

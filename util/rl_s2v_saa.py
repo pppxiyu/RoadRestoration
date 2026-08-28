@@ -48,7 +48,7 @@ method alone:
   * remove "rl_s2v_saa" from util/provenance.py SOLVER_DIR;
   * remove the ("rl_s2v_saa", "03-rl") entry and its kind branch in util/compare.py;
   * remove the rl_s2v_saa color/shape lines in viz/compare_viz.py;
-  * delete outputs/03-rl/03-rl_s2v_saa/ and refresh the comparison.
+  * delete outputs/03-rl/02-rl_s2v_saa/ and refresh the comparison.
 NOT registered in util.sim_cache's canonical scan or util.seed_sweep until adopted.
 
 Run:  python main.py --solve rl_s2v_saa      (or  python -m util.rl_s2v_saa)
@@ -96,7 +96,7 @@ S2V_SAA_PARAMS = dict(
 )
 
 # The pool size is the design's central quantity, so each size is a SEPARATE METHOD rather than a
-# setting one run overwrites: they get their own folders (outputs/03-rl/03-rl_s2v_saa/pool{n}/)
+# setting one run overwrites: they get their own folders (outputs/03-rl/02-rl_s2v_saa/pool{n}/)
 # and their own comparison columns, so the size-vs-quality trend is on disk instead of only in a
 # chat log. Adding a size means adding it here and to util.provenance.SOLVER_DIR +
 # util.compare.SEARCHED; the run itself needs no other change.
@@ -383,7 +383,7 @@ def train_s2v_saa(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_p
 def run_s2v_saa(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp=None,
                 stop_params=None):
     """Train one pool-size variant to a validation plateau and write its canonical results to
-    outputs/03-rl/{solver_dir(variant)}/n{N}/ (i.e. .../03-rl_s2v_saa/pool{n}/n{N}/), then
+    outputs/03-rl/{solver_dir(variant)}/n{N}/ (i.e. .../02-rl_s2v_saa/pool{n}/n{N}/), then
     refresh the comparison. The pool size names the variant, so sizes never overwrite each
     other."""
     import torch

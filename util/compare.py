@@ -1,7 +1,7 @@
 """
 Compare the road-restoration solvers on a common instance, each discovered by NAME: the static
 rule-based rankers under outputs/02-baselines/02-rule-based/n{N}/, the GA and both RL variants
-each in its own numbered folder (02-baselines/04-ga, 03-rl/02-rl_s2v), the
+each in its own numbered folder (02-baselines/04-ga, 03-rl/01-rl_s2v), the
 pretraining MILP, and -- when its results exist for this scale -- the brute-force oracle. Aligns
 them by scenario, computes gaps to the oracle, and writes to outputs/04-comparison/n{N}/
 (comparison.csv in its results/ subfolder).

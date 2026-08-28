@@ -158,7 +158,7 @@ helpers); it mutates nothing outside its own output folder. To delete the method
   * remove "rl_s2v" from util/provenance.py SOLVER_DIR;
   * remove the ("rl_s2v", "03-rl") entry and the rl_s2v kind branch in util/compare.py;
   * remove the rl_s2v color / marker lines in viz/compare_viz.py;
-  * delete outputs/03-rl/02-rl_s2v/ and refresh the comparison.
+  * delete outputs/03-rl/01-rl_s2v/ and refresh the comparison.
 It is deliberately NOT registered in util.sim_cache's canonical-run scan or util.seed_sweep;
 both registrations wait until the method is adopted.
 
