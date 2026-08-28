@@ -24,7 +24,7 @@ be inspected end to end.
 
 `python main.py --solve <names>`: run any solver(s) at the scale config.py declares
 (N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_dqn, rl_s2v, rl_s2v_saa64/128[_adaptive] (the last two families experimental), compare. `ga-rescore` re-measures GA's committed order under the
+milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive] (both S2V families experimental), compare. `ga-rescore` re-measures GA's committed order under the
 current settings without repeating the search, for use after a change of ruler (a UE tolerance or
 engine change makes every F on disk stale while leaving the order it selected valid).
 This is THE entry point for experiments: what runs is chosen
@@ -34,7 +34,7 @@ rewrites its own outputs/ folder and refreshes the comparison when it finishes.
 
 Run inside the road_restore conda env:
   python main.py                       # full run (oracle + MILP)
-  python main.py --solve ga,rl_dqn     # chosen solvers at the configured scale
+  python main.py --solve ga,rl_s2v     # chosen solvers at the configured scale
   python main.py --walkthrough         # step-by-step objective walkthrough for one example
 (Equivalent module entry points: `python -m util.oracle`, `python -m util.pretrain_milp`.)
 """
@@ -157,16 +157,6 @@ def solve(names, seed=None, seeds=None):
         elif name == "oracle":
             from util.oracle import run_oracle
             run_oracle()
-        elif name == "rl_dqn":
-            from util.rl_rank import run_rank
-            run_rank(variants=(name,), seed=(P.SEED if seed is None else seed))
-        elif "_from_n" in name:
-            # Cross-scale zero-shot transfer: <variant>_from_n<src> delivers the model trained
-            # at n<src> onto the CURRENT scale (config's N_DISRUPTED_ORACLE, i.e. --n). Checked
-            # before the rl_s2v_saa branch because these names share its prefix.
-            from util.transfer import run_transfer
-            variant, src = name.rsplit("_from_n", 1)
-            run_transfer(variant, int(src))
         elif name.startswith("rl_s2v_saa"):
             # EXPERIMENTAL pool-SAA S2V: one variant per pool size, plus the _adaptive twins
             # that turn on rl_s2v's deviation-24 observation channels
@@ -191,16 +181,12 @@ def solve(names, seed=None, seeds=None):
             # lives in util/rl_s2v.py's module docstring.
             from util.rl_s2v import run_s2v
             run_s2v(seed=(P.SEED if seed is None else seed))
-        elif name == "tune-search":
-            from util.rl_rank import run_search_sweep
-            run_search_sweep(seed=(P.SEED if seed is None else seed))
         elif name == "compare":
             from util.compare import run_baseline_figures
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_dqn, rl_s2v, rl_s2v_saa64/128[_adaptive], "
-                             f"tune-search, compare")
+                             f"milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive], compare")
 
 
 if __name__ == "__main__":

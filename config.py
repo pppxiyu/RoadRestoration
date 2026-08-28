@@ -60,7 +60,13 @@ SEED = 42               # RNG seed, fixed so the scenario sampling is reproducib
 #            from a separate stream (seed*1000+21) so it does not systematically coincide with this
 #            eval sample -- measured overlap at saa_n=20 is <=3/50, the same order as i.i.d.
 EVAL_SAMPLING = "lhs"
-N_DISRUPTED_ORACLE = 10  # Number of disrupted roads. The instance is chosen by baseline UE flow
+N_DISRUPTED_ORACLE = 11  # Number of disrupted roads. Moved 10 -> 11 on 2026-08-27, when the
+                        # n10 and n16 scales were deleted: this value is the repo-wide default
+                        # that every runner reads at CALL time, so leaving it on a retired scale
+                        # would have let the next bare run silently regenerate it. Override per
+                        # run with `python main.py --n <k>`; the surviving scales are 6, 11, 17
+                        # and 23, and only 11 carries a full solver set.
+                        # The instance is chosen by baseline UE flow
                         # (the most heavily used, i.e. critical, links); the brute-force oracle is
                         # only feasible at small values (n! orders).
 # --- UE solver convergence ---
@@ -202,7 +208,7 @@ DUR_SD = {
 # information). Plain rl_s2v trains in the nominal world where the channels carry zero signal
 # and was measured unable to use them (its flags are off; the ledger entry has the numbers), and
 # plain rl_s2v_saa keeps them off so the plain-vs-adaptive pair isolates the channel. The
-# planning-side solvers (rules, MILP, GA, rl_dqn) still see only the estimate and this
+# planning-side solvers (rules, MILP, GA) still see only the estimate and this
 # distribution. The run_meta field `severity.revealed_during_execution` stays False because it
 # records LABEL revelation; the observation channel is documented alongside it
 # (technical_notes/05-problem_redefinition.md sec.2b/6.5).

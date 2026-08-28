@@ -73,7 +73,7 @@ from viz.style import C, save_pub, severity_color, use_pub
 
 ROOT = Path(__file__).resolve().parent.parent
 # Scale-agnostic BASE; each render writes into its own n{N} subfolder (N read off the instance
-# actually drawn, never off config) so future scales -- n13, n16, ... -- sit side by side and a
+# actually drawn, never off config) so future scales -- n17, n23, ... -- sit side by side and a
 # rerun of one scale cannot overwrite another's figures.
 OUT_FIG = ROOT / "outputs" / "01-sim_val_n_problem_setting" / "03-problem_setting"
 OUT_RAW = ROOT / "outputs" / "01-sim_val_n_problem_setting" / "raw"
@@ -449,9 +449,19 @@ def render_problem_setting(n=None):
                       field_state_observable="traffic state at slots <= now (2026-08-25)",
                       note="true severity is drawn per scenario; it sets capacity/speed "
                            "retention, severing, the demand shortfall and the duration cell"),
-        instance=dict(selection="flow-ranked: two highest-baseline-flow segments severed at "
-                                "severity 3, the rest spread over lower-flow segments at "
-                                "alternating severity 2/1", segments=sorted(segs)),
+        # The selection sentence is DERIVED from the branch util.oracle.select_oracle_instance
+        # actually takes at this size, not written out once for every size: the two recipes have
+        # coexisted since 2026-08-26, and a fixed sentence silently mislabelled every n >= 16
+        # run as the small-n rule.
+        instance=dict(selection=(
+            "flow-ranked, AMPLIFIED-RANDOMNESS recipe (n >= 16): two highest-baseline-flow "
+            "segments severed at severity 3, the rest spread over the upper half of the flow "
+            "ranking (widened when that half holds fewer positions than picks) with estimates "
+            "skewed 2:1 toward severity 2"
+            if n >= 16 else
+            "flow-ranked, standard recipe (n < 16): two highest-baseline-flow segments severed "
+            "at severity 3, the rest spread over lower-flow segments at alternating "
+            "severity 2/1"), segments=sorted(segs)),
         access=dict(depot=P.ACCESS_DEPOT,
                     rule="a segment is repairable only while an endpoint is reachable from the "
                          "depot through passable (undamaged or completed) edges; damaged and "

@@ -18,7 +18,7 @@ import numpy as np
 from viz.style import C, save_pub, use_pub
 
 # The darkening grey ramp is reserved for the static greedy variants. The full per-method mapping
-# (grey ramp / GA red / rl_dqn teal / rl_s2v orange / rl_s2v_saa purple / MILP dark blue /
+# (grey ramp / GA red / rl_s2v orange / rl_s2v_saa purple / MILP dark blue /
 # oracle red) lives in _method_colors below.
 _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 
@@ -29,11 +29,7 @@ _GREY_RAMP = ["#C6C6C6", "#9E9E9E", "#767676", "#4D4D4D"]
 # consumer uses.
 _SAA_RAMP = {"rl_s2v_saa64": "#B9A7D6", "rl_s2v_saa128": "#5B4383"}
 _SAA_ADPT = {"rl_s2v_saa64_adaptive": "#D9A0BC", "rl_s2v_saa128_adaptive": "#A34A72"}
-# Cross-scale zero-shot transfers (util/transfer.py): a hue of their own -- olive, used by no
-# native family -- so a transferred policy reads as foreign at a glance. One entry per transfer.
-_XFER = {"rl_s2v_saa64_adaptive_from_n10": "#8A8B3A",
-         "rl_s2v_saa64_adaptive_from_n16": "#5E5F22"}
-_SAA_COLORS = {**_SAA_RAMP, **_SAA_ADPT, **_XFER}
+_SAA_COLORS = {**_SAA_RAMP, **_SAA_ADPT}
 
 
 def _label(c):
@@ -43,8 +39,8 @@ def _label(c):
 def _method_colors(cols):
     """Static greedy rules share a darkening grey ramp (context). GA, being a population
     metaheuristic rather than a static ranker, reuses the signal red, which cannot collide
-    because the oracle is never drawn in the same figure as GA. rl_dqn, the rank-loss DQN, takes the
-    teal accent, and the experimental S2V solvers take orange (rl_s2v) and purple (rl_s2v_saa).
+    because the oracle is never drawn in the same figure as GA. The experimental S2V solvers take
+    orange (rl_s2v) and purple (rl_s2v_saa).
     The MILP is the emphasis blue (method under test), and the oracle keeps the signal red
     where it appears."""
     out, gi = {}, 0
@@ -56,8 +52,6 @@ def _method_colors(cols):
             out[c] = C["signal"]
         elif v == "ga":
             out[c] = C["signal"]
-        elif v == "rl_dqn":
-            out[c] = C["teal"]
         elif v == "rl_s2v":
             out[c] = "#C97B2D"     # EXPERIMENTAL S2V-DQN: orange, outside the shared palette
         elif v in _SAA_COLORS:

@@ -28,9 +28,9 @@ reports. Selecting the best of several runs is a real optimistic bias and it is 
 summary file rather than left implicit: the honest reading of a best-of-5 is "what this method can
 reach when the draw goes well", with the full spread beside it.
 
-  python -m util.seed_sweep rl_dqn            # 5 seeds, the default set
+  python -m util.seed_sweep ga               # 5 seeds, the default set
   python -m util.seed_sweep ga --seeds 1,2,3
-  python main.py --solve rl_dqn --seeds 5
+  python main.py --solve ga --seeds 5
 """
 import json
 import shutil
@@ -52,7 +52,6 @@ DEFAULT_SEEDS = (P.SEED, 1, 2, 3, 4)
 
 # Where each method's scale folder lives, and how its runner is invoked.
 _METHODS = {
-    "rl_dqn": dict(base=ROOT / "outputs" / "03-rl" / solver_dir("rl_dqn"), optima="rl_dqn_optima.csv"),
     "ga": dict(base=ROOT / "outputs" / "02-baselines" / solver_dir("ga"), optima="ga_optima.csv"),
 }
 # Subtrees copied into (and back out of) an archive: everything a run produces.
@@ -62,10 +61,7 @@ _PARTS = ("results", "log", "config")
 def _run_once(method, s, N, M):
     """Invoke the method's own runner for one search seed. Each runner clears and rewrites its
     scale folder exactly as in a normal single run -- nothing here is a special training path."""
-    if method == "rl_dqn":
-        from util.rl_rank import run_rank
-        run_rank(variants=(method,), N=N, M=M, seed=s)
-    elif method == "ga":
+    if method == "ga":
         from util.metaheuristic import run_metaheuristic
         run_metaheuristic(variants=("ga",), M=M, search_seed=s)
     else:
@@ -197,10 +193,6 @@ def run_seed_sweep(method, seeds=DEFAULT_SEEDS, N=None, M=P.M_SCENARIOS, resume=
     summary.insert(0, "delivered", ["<- delivered"] + [""] * (len(summary) - 1))
     summary.to_csv(hist / "seeds_summary.csv", index=False)
 
-    if method == "rl_dqn":                    # redraw with the across-seed band now available
-        from viz.rank_viz import make_rank_figures
-        make_rank_figures(vdir, method)
-
     spread = summary["mean_F"].max() - summary["mean_F"].min()
     print(f"\n=== {method}: {len(seeds)} seeds, {(time.perf_counter()-t_all)/60:.1f} min ===")
     print(summary.to_string(index=False))
@@ -216,7 +208,7 @@ def run_seed_sweep(method, seeds=DEFAULT_SEEDS, N=None, M=P.M_SCENARIOS, resume=
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:]]
-    m = next((a for a in args if not a.startswith("-")), "rl_dqn")
+    m = next((a for a in args if not a.startswith("-")), "ga")
     sd = DEFAULT_SEEDS
     if "--seeds" in args:
         v = args[args.index("--seeds") + 1]

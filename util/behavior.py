@@ -122,8 +122,8 @@ import pandas as pd
 import config as P
 from util.rl import _evaluate_prefix_cached
 from util.rl_rank import build_env
-from util.rl_s2v import _build_s2v_net, _graph_tensors, _s2v_rollout, _state_x
-from util.transfer import _resolve_variant
+from util.rl_s2v import (_build_s2v_net, _graph_tensors, _resolve_variant, _s2v_rollout,
+                         _state_x)
 from util.oracle import scale_dir
 from util.provenance import results_dir, solver_dir
 from viz.style import C, save_pub, use_pub

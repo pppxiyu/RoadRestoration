@@ -164,6 +164,7 @@ both registrations wait until the method is adopted.
 
 Run:  python main.py --solve rl_s2v      (or  python -m util.rl_s2v)
 """
+import re
 import time
 
 import numpy as np
@@ -294,9 +295,31 @@ S2V_PARAMS = dict(
     lam_growth=float(RANK_PARAMS_DQN["lam_growth"]), # ...geometric growth/episode, capped at lam
 )
 
+def _resolve_variant(variant):
+    """The hyperparameters a variant name implies, resolved through the SAME authorities the
+    trainers use (S2V_PARAMS / S2V_SAA_PARAMS + the adaptive-knob derivation), so a checkpoint is
+    never rebuilt under a different configuration than the one it was trained with.
+
+    Lived in util/transfer.py until that feature was removed (2026-08-27); it moved here rather
+    than dying with it because util/behavior.py loads delivered policies through it."""
+    if variant == "rl_s2v":
+        return dict(S2V_PARAMS)
+    m = re.fullmatch(r"rl_s2v_saa(\d+)(_adaptive)?", variant)
+    if not m:
+        raise SystemExit(f"unknown variant {variant!r}: expected rl_s2v or "
+                         f"rl_s2v_saa<pool>[_adaptive]")
+    # Deferred so the import direction stays one-way: rl_s2v_saa imports from rl_s2v, never back.
+    from util.rl_s2v_saa import S2V_SAA_PARAMS
+    hp = dict(S2V_SAA_PARAMS, pool_n=int(m.group(1)), adaptive=bool(m.group(2)))
+    if hp["adaptive"]:
+        # Same derivation as train_s2v_saa: the knob equips the observation channels.
+        hp = dict(hp, feat_obs_traffic=True, feat_obs_disc=True, feat_obs_trueD=True)
+    return hp
+
+
 # The plateau rule probes every episode here (the nominal best-so-far score is free), so the
-# shared STOP_PARAMS patience -- calibrated in PROBES -- must be widened exactly as rl_dqn's
-# override widens it, and for the same reason (see STOP_OVERRIDES in util.rl_rank).
+# shared STOP_PARAMS patience -- calibrated in PROBES -- must be widened. The rank-loss DQN that
+# once carried the twin override was removed 2026-08-27; this one stands on its own.
 S2V_STOP_OVERRIDES = dict(patience_P=100, stable_K=100)   # 2026-08-24: 75 -> 100, repo-wide
 
 
@@ -793,7 +816,8 @@ def _self_check(env, gt, Qf, torch):
 def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_params=None,
               verbose=True):
     """Train the faithful S2V-DQN to a plateau; return the same delivery dict shape as
-    util.rl_rank.train so the runner can mirror run_rank's provenance behavior."""
+    the retired util.rl_rank.train so the runner keeps the provenance behaviour that solver
+    established (that trainer and its runner were removed 2026-08-27)."""
     import torch
     import torch.nn as nn
     torch.set_num_threads(1)
@@ -1042,7 +1066,8 @@ def train_s2v(env, hp=None, seed=P.SEED, ep_cap=EP_CAP, rec_dir=None, stop_param
 
 
 # --------------------------------------------------------------------------- #
-# Run + provenance (mirrors util.rl_rank.run_rank's file family and two-stage clear)
+# Run + provenance (the file family and two-stage clear established by util.rl_rank.run_rank,
+# which was removed with the rl_dqn solver on 2026-08-27)
 # --------------------------------------------------------------------------- #
 def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp=None,
             stop_params=None):
@@ -1057,7 +1082,7 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
     vdir = scale_dir(OUT_DIAG / solver_dir(v), N)
     vdir.mkdir(parents=True, exist_ok=True)
     # Stage 1 of the two-stage clear: diagnostics only, so a run that dies mid-training cannot
-    # destroy a delivered model it never reproduced (see run_rank).
+    # destroy a delivered model it never reproduced (the rule run_rank set).
     fresh_scale_dir(vdir, subdirs=("log",), figures=True)
     rdir = log_dir(vdir)
     t0 = time.perf_counter()
@@ -1074,7 +1099,7 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                    episodes=r["episodes"], outcome=r["outcome"],
                    # Serial-equivalent compute, the nominal-variant convention: every distinct
                    # order the search scored costs T UE solves, amortised over the M scenarios,
-                   # plus this scenario's own evaluation (see run_rank / _compute_accounting).
+                   # plus this scenario's own evaluation (see util.compare._compute_accounting).
                    # The deviation-24 live-traffic reads are REAL solves too and are charged the
                    # same amortised way (obs_solves counts actual solver calls, memo hits free).
                    ue_total=((r["n_evals"] * env["T"] + r.get("obs_solves", 0))

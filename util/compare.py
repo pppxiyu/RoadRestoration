@@ -1,7 +1,7 @@
 """
 Compare the road-restoration solvers on a common instance, each discovered by NAME: the static
 rule-based rankers under outputs/02-baselines/02-rule-based/n{N}/, the GA and both RL variants
-each in its own numbered folder (02-baselines/04-ga, 03-rl/01-rl_dqn, 03-rl/02-rl_s2v), the
+each in its own numbered folder (02-baselines/04-ga, 03-rl/02-rl_s2v), the
 pretraining MILP, and -- when its results exist for this scale -- the brute-force oracle. Aligns
 them by scenario, computes gaps to the oracle, and writes to outputs/04-comparison/n{N}/
 (comparison.csv in its results/ subfolder).
@@ -38,22 +38,18 @@ ROOT = Path(__file__).resolve().parent.parent
 # `greedy_rl_stoch` was still appearing in the n6 comparison.
 RULE_BASED = ("flow", "demand", "ratio")
 
-# The searched/learned methods, each owning its own folder. rl_dqn is the rank-loss DQN
-# trained in the nominal world; the two S2V solvers are experimental and carry their own removal
-# recipes. (rl_saa, the old sample-average variant of rl_dqn, was removed on 2026-08-24 --
-# rl_s2v_saa fills that role.)
-SEARCHED = (("ga", "02-baselines"), ("rl_dqn", "03-rl"),
+# The searched/learned methods, each owning its own folder. All of them are S2V solvers now and
+# carry their own removal recipes. (Two earlier methods are gone: rl_saa, the sample-average
+# variant, on 2026-08-24, and rl_dqn, the rank-loss DQN over a flat feature vector, on
+# 2026-08-27; rl_s2v and the rl_s2v_saa family fill both roles.)
+SEARCHED = (("ga", "02-baselines"),
             ("rl_s2v", "03-rl"),       # rl_s2v:     EXPERIMENTAL; remove with util/rl_s2v.py
             ("rl_s2v_saa64", "03-rl"),    # the pool-SAA family: EXPERIMENTAL, one column per pool
             ("rl_s2v_saa128", "03-rl"),   # size so the size-vs-quality trend is on disk; remove
                                           # the family with util/rl_s2v_saa.py
             ("rl_s2v_saa64_adaptive", "03-rl"),   # the _adaptive twins: deviation-24 observation
-            ("rl_s2v_saa128_adaptive", "03-rl"),  # channels on -- parallel methods, own columns
+            ("rl_s2v_saa128_adaptive", "03-rl"))  # channels on -- parallel methods, own columns
                                                   # (missing files are skipped until first run)
-            # Cross-scale zero-shot transfers (util/transfer.py), present only at the scale
-            # they were delivered on -- the from_n suffix is the model's provenance.
-            ("rl_s2v_saa64_adaptive_from_n10", "03-rl"),
-            ("rl_s2v_saa64_adaptive_from_n16", "03-rl"))
 
 
 def _discover(base, gdir, N):
@@ -80,7 +76,7 @@ def run_compare(N=None):
     files = _discover(base, gdir, N)
     if not files:
         raise FileNotFoundError(f"no optima under {base}/*/n{N}")
-    # MILP is OPTIONAL per scale, like the oracle (2026-08-24): a young scale (e.g. a fresh n16)
+    # MILP is OPTIONAL per scale, like the oracle (2026-08-24): a young scale (e.g. n17 or n23, which today have a problem setting but no solver runs)
     # legitimately has methods before the MILP exists. Its absence is announced loudly, never
     # absorbed -- and without it the compute-accounting figure is skipped (its UE-per-evaluation
     # ruler T is recovered from the MILP's own records).
@@ -222,7 +218,7 @@ def _compute_accounting(greedy_finals, milp_opt, M):
 
     The per-method `ue_total` column is deliberately NOT read here. Each writer chose its own
     convention for it, and one of them (util.rl_rank, before 2026-08-11) divided the ORDER count
-    rather than the UE count by M -- reporting rl_dqn at 36 UE/scenario when the honest figure is
+    rather than the UE count by M -- reporting a trained solver at 36 UE/scenario when the honest figure is
     140. Deriving the axis in one place from n_evals and T removes that whole class of drift.
     """
     T = int(round((milp_opt["ue_solves"] / (milp_opt["n_iter"] + 1)).median()))
@@ -235,8 +231,7 @@ def _compute_accounting(greedy_finals, milp_opt, M):
         n_evals = float(d["n_evals"].mean())
         # The pool-SAA variants keep their FULL name as the kind, so the accuracy-vs-compute
         # figure can colour each pool size separately while they share the RL triangle.
-        kind = ("rl" if v.startswith("rl_dqn")
-                else v if v.startswith("rl_s2v_saa")
+        kind = (v if v.startswith("rl_s2v_saa")
                 else "rl_s2v" if v.startswith("rl_s2v") else "meta")
         stats.append(dict(method=v, mean_F=float(d["F"].mean()), n_evals=n_evals,
                           mean_ue=n_evals * T / M + T, kind=kind))

@@ -147,14 +147,27 @@ def select_oracle_instance(toy_dir, n=P.N_DISRUPTED_ORACLE):
         # objective; (b) estimates skew 2:1 toward severity 2 -- the confusion matrix's
         # maximum-uncertainty row (15% truly severed, 15% milder than reported) -- instead of
         # alternating evenly. Both raise the truth-vs-estimate interaction without touching the
-        # n10 recipe below, which stays exactly the pre-2026-08-26 rule.
+        # small-n recipe below, which stays exactly the pre-2026-08-26 rule. Live at n17 and n23;
+        # n16, the size it was written for, was deleted 2026-08-27.
         if rest > 0:
-            picks += [int(round(x)) for x in np.linspace(n_crit, len(ranked) // 2, rest)]
+            # The window is the upper half of the ranking, WIDENED when that half holds fewer
+            # distinct positions than there are picks to place. Without the widening the rounded
+            # linspace silently repeats indices and the instance comes out SMALLER than asked
+            # (measured: n=23 wanted 21 non-critical picks from the 18 positions in [2, 19] and
+            # produced a 20-segment instance). max() leaves every size the half already fits
+            # untouched, so n17 is bit-for-bit what it was.
+            hi = max(len(ranked) // 2, n_crit + rest - 1)
+            picks += [int(round(x)) for x in np.linspace(n_crit, hi, rest)]
         sev_rest = [2 if i % 3 != 2 else 1 for i in range(rest)]
     else:
         if rest > 0:                                             # spread remaining picks over lower-flow edges
             picks += [int(round(x)) for x in np.linspace(len(ranked) // 5, len(ranked) - 1, rest)]
         sev_rest = [2 if i % 2 == 0 else 1 for i in range(rest)]
+    # A repeated index would hand back an instance of fewer than n segments, and since every
+    # runner reads n OFF the instance the run would look perfectly consistent while answering a
+    # different question. Fail loudly instead.
+    assert len(set(picks)) == n, (
+        f"instance selection produced {len(set(picks))} distinct segments for n={n}: {picks}")
     sub = ranked.iloc[picks].copy().reset_index(drop=True)
     sub["severity"] = [3] * n_crit + sev_rest
     sub["level_id"] = sub["road_class"] + "-S" + sub["severity"].astype(str)

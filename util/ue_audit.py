@@ -161,12 +161,21 @@ def _slot_stream(ctx, order, durations):
 
 
 def _audit_order(ctx):
-    """The repair order whose recovery supplies the per-slot problems: the delivered rl_dqn
-    schedule when one is on disk (the realistic case), ascending edge ids otherwise."""
-    p = (ROOT / "outputs" / "03-rl" / "01-rl_dqn" / f"n{P.N_DISRUPTED_ORACLE}" / "results"
-         / "rl_dqn_optima.csv")
-    if p.exists():
-        return [int(x) for x in pd.read_csv(p)["order"].iloc[0].split("-")], "delivered rl_dqn"
+    """The repair order whose recovery supplies the per-slot problems: a delivered RL schedule
+    when one is on disk (the realistic case), ascending edge ids otherwise.
+
+    Which order is used CHANGES WHAT THE AUDIT MEASURES -- a realistic recovery congests the
+    network differently from an arbitrary one -- so the caller prints the returned label beside
+    the numbers. The candidates are tried in order of preference; before 2026-08-27 this read the
+    retired rl_dqn's delivery, which had been absent long enough that the fallback was what
+    actually ran."""
+    from util.provenance import solver_dir
+    for v in ("rl_s2v_saa64_adaptive", "rl_s2v_saa64", "rl_s2v"):
+        p = (ROOT / "outputs" / "03-rl" / solver_dir(v) / f"n{P.N_DISRUPTED_ORACLE}"
+             / "results" / f"{v}_optima.csv")
+        if p.exists():
+            return ([int(x) for x in pd.read_csv(p)["order"].iloc[0].split("-")],
+                    f"delivered {v}")
     return sorted(int(e) for (e, _, _, _) in ctx["disrupted"]), "ascending edge id"
 
 

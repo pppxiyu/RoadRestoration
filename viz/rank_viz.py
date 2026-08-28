@@ -27,7 +27,9 @@ Four figures per run, all reading outputs/03-rl/{solver}/n{N}/log/:
   {v}_qmc         (after delivery) the delivered policy's predicted Q against the realized
                   Monte-Carlo return, which is where a ranking loss is expected to rank well while
                   staying mis-calibrated in level
-  {v}_value_estimate  (after delivery; rl_dqn only) the value estimate max_e Q(s0, e) across
+  {v}_value_estimate  (after delivery; written by no current solver -- the figure is drawn
+                      only if the file exists, and the rl_dqn that wrote it was removed
+                      2026-08-27) the value estimate max_e Q(s0, e) across
                   training against the recorded scenF probes in return units -- van Hasselt et al.
                   (2016) Figure 3 top row, realized side as sparse recorded points, nothing
                   re-evaluated
