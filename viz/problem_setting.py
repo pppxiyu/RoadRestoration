@@ -380,6 +380,8 @@ def render_problem_setting(n=None):
     ranking and estimates skew 2:1 toward severity 2, the confusion matrix's
     maximum-uncertainty row. Output lands in 03-problem_setting/n{n}/ beside the other
     sizes."""
+    from util.recovery_demand import prepare_problem_setting
+    prepare_problem_setting()
     use_pub(slide=True)
     # Everything EXCEPT the panel titles goes bigger still; the titles keep the slide scale.
     plt.rcParams.update({"font.size": 17, "axes.labelsize": 20,

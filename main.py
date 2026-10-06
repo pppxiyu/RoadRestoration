@@ -24,7 +24,9 @@ be inspected end to end.
 
 `python main.py --solve <names>`: run any solver(s) at the scale config.py declares
 (N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive] (both S2V families experimental), compare. `ga-rescore` re-measures GA's committed order under the
+milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive] (both S2V families experimental),
+env-behavior, compare. `env-behavior` runs the separate travel-time/OD fixed-point
+environment path and does not replace the production evaluator. `ga-rescore` re-measures GA's committed order under the
 current settings without repeating the search, for use after a change of ruler (a UE tolerance or
 engine change makes every F on disk stale while leaving the order it selected valid).
 This is THE entry point for experiments: what runs is chosen
@@ -57,6 +59,9 @@ def run_all():
     traffic-fixation MILP whose schedule is scored against that oracle (Step 2)."""
     from util.oracle import run_oracle
     from util.pretrain_milp import run_pretrain_milp
+    if any(name != "env-behavior" for name in names):
+        from util.recovery_demand import prepare_problem_setting
+        prepare_problem_setting()
     print("=" * 72)
     print(f"STEP 1/2  brute-force ORACLE (ground truth)   N={P.N_DISRUPTED_ORACLE}, M={P.M_SCENARIOS}")
     print("=" * 72, flush=True)
@@ -127,6 +132,8 @@ def solve(names, seed=None, seeds=None):
     own outputs and the comparison refresh. `seed` overrides the training seed for the RL solvers
     only (the standard is config.SEED; passing one is the exception, and the frozen evaluation
     sample is pinned to config.SEED regardless, so a seed override can never change the ruler)."""
+    from util.recovery_demand import prepare_problem_setting
+    prepare_problem_setting()
     for name in names:
         # `seeds` repeats a randomized solver across that many search seeds, keeps every run under
         # its n{N}/history/, and delivers the best -- see util.seed_sweep for why one run of a
@@ -181,12 +188,18 @@ def solve(names, seed=None, seeds=None):
             # lives in util/rl_s2v.py's module docstring.
             from util.rl_s2v import run_s2v
             run_s2v(seed=(P.SEED if seed is None else seed))
+        elif name == "env-behavior":
+            # Reproduce the five daily environment-behavior panels and all intermediate
+            # fixed-point calculations. This separate path does not alter RL training.
+            from util.environment_behavior_daily import run_environment_behavior_daily
+            run_environment_behavior_daily(n=P.N_DISRUPTED_ORACLE)
         elif name == "compare":
             from util.compare import run_baseline_figures
             run_baseline_figures()
         else:
             raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive], compare")
+                             f"milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive], "
+                             f"env-behavior, compare")
 
 
 if __name__ == "__main__":

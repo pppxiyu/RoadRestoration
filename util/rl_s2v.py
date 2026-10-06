@@ -1074,8 +1074,11 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
     """Train rl_s2v to a plateau and write its canonical results and diagnostics to
     outputs/03-rl/{solver_dir('rl_s2v')}/n{N}/, then refresh the comparison."""
     import torch
+    from util.recovery_demand import load_training_inputs
     N = P.N_DISRUPTED_ORACLE if N is None else N
+    demand_inputs = load_training_inputs()
     env = build_env(toy_dir, N=N, M=M)
+    env["demand_inputs"] = demand_inputs
     print(f"instance: {len(env['segs'])} segments {env['segs']}; M={M}; T={env['T']}; "
           f"seed={seed}; ep_cap={ep_cap}; variant=rl_s2v", flush=True)
     v = "rl_s2v"
@@ -1121,6 +1124,14 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                    hp=dict(r["hp"]), stop_params=_merge_stop_s2v(stop_params), ep_cap=ep_cap,
                    episodes=r["episodes"], outcome=r["outcome"],
                    order_nominal_summary=r["order"], mean_F=meanF,
+                   gravity_demand_model=dict(
+                       path=demand_inputs["gravity_model"]["path"],
+                       version=demand_inputs["gravity_model"]["model_version"],
+                       recovery_initial_level=demand_inputs["recovery_initial_level"],
+                       recovery_plateau_level=demand_inputs["recovery_plateau_level"],
+                       recovery_rate_per_day=demand_inputs["recovery_rate_per_day"],
+                       recovery_settling_days=demand_inputs["recovery_settling_days"],
+                       status="loaded problem-setting input; objective coupling not yet enabled"),
                    solver=("S2V-DQN (Dai et al. 2018 embedding) + large-margin ranking hinge "
                            "(lam=0 -> faithful reproduction); util.rl_s2v, EXPERIMENTAL"),
                    delivery="per-scenario adaptive policy (final), observed history only; "

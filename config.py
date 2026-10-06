@@ -37,6 +37,18 @@ F1_ACTIVE_ONLY = False  # When False, average the F1 accessibility term over the
 RHO = 0.7               # Recovery inertia of the demand shortfall: closer to 1 means slower rebound.
 KAPPA = 1.0             # Sensitivity from damage to demand shortfall; larger values deepen the demand drop.
 
+# --- Exogenous post-disaster mobility recovery used by the gravity-demand pipeline ---
+# The initial level and long-run plateau are medians across 13 city-event mobility curves in
+# the companion Research_DisasterMobi project. The 60-day settling time is the present problem-
+# setting assumption: at day 60 the curve reaches 99% of its below-normal plateau. This curve
+# prepares one shared daily OD-demand input; it does NOT lengthen the repair-scoring horizon T.
+RECOVERY_INITIAL_LEVEL = 0.15819209039548024
+RECOVERY_PLATEAU_LEVEL = 0.8857225377876191
+RECOVERY_SETTLING_DAYS = 60
+RECOVERY_SETTLING_FRACTION = 0.99
+RECOVERY_EMPIRICAL_EVENTS = 13
+RECOVERY_SOURCE = "Research_DisasterMobi city_mobility_curves.csv; median landfall and end levels"
+
 # --- Penalty travel time charged to disconnected OD pairs ---
 UPEN_FACTOR = 10.0      # u_pen = UPEN_FACTOR * (largest baseline OD travel time); a large stand-in cost
                         # assigned when no route exists, so disconnection is strongly discouraged.
