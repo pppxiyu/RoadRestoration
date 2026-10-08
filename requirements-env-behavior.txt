@@ -1,8 +1,0 @@
-# Versions used to reproduce the five daily environment-behavior figures.
-# Python 3.14.5; install with: python -m pip install -r requirements-env-behavior.txt
-numpy==2.4.6
-pandas==3.0.3
-scipy==1.17.1
-matplotlib==3.10.9
-networkx==3.6.1
-Pillow==12.2.0

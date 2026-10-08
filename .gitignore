@@ -1,43 +1,19 @@
-# ================= Research_RoadRestoration — outer repo (-> GitHub) =================
+# Publish only the runnable source, input data, and three visible root files.
+# Local experiments, notes, archives, and manuscript files stay on disk.
+/*
+!/src/
+!/data/
+!/main.py
+!/README.md
+!/requirements.txt
+!/.gitignore
 
-# The manuscript has its OWN git repo (-> Overleaf); it is versioned there, not here.
-/paper/
-
-# Stray local backup of results
-/outputs_deterministic/
-
-# Large / generated data — kept out of the GitHub repo (files stay on disk locally)
-/outputs/
-/data/
-/literature_analysis/*
-!/literature_analysis/notes/
-!/literature_analysis/outputs/
-!/literature_analysis/data/
-# ...but keep copyrighted full-text article PDFs local-only (never commit to the public repo)
-/literature_analysis/data/fulltext_pdfs/
-
-# --- Python ---
+# Generated files inside published directories.
 __pycache__/
 *.py[cod]
 *.egg-info/
 .ipynb_checkpoints/
 .pytest_cache/
-
-# --- OS / editor cruft ---
 .DS_Store
 Thumbs.db
 *~
-.vscode/
-.idea/
-
-/doc/
-
-
-# persistent simulation cache (regenerable; can be large)
-/cache/
-
-# Archived artifacts of things removed from the project (the n10/n16 scales, the rl_dqn
-# solver and the cross-scale transfer, retired 2026-08-27). Kept on disk so a deleted
-# result or trained checkpoint can still be recovered, out of git for the same reason
-# /outputs/ is: it is ~36 MB of generated artifacts, 20 of them model checkpoints.
-/legacy/

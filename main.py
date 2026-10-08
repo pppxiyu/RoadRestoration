@@ -1,220 +1,54 @@
+"""Run only the finalized daily problem in doc/notes/repository_logic_map.md.
+
+Historical problem entry points are retired; their source is preserved in legacy/.
+Natural-only demand remains an explicit training ablation, never a test environment.
 """
-Single entry point for the road-restoration toy study.
+import argparse
 
-The study asks in what order to repair the road segments damaged by a disaster. Each candidate
-repair order is scored by an objective F that balances two competing goals: restoring the
-network quickly, and limiting how much travel accessibility is lost while repairs are underway.
-The toy instance is small enough that the truly best order can be found by exhaustive search,
-which gives a ground-truth benchmark for a faster approximate solver.
-
-DEFAULT (`python main.py`): run the whole task at the problem size configured in config.py.
-  Step 1  Brute-force ORACLE: evaluate every feasible repair order to find the true optimum
-          for each scenario. This is the ground truth; the run is resumable.
-          -> outputs/02-baselines/01-brute-force/n{N}/
-  Step 2  Approximate "traffic-fixation" solver: a much cheaper mixed-integer linear program
-          (MILP) that estimates the same schedule, plus comparison and process figures. Its
-          quality is measured against the oracle. -> outputs/02-baselines/03-pretrain_milp/n{N}/
-The oracle is RESUMABLE: if a run is interrupted, rerun `python main.py` and it continues from
-the last completed scenario (finished ones are skipped). If a complete oracle result already
-exists for this problem size and parameter set, it is reused from cache rather than recomputed.
-
-`python main.py --walkthrough`: evaluate ONE (schedule, scenario) pair while printing every
-stage of the objective-evaluation pipeline under an explicit label, so the scoring logic can
-be inspected end to end.
-
-`python main.py --solve <names>`: run any solver(s) at the scale config.py declares
-(N_DISRUPTED_ORACLE), comma-separated from: rule-based (the three static rankers), ga, ga-rescore,
-milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive] (both S2V families experimental),
-env-behavior, compare. `env-behavior` runs the separate travel-time/OD fixed-point
-environment path and does not replace the production evaluator. `ga-rescore` re-measures GA's committed order under the
-current settings without repeating the search, for use after a change of ruler (a UE tolerance or
-engine change makes every F on disk stale while leaving the order it selected valid).
-This is THE entry point for experiments: what runs is chosen
-here, and every parameter (instance size, seeds, UE tolerances, solver settings) is chosen in
-config.py or the solver's PARAMS block -- not by ad-hoc launcher scripts. Each solver clears and
-rewrites its own outputs/ folder and refreshes the comparison when it finishes.
-
-Run inside the road_restore conda env:
-  python main.py                       # full run (oracle + MILP)
-  python main.py --solve ga,rl_s2v     # chosen solvers at the configured scale
-  python main.py --walkthrough         # step-by-step objective walkthrough for one example
-(Equivalent module entry points: `python -m util.oracle`, `python -m util.pretrain_milp`.)
-"""
-
-import sys
-from pathlib import Path
-
-import config as P
-from util.evaluate import (build_context, evaluate_schedule, f2_value, makespan_slot,
-                           schedule_from_permutation)
-from util.oracle import select_oracle_instance
-from util.scenarios import sample_scenarios
-
-ROOT = Path(__file__).resolve().parent
-TOY = ROOT / "data" / "siouxfalls_toy"
+from src import config as P
 
 
-def run_all():
-    """Run the full task: the brute-force oracle first (Step 1), then the approximate
-    traffic-fixation MILP whose schedule is scored against that oracle (Step 2)."""
-    from util.oracle import run_oracle
-    from util.pretrain_milp import run_pretrain_milp
-    if any(name != "env-behavior" for name in names):
-        from util.recovery_demand import prepare_problem_setting
-        prepare_problem_setting()
-    print("=" * 72)
-    print(f"STEP 1/2  brute-force ORACLE (ground truth)   N={P.N_DISRUPTED_ORACLE}, M={P.M_SCENARIOS}")
-    print("=" * 72, flush=True)
-    run_oracle()
-    print("\n" + "=" * 72)
-    print("STEP 2/2  traffic-fixation MILP  (+ comparison & process figures)")
-    print("=" * 72, flush=True)
-    run_pretrain_milp()
-    print("\nDONE. Raw data + figures under outputs/02-baselines/01-brute-force/n{N}/ "
-          "and outputs/02-baselines/03-pretrain_milp/n{N}/.")
+METHODS = ("rl_s2v_saa64_adaptive", "rl_s2v_saa64_adaptive_roadclass", "ga", "compare", "rl_ablations")
 
 
-def walkthrough():
-    # Build one concrete instance to trace end to end: the disrupted-segment set the oracle
-    # scores, a single sampled duration scenario (realized repair times), and one repair order.
-    disrupted = select_oracle_instance(TOY, n=P.N_DISRUPTED_ORACLE)
-    ctx = build_context(TOY, disrupted)
-    durations = sample_scenarios(disrupted, M=1, seed=P.SEED)[0]
-    segments = sorted(int(e) for e in disrupted["edge_id"])
-    perm = segments                                   # example repair priority: segments in ascending edge-id order (arbitrary but reproducible)
-    # A "work-conserving" schedule assigns the crews greedily so no crew sits idle while a
-    # segment still waits; the makespan is the slot at which the last repair finishes (horizon T).
-    start = schedule_from_permutation(perm, durations, P.C_MAX, access=ctx["access"])
-    T = makespan_slot(start, durations)
+def daily_cli(argv=None):
+    parser = argparse.ArgumentParser(description="Daily road restoration with uncertain, gradually discovered damage")
+    parser.add_argument("--setting", choices=("daily",), default="daily",
+                        help="only the finalized daily problem is supported")
+    parser.add_argument("--n", type=int, choices=(6, 11, 17, 23), default=P.N_DISRUPTED_ORACLE)
+    parser.add_argument("--solve", default="rl_s2v_saa64_adaptive",
+                        help="comma-separated methods: " + ", ".join(METHODS))
+    parser.add_argument("--training-behavior", choices=("natural", "response7d", "both"), default="response7d")
+    parser.add_argument("--seed", type=int, default=P.SEED)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--road-class-input", action=argparse.BooleanOptionalAction, default=True,
+                        help="include public highway/major/local inputs in either training behavior")
+    args = parser.parse_args(argv)
+    methods = [name.strip() for name in args.solve.split(",")]
+    # Validate the entire request before starting any method or writing outputs.
+    if any(name not in METHODS for name in methods):
+        parser.error("unsupported method; only finalized-problem methods are available: " + ", ".join(METHODS))
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    if "rl_s2v_saa64_adaptive_roadclass" in methods and not args.road_class_input:
+        parser.error("the roadclass solver requires --road-class-input")
+    if "rl_ablations" in methods and (len(methods) != 1 or not args.road_class_input):
+        parser.error("rl_ablations is a complete three-model experiment with road class; run it alone")
 
-    print(f"Disrupted segments E = {segments};  C_max={P.C_MAX} crews;  dt={P.DELTA_T_H} h;  mu={P.MU}")
-    print("Example schedule (work-conserving from the edge-id order):")
-    for e in segments:
-        print(f"  edge {e}: start slot k={start[e]}, duration={durations[e]} "
-              f"-> completes at k={start[e] + durations[e]}")
-    print(f"Horizon for this example T={T} slots\n")
-
-    # ===================== Step 1 - damage trajectory: which segments are still under repair (damaged) in each time slot =====================
-    print("# Step 1 - damage trajectory: still-damaged segments per slot")
-    for k in range(1, T + 1):
-        damaged = [e for e in segments if k < start[e] + durations[e]]
-        print(f"    k={k:2d}: damaged = {damaged}")
-    print()
-
-    # ===================== Step 2 - F2, the restoration-efficiency objective: makespan divided by total repair work; pure schedule arithmetic, no traffic assignment =====================
-    print("# Step 2 - F2 = (makespan - t0) / sum_e d_e*dt   (pure schedule math, no UE)")
-    print(f"    makespan slot = {makespan_slot(start, durations)}, total work = "
-          f"{sum(durations.values())} slots  ->  F2 = {f2_value(start, durations):.4f}\n")
-
-    # ===================== Step 3 - F1, the accessibility-degradation objective =====================
-    # A per-slot loop over k=1..T; each slot solves one user equilibrium (UE) -- the traffic state in
-    # which no driver can lower their own travel time by switching route -- on the network as it stands.
-    print("# Step 3 - per-step loop k=1..T:")
-    print("#     3a  demand shortfall  D_t = max(B*v_t, rho*D_{t-1}) ;  H_t = max(0, H0 - D_t)   (sharp drop -> recover)")
-    print("#     3b  damaged network   (capacity x retain, free-flow-time / retain, per severity)")
-    print("#     3c  UE on (damaged net, H_t)  ->  congested link times  ->  OD travel times u_r")
-    print("#     3d  per-step F1 term  =  sum_r h_r(t_k)*u_tilde_r  /  sum_r h_r(t_k)*u_r(t0)   (>=1; ->1 when restored)")
-    res = evaluate_schedule(start, durations, T, ctx, collect_traces=True)
-    tr = res["traces"].copy()
-    tr["total_demand"] = tr["total_demand"].round(0).astype(int)
-    tr["f1_term"] = tr["f1_term"].round(4)
-    print(tr.to_string(index=False))
-    print(f"\n    F1 = mean(per-step terms) = {res['F1']:.4f}\n")
-
-    # ===================== Step 4 - combine into the overall objective F = mu*F1 + (1-mu)*F2 =====================
-    print("# Step 4 - F = mu*F1 + (1-mu)*F2")
-    print(f"    F = {P.MU}*{res['F1']:.4f} + {1 - P.MU}*{res['F2']:.4f}  =  {res['F']:.4f}")
-
-
-def solve(names, seed=None, seeds=None):
-    """Run the named solvers at the scale config.py declares. The mapping below is the single
-    place a solver name is wired to its runner; every runner reads N from config and handles its
-    own outputs and the comparison refresh. `seed` overrides the training seed for the RL solvers
-    only (the standard is config.SEED; passing one is the exception, and the frozen evaluation
-    sample is pinned to config.SEED regardless, so a seed override can never change the ruler)."""
-    from util.recovery_demand import prepare_problem_setting
-    prepare_problem_setting()
-    for name in names:
-        # `seeds` repeats a randomized solver across that many search seeds, keeps every run under
-        # its n{N}/history/, and delivers the best -- see util.seed_sweep for why one run of a
-        # randomized method is not a measurement of it.
-        if seeds:
-            from util.seed_sweep import DEFAULT_SEEDS, run_seed_sweep
-            run_seed_sweep(name, seeds=DEFAULT_SEEDS[:seeds])
-            continue
-        print("=" * 72)
-        print(f"SOLVE {name}   N={P.N_DISRUPTED_ORACLE}, M={P.M_SCENARIOS}"
-              + (f", seed={seed}" if seed is not None else ""))
-        print("=" * 72, flush=True)
-        if name == "rule-based":
-            from util.greedy import run_greedy
-            run_greedy()
-        elif name == "ga":
-            from util.metaheuristic import run_metaheuristic
-            run_metaheuristic(variants=("ga",))
-        elif name == "ga-rescore":
-            # Re-measure GA's already-committed order under the current objective/UE settings
-            # WITHOUT re-running the search. For a change of ruler, where the order is the
-            # deliverable and only its measurement went stale.
-            from util.metaheuristic import run_metaheuristic
-            run_metaheuristic(variants=("ga",), rescore=True)
-        elif name == "milp":
-            from util.pretrain_milp import run_pretrain_milp
-            run_pretrain_milp()
-        elif name == "oracle":
-            from util.oracle import run_oracle
-            run_oracle()
-        elif name.startswith("rl_s2v_saa"):
-            # EXPERIMENTAL pool-SAA S2V: one variant per pool size, plus the _adaptive twins
-            # that turn on rl_s2v's deviation-24 observation channels
-            # (rl_s2v_saa64/128[_adaptive], or the bare name for the default pool). Removal
-            # recipe in util/rl_s2v_saa.py's docstring.
-            from util.rl_s2v_saa import POOL_SIZES, run_s2v_saa
-            tail = name[len("rl_s2v_saa"):]
-            adaptive = tail.endswith("_adaptive")
-            if adaptive:
-                tail = tail[:-len("_adaptive")]
-            if tail and int(tail) not in POOL_SIZES:
-                raise SystemExit(f"pool size {tail} is not registered; POOL_SIZES = {POOL_SIZES} "
-                                 f"(add it there and to SOLVER_DIR / SEARCHED first)")
-            hp_run = {}
-            if tail:
-                hp_run["pool_n"] = int(tail)
-            if adaptive:
-                hp_run["adaptive"] = True
-            run_s2v_saa(seed=(P.SEED if seed is None else seed), hp=(hp_run or None))
-        elif name == "rl_s2v":
-            # EXPERIMENTAL faithful S2V-DQN, parallel to the rank-loss RL; the removal recipe
-            # lives in util/rl_s2v.py's module docstring.
-            from util.rl_s2v import run_s2v
-            run_s2v(seed=(P.SEED if seed is None else seed))
-        elif name == "env-behavior":
-            # Reproduce the five daily environment-behavior panels and all intermediate
-            # fixed-point calculations. This separate path does not alter RL training.
-            from util.environment_behavior_daily import run_environment_behavior_daily
-            run_environment_behavior_daily(n=P.N_DISRUPTED_ORACLE)
-        elif name == "compare":
-            from util.compare import run_baseline_figures
-            run_baseline_figures()
+    from src.experiment.daily import run, compare
+    for method in methods:
+        if method in METHODS[:2]:
+            run(args.n, args.training_behavior, args.seed, args.workers,
+                road_class_input=args.road_class_input)
+        elif method == "ga":
+            from src.experiment.daily_ga import run as run_daily_ga
+            print(run_daily_ga(args.n, args.seed, args.workers))
+        elif method == "rl_ablations":
+            from src.experiment.daily import run_rl_ablations
+            print(run_rl_ablations(args.n, args.seed, args.workers))
         else:
-            raise SystemExit(f"unknown solver {name!r}; choose from rule-based, ga, ga-rescore, "
-                             f"milp, oracle, rl_s2v, rl_s2v_saa64/128[_adaptive], "
-                             f"env-behavior, compare")
+            print(compare(args.n))
 
 
 if __name__ == "__main__":
-    # `--n <k>`: run at instance size k by overriding config.N_DISRUPTED_ORACLE AT RUNTIME --
-    # the override path util/metaheuristic.py documents as the supported large-n route (the
-    # config VALUE is never edited; every runner and refresh_comparison reads the attribute at
-    # call time, and provenance still reads n off the instance, so folders cannot mislabel).
-    if "--n" in sys.argv:
-        P.N_DISRUPTED_ORACLE = int(sys.argv[sys.argv.index("--n") + 1])
-    if "--walkthrough" in sys.argv:
-        walkthrough()
-    elif "--solve" in sys.argv:
-        arg = sys.argv[sys.argv.index("--solve") + 1]
-        sd = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else None
-        ns = int(sys.argv[sys.argv.index("--seeds") + 1]) if "--seeds" in sys.argv else None
-        solve([x.strip() for x in arg.split(",") if x.strip()], seed=sd, seeds=ns)
-    else:
-        run_all()
+    daily_cli()

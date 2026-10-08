@@ -1,0 +1,6 @@
+edge_id,u,v,road_class,severity,level_id
+1,1,2,highway,2,highway-S2
+12,7,18,highway,2,highway-S2
+15,9,10,highway,3,highway-S3
+17,10,15,highway,3,highway-S3
+24,14,15,major,1,major-S1

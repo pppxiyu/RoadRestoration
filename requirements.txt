@@ -1,0 +1,16 @@
+# Direct dependencies of the main research code (Python 3.14.5).
+# Install from the repository root: python -m pip install -r requirements.txt
+# Versions below match the current working environment; transitive dependencies
+# are resolved by pip rather than copied from the machine-wide package list.
+numpy==2.4.6
+pandas==3.0.3
+scipy==1.17.1
+matplotlib==3.10.9
+networkx==3.6.1
+Pillow==12.2.0
+torch==2.12.0
+scikit-learn==1.9.0
+
+# Optional standalone traffic-solver audit (src.experiment.ue_audit):
+# AequilibraE is not installed in the current environment and is not used by
+# the main experiment pipeline. Install it separately if running that audit.
