@@ -1,0 +1,140 @@
+{
+  "boundary": {
+    "buffer_km": 1.25,
+    "median_nearest_node_km": 1.3515048580442426,
+    "area_km2": 117.50320566948587,
+    "municipal_clip": "Sioux Falls city limits"
+  },
+  "source": "Frozen OpenStreetMap Overpass response in data/siouxfalls_toy/poi; city-limit GeoJSON from Sioux Falls GIS",
+  "category_assignment": "One category per OSM element, in health/public/industrial/shop/leisure/remaining-commercial precedence",
+  "categories": {
+    "commercial": {
+      "mapped_features": 665,
+      "areas_with_features": 24,
+      "maximum_in_one_area": 165,
+      "by_osm_element_type": {
+        "node": 565,
+        "way": 100
+      },
+      "main_tags": {
+        "shop=convenience": 67,
+        "shop=clothes": 65,
+        "amenity=bank": 41,
+        "shop=car": 39,
+        "office=company": 21,
+        "amenity=car_wash": 20,
+        "shop=supermarket": 17,
+        "shop=hairdresser": 17,
+        "office=ngo": 15,
+        "office=lawyer": 14,
+        "shop=car_repair": 12,
+        "shop=jewelry": 12
+      },
+      "figure": "sioux_falls_commercial_synthetic_od_areas.png",
+      "slide_map": "sioux_falls_commercial_slide_map.png"
+    },
+    "leisure": {
+      "mapped_features": 378,
+      "areas_with_features": 21,
+      "maximum_in_one_area": 82,
+      "by_osm_element_type": {
+        "node": 222,
+        "way": 153,
+        "relation": 3
+      },
+      "main_tags": {
+        "amenity=restaurant": 108,
+        "amenity=fast_food": 105,
+        "tourism=hotel": 46,
+        "amenity=cafe": 22,
+        "amenity=bar": 15,
+        "tourism=motel": 13,
+        "leisure=sports_centre": 12,
+        "leisure=fitness_centre": 10,
+        "tourism=museum": 7,
+        "amenity=theatre": 6,
+        "tourism=gallery": 6,
+        "leisure=stadium": 4
+      },
+      "figure": "sioux_falls_leisure_synthetic_od_areas.png",
+      "slide_map": "sioux_falls_leisure_slide_map.png"
+    },
+    "industrial": {
+      "mapped_features": 100,
+      "areas_with_features": 16,
+      "maximum_in_one_area": 25,
+      "by_osm_element_type": {
+        "way": 96,
+        "node": 2,
+        "relation": 2
+      },
+      "main_tags": {
+        "building=industrial": 44,
+        "building=warehouse": 29,
+        "industrial=trucking": 8,
+        "industrial=mine": 4,
+        "man_made=works": 3,
+        "shop=car_parts": 1,
+        "industrial=scrap_yard": 1,
+        "industrial=oil": 1,
+        "industrial=concrete_plant": 1,
+        "industrial=poultry_processing": 1,
+        "industrial=petroleum_terminal": 1,
+        "industrial=printing": 1
+      },
+      "figure": "sioux_falls_industrial_synthetic_od_areas.png",
+      "slide_map": "sioux_falls_industrial_slide_map.png"
+    },
+    "health": {
+      "mapped_features": 67,
+      "areas_with_features": 16,
+      "maximum_in_one_area": 11,
+      "by_osm_element_type": {
+        "node": 50,
+        "way": 14,
+        "relation": 3
+      },
+      "main_tags": {
+        "amenity=pharmacy": 14,
+        "amenity=hospital": 10,
+        "amenity=doctors": 9,
+        "amenity=social_facility": 8,
+        "amenity=clinic": 6,
+        "amenity=dentist": 5,
+        "healthcare=alternative": 4,
+        "healthcare=physiotherapist": 3,
+        "healthcare=psychotherapist": 2,
+        "healthcare=yes": 2,
+        "healthcare=blood_donation": 1,
+        "healthcare=counselling": 1
+      },
+      "figure": "sioux_falls_health_synthetic_od_areas.png",
+      "slide_map": "sioux_falls_health_slide_map.png"
+    },
+    "public": {
+      "mapped_features": 71,
+      "areas_with_features": 21,
+      "maximum_in_one_area": 12,
+      "by_osm_element_type": {
+        "way": 33,
+        "node": 28,
+        "relation": 10
+      },
+      "main_tags": {
+        "amenity=school": 32,
+        "office=government": 12,
+        "amenity=post_office": 7,
+        "amenity=library": 5,
+        "amenity=university": 5,
+        "amenity=fire_station": 4,
+        "amenity=college": 2,
+        "amenity=police": 1,
+        "amenity=kindergarten": 1,
+        "amenity=townhall": 1,
+        "amenity=courthouse": 1
+      },
+      "figure": "sioux_falls_public_synthetic_od_areas.png",
+      "slide_map": "sioux_falls_public_slide_map.png"
+    }
+  }
+}

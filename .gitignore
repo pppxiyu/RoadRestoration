@@ -1,5 +1,6 @@
-# Publish only the runnable source, input data, and three visible root files.
-# Local experiments, notes, archives, and manuscript files stay on disk.
+# Publish runnable source, input data, the explicitly selected POI study,
+# the current meeting deck, and three visible root files.
+# Other local experiments, notes, archives, and manuscript files stay on disk.
 /*
 !/src/
 !/data/
@@ -7,6 +8,19 @@
 !/README.md
 !/requirements.txt
 !/.gitignore
+!/outputs/
+/outputs/*
+!/outputs/studies/
+/outputs/studies/*
+!/outputs/studies/human_behavior/
+/outputs/studies/human_behavior/*
+!/outputs/studies/human_behavior/poi_function_maps/
+!/outputs/studies/human_behavior/poi_function_maps/**
+!/doc/
+/doc/*
+!/doc/slides/
+/doc/slides/*
+!/doc/slides/weekly_meeting_20261014.pptx
 
 # Generated files inside published directories.
 __pycache__/
