@@ -1,6 +1,6 @@
 """Run only the finalized daily problem in doc/notes/repository_logic_map.md.
 
-Historical problem entry points are retired; their source is preserved in legacy/.
+Historical problem entry points are retired; their source is preserved in .legacy/.
 Natural-only demand remains an explicit training ablation, never a test environment.
 """
 import argparse
@@ -8,7 +8,7 @@ import argparse
 from src import config as P
 
 
-METHODS = ("rl_s2v_saa64_adaptive", "rl_s2v_saa64_adaptive_roadclass", "ga", "compare", "rl_ablations")
+METHODS = ("rl_s2v_saa64_adaptive", "rl_s2v_saa64_adaptive_roadclass", "ga", "ga_nominal_public", "ga_saa10_flow_insert", "compare", "rl_ablations")
 
 
 def daily_cli(argv=None):
@@ -21,6 +21,8 @@ def daily_cli(argv=None):
     parser.add_argument("--training-behavior", choices=("natural", "response7d", "both"), default="response7d")
     parser.add_argument("--seed", type=int, default=P.SEED)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--problem-variant", choices=("current", "public75_duration25", "poi_unmet", "poi_hidden6"),
+                        default="current", help="isolated n11 duration, POI behavior, or five-public/six-hidden comparison")
     parser.add_argument("--road-class-input", action=argparse.BooleanOptionalAction, default=True,
                         help="include public highway/major/local inputs in either training behavior")
     args = parser.parse_args(argv)
@@ -30,6 +32,9 @@ def daily_cli(argv=None):
         parser.error("unsupported method; only finalized-problem methods are available: " + ", ".join(METHODS))
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.problem_variant != "current" and (args.n != 11 or any(
+            name not in (*METHODS[:2], "ga_saa10_flow_insert", "compare") for name in methods)):
+        parser.error("isolated variants support n11 full RL, ten-scenario GA, and comparison")
     if "rl_s2v_saa64_adaptive_roadclass" in methods and not args.road_class_input:
         parser.error("the roadclass solver requires --road-class-input")
     if "rl_ablations" in methods and (len(methods) != 1 or not args.road_class_input):
@@ -39,15 +44,22 @@ def daily_cli(argv=None):
     for method in methods:
         if method in METHODS[:2]:
             run(args.n, args.training_behavior, args.seed, args.workers,
-                road_class_input=args.road_class_input)
+                road_class_input=args.road_class_input, problem_variant=args.problem_variant)
         elif method == "ga":
             from src.experiment.daily_ga import run as run_daily_ga
             print(run_daily_ga(args.n, args.seed, args.workers))
+        elif method == "ga_nominal_public":
+            from src.experiment.daily_ga_nominal import run as run_daily_ga_nominal
+            print(run_daily_ga_nominal(args.n, args.seed, args.workers))
+        elif method == "ga_saa10_flow_insert":
+            from src.experiment.daily_ga_saa10 import run as run_daily_ga_saa10
+            print(run_daily_ga_saa10(args.n, args.seed, args.workers,
+                                    problem_variant=args.problem_variant))
         elif method == "rl_ablations":
             from src.experiment.daily import run_rl_ablations
             print(run_rl_ablations(args.n, args.seed, args.workers))
         else:
-            print(compare(args.n))
+            print(compare(args.n, problem_variant=args.problem_variant))
 
 
 if __name__ == "__main__":

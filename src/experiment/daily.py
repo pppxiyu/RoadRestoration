@@ -24,19 +24,21 @@ from src.environment.daily import DailyEpisode, DailyTraffic
 from src.environment.behavior_models import select_behavior_model
 from src.environment.gravity import DEFAULT_MODEL
 from src.experiment.layout import ROOT, daily_experiment_identity, publish_experiment_gallery
-from src.methods.daily_s2v import DailyEncoder, DailyQ, rollout, train
+from src.methods.daily_s2v import DailyEncoder, DailyQ, rollout, train, RETIRED_OD_INPUT_MESSAGE, POLICY_DELIVERY
 from src.problem.daily import build_problem, make_splits, public_spec
 
 
 _WORKER = None
 
 
-def _initialize_worker(problem, cache_dir, hp, road_class_input=False, traffic_input=True):
+def _initialize_worker(problem, cache_dir, hp, road_class_input=False, traffic_input=True,
+                       od_history_input=False):
     import torch
     torch.set_num_threads(1)
     global _WORKER
     simulator = DailyTraffic(problem, cache_dir)
-    encoder = DailyEncoder(problem, simulator.ctx, road_class_input=road_class_input, traffic_input=traffic_input)
+    encoder = DailyEncoder(problem, simulator.ctx, road_class_input=road_class_input,
+                           traffic_input=traffic_input, od_history_input=od_history_input)
     _WORKER = (simulator, encoder, DailyQ(encoder, hp))
 
 
@@ -81,11 +83,19 @@ def _write_json(path, content):
             time.sleep(1)
 
 
-def prepare(n=11, scenario_seed=P.SEED, *, road_class_input=True, traffic_input=True):
-    problem = build_problem(n, scenario_seed)
+def prepare(n=11, scenario_seed=P.SEED, *, road_class_input=True, traffic_input=True,
+            problem_variant="current", od_history_input=False):
+    if od_history_input:
+        raise ValueError(RETIRED_OD_INPUT_MESSAGE)
+    if problem_variant == "poi_mixed_n":
+        from src.problem.mixed_daily import build_mixed_problem
+        problem = build_mixed_problem(scenario_seed)
+    else:
+        problem = build_problem(n, scenario_seed, variant=problem_variant)
     splits = make_splits(problem)
     simulator = DailyTraffic(problem)
-    encoder = DailyEncoder(problem, simulator.ctx, road_class_input=road_class_input, traffic_input=traffic_input)
+    encoder = DailyEncoder(problem, simulator.ctx, road_class_input=road_class_input,
+                           traffic_input=traffic_input, od_history_input=od_history_input)
     folder, identity = daily_experiment_identity(problem, simulator, splits)
     return problem, splits, simulator, encoder, folder, identity
 
@@ -123,12 +133,20 @@ def save_problem(folder, problem, splits, identity, encoder):
                        initially_public=e in problem["public_roads"])
                   for i, e in enumerate(problem["ranked"])]).to_csv(basis / "road_selection.csv", index=False)
     _write_json(basis / "public_problem.json", public_spec(problem))
+    if "components" in problem:
+        # A mixed experiment has no single initial public subset. Keep each
+        # scale explicit rather than incorrectly labeling the union as public.
+        selection = pd.read_csv(basis / "road_selection.csv")
+        selection["initially_public"] = None
+        for scale, component in problem['components'].items():
+            selection[f"initially_public_n{scale}"] = selection.edge_id.isin(component['public_roads'])
+        selection.to_csv(basis / "road_selection.csv", index=False)
     _write_json(basis / "gravity_model.json", json.loads(DEFAULT_MODEL.read_text(encoding="utf-8")))
     _write_json(data / "manifest.json", dict(identity=identity, feature_schema=encoder.specification(),
                 training_samples=len(splits["train"]), validation_samples=len(splits["validation"]),
                 testing_samples=len(splits["test"]),
                 validation_environment="same as each model's training environment",
-                common_testing_environment="response7d", delivery="final policy",
+                common_testing_environment="response7d", delivery=POLICY_DELIVERY,
                 fixed_total_horizon=None, voluntary_waiting=False, crew_accessibility_constraint=False))
 
 
@@ -161,12 +179,15 @@ def _save_evaluation(run_dir, trajectories, seconds):
                    median_objective=float(np.median([r["F"] for r in rows])),
                    unique_solutions=len({r["order"] for r in rows}), evaluation_wall_seconds=seconds,
                    simulator_worker_seconds=sum(r["seconds"] for r in rows))
+    selection_path = results / "policy_selection.json"
+    if selection_path.exists():
+        summary["policy_selection"] = json.loads(selection_path.read_text(encoding="utf-8"))
     _write_json(results / "evaluation_summary.json", summary)
     return summary
 
 
 def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed=P.SEED,
-        road_class_input=True, traffic_input=True):
+        road_class_input=True, traffic_input=True, problem_variant="current", od_history_input=False):
     """Run either/both training environments with public road class by default.
 
     Explicit road_class_input=False retains the historical 14-column policy.
@@ -177,9 +198,12 @@ def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed
     from src.analysis.daily import refresh_comparison
     if training_behavior not in ("both", "natural", "response7d"):
         raise ValueError("choose natural, response7d, or both")
+    if od_history_input:
+        raise ValueError(RETIRED_OD_INPUT_MESSAGE)
     workers = max(1, min(int(workers), os.cpu_count() or 1))
     problem, splits, simulator, encoder, folder, identity = prepare(
-        n, scenario_seed, road_class_input=road_class_input, traffic_input=traffic_input)
+        n, scenario_seed, road_class_input=road_class_input, traffic_input=traffic_input,
+        problem_variant=problem_variant, od_history_input=od_history_input)
     save_problem(folder, problem, splits, identity, encoder)
     source_digest, source_hashes = _source_digest()
     cache = ROOT / ".cache" / "daily_traffic"
@@ -198,7 +222,7 @@ def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed
                 hp, stop_params, ep_cap = contract["hyperparameters"], contract["stop"], contract["ep_cap"]
         # Each worker pool receives this behavior's matching training parameters.
         with ProcessPoolExecutor(max_workers=workers, initializer=_initialize_worker,
-                                 initargs=(problem, cache, hp, road_class_input, traffic_input)) as executor:
+                                 initargs=(problem, cache, hp, road_class_input, traffic_input, od_history_input)) as executor:
             select_behavior_model(behavior + "_daily", 24, for_methods=True)
             method = f"rl_s2v_saa64_adaptive_train_{behavior}"
             if road_class_input:
@@ -286,9 +310,9 @@ def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed
     return folder
 
 
-def compare(n=11):
+def compare(n=11, *, problem_variant="current"):
     from src.analysis.daily import refresh_comparison
-    *_, folder, identity = prepare(n)
+    *_, folder, identity = prepare(n, problem_variant=problem_variant)
     refresh_comparison(folder)
     publish_experiment_gallery(directory=folder)
     return folder
@@ -304,7 +328,8 @@ def ablation_plan(seed=42):
         version=1, training_seed=seed, test_scenarios=50,
         evaluation_environment="response7d", validation_environment="same as training",
         road_class_input=True, traffic_ablation="zero four node and two global observed-traffic channels in every split",
-        unchanged="network dimensions, optimizer, learning hyperparameters, stopping and final-policy delivery",
+        unchanged="network dimensions, optimizer, learning hyperparameters and stopping",
+        delivery=POLICY_DELIVERY,
         methods=[dict(name=natural, training_behavior="natural", traffic_input=True),
                  dict(name=full, training_behavior="response7d", traffic_input=True),
                  dict(name=no_traffic, training_behavior="response7d", traffic_input=False)],

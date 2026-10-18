@@ -27,6 +27,8 @@ class PriorityPolicy:
 
 
 def possible_roads(problem):
+    if "components" in problem:
+        return tuple(sorted({e for p in problem['components'].values() for e in possible_roads(p)}))
     roads = set(problem["public_roads"])
     for flow_bin, count in zip(problem["bins"], problem["hidden_quotas"]):
         if count:

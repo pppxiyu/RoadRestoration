@@ -16,12 +16,13 @@ import pandas as pd
 
 
 COLORS = {"natural": "#527DA8", "response7d": "#8265A3", "ga": "#BA8855", "roadclass": "#418C8B",
-          "natural_roadclass": "#7198BD", "no_traffic": "#BA8855"}
+          "natural_roadclass": "#7198BD", "no_traffic": "#BA8855", "od_history_poi": "#635096"}
 LABELS = {"natural": "Trained with\nnatural recovery only", "response7d": "Trained with\nhuman response",
           "ga": "Genetic algorithm\nFixed priority",
           "roadclass": "Human response\nWith road class",
           "natural_roadclass": "Natural recovery only\nWith road class",
-          "no_traffic": "Human response\nWithout real-time traffic inputs"}
+          "no_traffic": "Human response\nWithout real-time traffic inputs",
+          "od_history_poi": "Full RL with OD history\nand destination facility counts"}
 STYLE = {"font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"],
          "font.size": 18, "axes.labelsize": 19, "axes.titlesize": 20,
          "xtick.labelsize": 16, "ytick.labelsize": 16, "legend.fontsize": 15,
@@ -86,6 +87,8 @@ def make_comparison(data, output, filename="performance_distribution.png"):
                 behavior = "natural_roadclass" if behavior == "natural" else "roadclass"
             if "input_variant" in method_rows and method_rows.input_variant.iloc[0] in ("no_traffic", "roadclass_no_traffic"):
                 behavior = "no_traffic"
+            if "input_variant" in method_rows and method_rows.input_variant.iloc[0] == "roadclass_od_history_poi_counts":
+                behavior = "od_history_poi"
             patch.set_facecolor(COLORS[behavior])
             patch.set_alpha(0.55)
             ax.scatter(i + rng.uniform(-0.09, 0.09, len(values)), values, s=20,

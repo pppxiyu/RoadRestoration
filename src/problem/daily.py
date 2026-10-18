@@ -6,7 +6,7 @@ The legacy fixed-road scenario sampler remains in scenarios.py.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -21,8 +21,13 @@ from src.environment.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parents[2]
 TOY = ROOT / "data" / "siouxfalls_toy"
-QUOTAS = {6: (1, 4, 0, 1), 11: (2, 6, 0, 3),
-          17: (2, 11, 1, 3), 23: (4, 13, 1, 5)}
+QUOTAS = {6: (1, 3, 0, 2), 11: (1, 6, 1, 3),
+          17: (2, 8, 1, 6), 23: (3, 11, 2, 7)}
+PROBLEM_VARIANTS = ("current", "public75_duration25", "poi_unmet", "poi_hidden6")
+# A common standard-deviation/mean ratio of 0.11 gives at least 95% coverage
+# of target mean +/-25% in every cell AFTER truncation and integer rounding.
+# The seven-day cell is binding; the other cells have higher coverage.
+NARROW_DURATION_CV = 0.11
 ESTIMATE_PROBABILITIES = (0.25, 0.5, 0.25)
 CONFUSION = {1: (0.6, 1 / 3, 1 / 15), 2: (0.2, 0.6, 0.2),
              3: (1 / 15, 1 / 3, 0.6)}
@@ -30,7 +35,7 @@ CONFUSION = {1: (0.6, 1 / 3, 1 / 15), 2: (0.2, 0.6, 0.2),
 
 @dataclass(frozen=True)
 class DailyRules:
-    version: str = "daily_discovery_v3"
+    version: str = "daily_discovery_v4"
     estimated_duration_rule: str = "rounded_expectation_of_truncated_integer_cell"
     slot_hours: float = 24.0
     crews: int = 1
@@ -93,10 +98,11 @@ class Scenario:
                                         sort_keys=True).encode()).hexdigest()
 
 
-def _duration_parameters(road_class: str, severity: int):
+def _duration_parameters(road_class: str, severity: int, *, sd_by_cell=None):
     """Parameters shared by the true-duration draw and its cell expectation."""
     cell = (road_class, int(severity))
-    mean, sd = float(P.DUR_MEAN[cell]), float(P.DUR_SD[cell])
+    mean = float(P.DUR_MEAN[cell])
+    sd = float((P.DUR_SD if sd_by_cell is None else sd_by_cell)[cell])
     variance = np.log1p((sd / mean) ** 2)
     sigma = np.sqrt(variance)
     mu = np.log(mean) - variance / 2
@@ -105,21 +111,21 @@ def _duration_parameters(road_class: str, severity: int):
     return mu, sigma, upper, cdf_upper
 
 
-def duration_draw(road_class: str, severity: int, probability: float) -> int:
+def duration_draw(road_class: str, severity: int, probability: float, *, sd_by_cell=None) -> int:
     """Inverse CDF of the truncated lognormal, then nearest integer, minimum 1."""
-    mu, sigma, _, cdf_upper = _duration_parameters(road_class, severity)
+    mu, sigma, _, cdf_upper = _duration_parameters(road_class, severity, sd_by_cell=sd_by_cell)
     p = np.clip(float(probability) * cdf_upper, 1e-12, 1 - 1e-12)
     return max(1, int(np.floor(np.exp(mu + sigma * norm.ppf(p)) + 0.5)))
 
 
-def duration_expectation(road_class: str, severity: int) -> float:
+def duration_expectation(road_class: str, severity: int, *, sd_by_cell=None) -> float:
     """Exact mean AFTER truncation, half-up integer rounding and the one-day floor.
 
     Enumerate integer-day probabilities from lognormal CDF differences. This is
     the specified severity cell, not a mixture over the severity-confusion law.
     No simulation, random seed or realized repair duration enters the estimate.
     """
-    mu, sigma, upper, cdf_upper = _duration_parameters(road_class, severity)
+    mu, sigma, upper, cdf_upper = _duration_parameters(road_class, severity, sd_by_cell=sd_by_cell)
     days = np.arange(1, max(1, int(np.floor(upper + 0.5))) + 1)
     cutoffs = np.minimum(days + 0.5, upper)
     cumulative = norm.cdf((np.log(cutoffs) - mu) / sigma) / cdf_upper
@@ -127,16 +133,27 @@ def duration_expectation(road_class: str, severity: int) -> float:
     return float(days @ probabilities)
 
 
-def estimated_duration(road_class: str, estimated_severity: int) -> int:
+def estimated_duration(road_class: str, estimated_severity: int, *, sd_by_cell=None) -> int:
     """Public point estimate: round the actual cell mean half up, minimum one day."""
-    return max(1, int(np.floor(duration_expectation(road_class, estimated_severity) + 0.5)))
+    return max(1, int(np.floor(duration_expectation(
+        road_class, estimated_severity, sd_by_cell=sd_by_cell) + 0.5)))
 
 
-def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY):
+def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY, *, variant="current"):
     """The public road subset is sampled once per scale, before any split."""
     if int(n) not in QUOTAS:
         raise ValueError(f"daily scales must be one of {tuple(QUOTAS)}")
+    if variant not in PROBLEM_VARIANTS:
+        raise ValueError(f"unknown daily problem variant: {variant}")
+    if variant == "public75_duration25" and int(n) != 11:
+        raise ValueError("the public75_duration25 comparison is defined for n11")
+    if variant == "poi_hidden6" and int(n) != 11:
+        raise ValueError("the five-public/six-hidden comparison is defined for n11")
     rules = DailyRules()
+    if variant == "public75_duration25":
+        rules = replace(rules, version="daily_discovery_v5_public75_duration25")
+    if variant == "poi_hidden6":
+        rules = replace(rules, version="daily_discovery_poi_public5_hidden6_v1")
     edges, od, zones = load_toy_network(toy_dir)
     baseline, convergence = solve_ue(
         edges, od_to_matrix(od, zones), zones, rgap=rules.ue_definition_gap,
@@ -153,15 +170,28 @@ def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY):
     bins = (tuple(sorted(ranked[:8])), tuple(sorted(ranked[8:29])),
             tuple(sorted(ranked[29:])))
     rng = np.random.default_rng(np.random.SeedSequence([seed, n, 100]))
-    ph, pm, hh, hm = QUOTAS[int(n)]
+    ph, pm, hh, hm = (2, 6, 0, 3) if variant == "public75_duration25" else QUOTAS[int(n)]
+    if variant == "poi_hidden6":
+        # Keep n11's total of two high-flow and nine middle-flow roads.
+        # Move two middle-flow places from the public to the hidden quota.
+        ph, pm, hh, hm = 1, 4, 1, 5
     public = tuple(sorted([*rng.choice(bins[0], ph, replace=False),
                            *rng.choice(bins[1], pm, replace=False)]))
     public = tuple(int(e) for e in public)
-    return {"n": int(n), "seed": int(seed), "rules": rules,
+    problem = {"n": int(n), "seed": int(seed), "rules": rules,
             "toy_dir": str(toy_dir), "edges": edges, "od": od, "zone_ids": zones,
             "baseline_links": baseline, "baseline_gap": float(convergence.rgap),
             "baseline_flow": flows, "ranked": ranked, "bins": bins,
             "public_roads": public, "hidden_quotas": (hh, hm)}
+    if variant == "public75_duration25":
+        problem["variant"] = variant
+        problem["duration_sd"] = {cell: mean * NARROW_DURATION_CV
+                                  for cell, mean in P.DUR_MEAN.items()}
+    if variant in ("poi_unmet", "poi_hidden6"):
+        from src.environment.poi_response import specification
+        problem["variant"] = variant
+        problem["human_response"] = specification(zones)
+    return problem
 
 
 def sample_split(problem, count: int, seed: int, name: str) -> list[Scenario]:
@@ -173,13 +203,17 @@ def sample_split(problem, count: int, seed: int, name: str) -> list[Scenario]:
     keeps all other random labels identical for the same seed and sample count.
     No realized duration determines a public estimate, normalization or horizon.
     """
+    if "components" in problem:
+        from src.problem.mixed_daily import sample_mixed_split
+        return sample_mixed_split(problem, count, seed, name)
     ids = sorted(problem["baseline_flow"])
     columns = {e: 5 * i for i, e in enumerate(ids)}
     uniform = qmc.LatinHypercube(d=5 * len(ids), seed=seed).random(int(count))
     rng = np.random.default_rng(np.random.SeedSequence([seed, 701]))
     classes = {int(r.edge_id): r.road_class
                for r in problem["edges"].itertuples(index=False)}
-    duration_estimates = {(c, s): estimated_duration(c, s)
+    sd_by_cell = problem.get("duration_sd")
+    duration_estimates = {(c, s): estimated_duration(c, s, sd_by_cell=sd_by_cell)
                           for c in set(classes.values()) for s in (1, 2, 3)}
     estimate_cumulative = np.cumsum(ESTIMATE_PROBABILITIES)
     public = set(problem["public_roads"])
@@ -196,7 +230,7 @@ def sample_split(problem, count: int, seed: int, name: str) -> list[Scenario]:
             truth = int(np.searchsorted(np.cumsum(CONFUSION[estimate]), u[1]) + 1)
             roads.append(RoadDamage(
                 edge, estimate, duration_estimates[classes[edge], estimate],
-                truth, duration_draw(classes[edge], truth, u[3]),
+                truth, duration_draw(classes[edge], truth, u[3], sd_by_cell=sd_by_cell),
                 0 if edge in public else int(u[4] * problem["rules"].discovery_last_day) + 1))
         output.append(Scenario(f"{name}_{i:03d}", tuple(roads)))
     return output
@@ -214,7 +248,11 @@ def make_splits(problem, pool_n=64, n_val=11, n_test=50):
 
 
 def public_spec(problem):
-    return {"n_disrupted": problem["n"], "scenario_seed": problem["seed"],
+    if "components" in problem:
+        from src.problem.mixed_daily import mixed_public_spec
+        return mixed_public_spec(problem)
+    sd_by_cell = problem.get("duration_sd")
+    spec = {"n_disrupted": problem["n"], "scenario_seed": problem["seed"],
             "rules": asdict(problem["rules"]), "public_roads": problem["public_roads"],
             "flow_bins": problem["bins"], "hidden_quotas": problem["hidden_quotas"],
             "severity_estimate_probabilities": list(ESTIMATE_PROBABILITIES),
@@ -223,10 +261,15 @@ def public_spec(problem):
                                "free_flow_speed_retained": P.SPEED_RETAIN,
                                "removed_at_severity": P.SEVER_SEVERITY},
             "duration_mean": {str(k): v for k, v in P.DUR_MEAN.items()},
-            "duration_sd": {str(k): v for k, v in P.DUR_SD.items()},
+            "duration_sd": {str(k): v for k, v in
+                            (P.DUR_SD if sd_by_cell is None else sd_by_cell).items()},
             "duration_truncation_multiple": P.DUR_TRUNC_MULT,
-            "estimated_duration_days": {str(k): estimated_duration(*k) for k in P.DUR_MEAN},
+            "estimated_duration_days": {str(k): estimated_duration(*k, sd_by_cell=sd_by_cell)
+                                        for k in P.DUR_MEAN},
             "estimated_duration_cell_expectation_days": {
-                str(k): duration_expectation(*k) for k in P.DUR_MEAN},
+                str(k): duration_expectation(*k, sd_by_cell=sd_by_cell) for k in P.DUR_MEAN},
             "sampling": "independent identity draws and independent LHS random-label columns; "
                         "estimated duration is deterministic; historical estimate column reserved"}
+    if "human_response" in problem:
+        spec["human_response"] = problem["human_response"]
+    return spec

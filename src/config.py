@@ -9,7 +9,7 @@ or taken directly from the open-source network data.
 # The only active experiment is the reviewed daily problem. DailyRules defines
 # its one-day, single-crew, discovery-based rules. Explicitly legacy constants
 # remain importable for shared algorithms and historical analysis, NOT to select
-# a second problem through the experiment runner. Historical source is in legacy/.
+# a second problem through the experiment runner. Historical source is in .legacy/.
 DEFAULT_EXPERIMENT = "daily"
 
 # --- legacy time / resources ---

@@ -69,6 +69,19 @@ class ConstantTraffic:
 
 
 class ContractChecks(unittest.TestCase):
+    def test_retired_od_inputs_fail_before_accessing_problem_or_results(self):
+        from src.experiment.daily import prepare, run
+        with self.assertRaisesRegex(ValueError, "retired"):
+            DailyEncoder(None, None, od_history_input=True)
+        with patch("src.experiment.daily.build_problem") as build:
+            with self.assertRaisesRegex(ValueError, "retired"):
+                prepare(od_history_input=True)
+            build.assert_not_called()
+        with patch("src.experiment.daily.prepare") as prepare_problem:
+            with self.assertRaisesRegex(ValueError, "retired"):
+                run(od_history_input=True)
+            prepare_problem.assert_not_called()
+
     def test_recovery(self):
         curve = recovery_fraction(np.arange(80), DailyRules())
         self.assertTrue(np.all(np.diff(curve) >= 0))
@@ -151,6 +164,14 @@ class PolicyChecks(unittest.TestCase):
         later = replace(observation, completed=((road, 67),), candidates=observation.candidates[1:])
         self.assertAlmostEqual(float(self.encoder.encode(later)["x"][self.encoder.idx[road], 8]), 0.7**3)
 
+    def test_full_policy_keeps_seventeen_road_and_six_global_inputs(self):
+        encoder = DailyEncoder(self.problem, self.context, road_class_input=True)
+        state = encoder.encode(self.observation())
+        self.assertEqual(state["x"].shape, (38, 17))
+        self.assertEqual(state["g"].shape, (6,))
+        self.assertEqual(encoder.specification()["global_dimension"], 6)
+        self.assertEqual(len(encoder.specification()["global_inputs"]), 6)
+
     def test_new_duration_rule_in_all_splits_and_policy_inputs(self):
         classes = self.problem["edges"].set_index("edge_id").road_class.to_dict()
         for scenarios in make_splits(self.problem).values():
@@ -166,7 +187,7 @@ class PolicyChecks(unittest.TestCase):
                 self.assertAlmostEqual(float(state["x"][encoder.idx[road.edge_id], 5]),
                                        road.estimated_duration / 35, places=6)
         spec = public_spec(self.problem)
-        self.assertEqual(spec["rules"]["version"], "daily_discovery_v3")
+        self.assertEqual(spec["rules"]["version"], "daily_discovery_v4")
         self.assertEqual(spec["estimated_duration_days"][str(("major", 1))], 4)
 
     def test_estimate_calculation_does_not_change_other_random_labels(self):

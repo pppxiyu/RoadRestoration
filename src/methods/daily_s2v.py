@@ -20,6 +20,9 @@ from src.methods.rl_s2v_saa import S2V_SAA_PARAMS
 from src.methods.rl_rank import EP_CAP, STOP_PARAMS, RankPlateauStop, _nstep_rows
 
 
+POLICY_DELIVERY = "best validation policy; final policy and full resume state preserved"
+
+
 NODE_INPUTS = (
     "discovered and pending repair", "under repair", "repair completed",
     "normal-period two-way traffic / normal-period maximum",
@@ -39,10 +42,21 @@ GLOBAL_INPUTS = (
 ROAD_CLASSES = ("highway", "major", "local")
 TRAFFIC_NODE_COLUMNS = (10, 11, 12, 13)
 TRAFFIC_GLOBAL_COLUMNS = (4, 5)
+RETIRED_OD_INPUT_MESSAGE = (
+    "The flattened OD-history and destination-POI global inputs were retired on "
+    "2026-10-13. Use the original road inputs and six global inputs. Historical "
+    "models/results and source snapshots are preserved. The approved replacement "
+    "uses the separate junction-OD encoder, not this retired global-input option."
+)
 
 
 class DailyEncoder:
-    def __init__(self, problem, context, *, road_class_input=False, traffic_input=True):
+    def __init__(self, problem, context, *, road_class_input=False, traffic_input=True,
+                 od_history_input=False):
+        # Keep the former keyword only to reject old launchers explicitly,
+        # rather than silently training a different model under their old name.
+        if od_history_input:
+            raise ValueError(RETIRED_OD_INPUT_MESSAGE)
         # User-approved retention of the previous RL input. This is an encoding
         # of completion history, NOT a parameter of the new demand dynamics.
         self.recency_encoding = "legacy_decay_0.7_per_day"
@@ -52,6 +66,7 @@ class DailyEncoder:
         self.ids = tuple(sorted(int(e) for e in problem["edges"].edge_id))
         self.road_class_input = bool(road_class_input)
         self.traffic_input = bool(traffic_input)
+        self.global_dimension = 6
         self.node_dimension = 17 if self.road_class_input else 14
         if self.road_class_input:
             classes = {int(r.edge_id): r.road_class for r in problem["edges"].itertuples(index=False)}
@@ -166,13 +181,19 @@ class DailyQ:
         h = self.hp
         self.net = _build_s2v_net(h["p"], h["t_emb"], h["use_g"], torch, nn,
                                   dueling=h["dueling"], readout_hidden=h["readout_hidden"],
-                                  in_dim=encoder.node_dimension, hop_untied=h["hop_untied"], g_dim=6)
+                                  in_dim=encoder.node_dimension, hop_untied=h["hop_untied"],
+                                  g_dim=encoder.global_dimension)
+        self.structured_input = hasattr(encoder, "wrap_network")
+        if self.structured_input:
+            self.net = encoder.wrap_network(self.net)
         self.A = torch.from_numpy(encoder.A)
         self.deg = torch.from_numpy(encoder.deg)
 
     def __call__(self, state):
-        out = self.net(self.torch.from_numpy(state["x"]), self.A, self.deg,
-                       self.torch.from_numpy(state["g"]))
+        arguments = (self.torch.from_numpy(state["x"]), self.A, self.deg,
+                     self.torch.from_numpy(state["g"]))
+        out = (self.net(*arguments, self.torch.from_numpy(state["od"]))
+               if self.structured_input else self.net(*arguments))
         indices = list(state["cand"])
         if not self.hp["dueling"]:
             return out[indices]
@@ -205,14 +226,19 @@ def rollout(episode, encoder, q_function, *, epsilon=0.0, rng=None):
 
 
 def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
-          identity, hp=None, stop_params=None, ep_cap=EP_CAP, redraw=None):
+          identity, hp=None, stop_params=None, ep_cap=EP_CAP, redraw=None,
+          initialization=None, pause_after=None):
     """Daily SAA trainer, preserving existing network, loss and stop defaults.
 
     run_batch receives a split name, world indices and frozen network parameters.
     The experiment owns the simulator/process pool and NEVER supplies test
     rollouts during training. Validation uses the same environment as training.
-    Delivered weights remain the FINAL policy, matching the previous SAA method;
-    the best-validation policy is separately saved and never selected by test.
+    Delivered weights minimize the fixed validation-set mean objective, never
+    the test score. Final online weights and full training state remain saved
+    separately for reproducibility and resume; selection does not alter learning.
+    Optional initialization provides weights and training-only demonstrations;
+    it is applied once, never again when resuming. pause_after is an execution
+    boundary in completed episodes, not a learning or stopping hyperparameter.
     """
     import torch
     torch.set_num_threads(1)
@@ -236,9 +262,11 @@ def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
     checkpoint = root / "results" / "training_latest.pt"
     contract = dict(identity=identity, seed=seed, hyperparameters=h, stop=stop_config,
                     ep_cap=ep_cap, feature_schema=encoder.specification(),
-                    delivery="final policy; best validation saved separately",
+                    delivery=POLICY_DELIVERY,
                     reward="negative cumulative daily loss until next action, including terminal recovery",
                     discount="existing gamma per decision, not per calendar day")
+    if initialization is not None:
+        contract["initialization"] = initialization["metadata"]
     # JSON round-trip gives a stable comparison for tuple/list fields on resume.
     contract = json.loads(json.dumps(contract, sort_keys=True))
     replay, priorities, exemplars, records = [], [], {}, []
@@ -259,6 +287,21 @@ def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
         best_validation, best_weights = saved["best_validation"], saved["best_weights"]
         stop.__dict__.update(saved["stop_state"])
         elapsed_before = saved["training_seconds"]
+    elif initialization is not None:
+        online.net.load_state_dict(initialization["weights"], strict=True)
+        target.net.load_state_dict(online.net.state_dict())
+        for world, trajectory in initialization.get("demonstrations", {}).items():
+            if not 0 <= world < train_count:
+                raise ValueError("demonstration is not in the training split")
+            states, picks, rewards = (trajectory[k] for k in ("states", "picks", "rewards"))
+            if not states or not len(states) == len(picks) == len(rewards):
+                raise ValueError("invalid demonstration trajectory")
+            if any(not 0 <= a < len(s["cand"]) for s, a in zip(states, picks)):
+                raise ValueError("illegal demonstrated action")
+            replay.extend(_nstep_rows(states, picks, rewards, h["n_step"], h["gamma"]))
+            exemplars[world] = (states, picks, float(trajectory["result"]["objective"]))
+        replay = replay[-h["replay_cap"]:]
+        priorities = [1.0] * len(replay)
     (root / "config" / "training.json").write_text(json.dumps(contract, indent=2), encoding="utf-8")
     started = time.perf_counter()
 
@@ -283,7 +326,7 @@ def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
                 time.sleep(1)
         pd.DataFrame(records).to_csv(root / "log" / "training.csv", index=False)
 
-    while episode < ep_cap and not stop.done():
+    while episode < ep_cap and not stop.done() and (pause_after is None or episode < pause_after):
         ep_started = time.perf_counter()
         epsilon = max(h["eps_min"], h["eps0"] - (h["eps0"] - h["eps_min"])
                       * episode / max(1, h["eps_anneal"]))
@@ -392,17 +435,38 @@ def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
         save_checkpoint()
         if redraw is not None and (episode % 20 == 0 or stop.done()):
             redraw(root)
+    if episode < ep_cap and not stop.done():
+        # A screened run is resumable but is not a completed final-policy result.
+        save_checkpoint()
+        return online, dict(episodes=episode, outcome="screening_pause",
+                            best_validation_objective=best_validation,
+                            training_seconds=elapsed_before + time.perf_counter() - started)
     outcome = stop.reason or "episode_cap"
     torch.save(online.net.state_dict(), root / "results" / "model_final.pt")
-    if best_weights is not None:
-        torch.save(best_weights, root / "results" / "model_best_validation.pt")
+    if best_weights is None or not np.isfinite(best_validation):
+        raise RuntimeError("cannot select a test policy without a finite validation result")
+    torch.save(best_weights, root / "results" / "model_best_validation.pt")
+    selected_record = next(r for r in records if r["validation_objective"] is not None
+                           and abs(r["validation_objective"] - best_validation) <= 1e-12)
+    selection = dict(rule=POLICY_DELIVERY, model_file="model_best_validation.pt",
+        validation_objective=best_validation, selected_episode=int(selected_record["episode"]),
+        episode_indexing="zero-based training log", validation_scenarios=validation_count,
+        tie_rule="earliest checkpoint unless improvement exceeds 1e-12",
+        test_used_for_selection=False, last_model_file="model_final.pt",
+        resume_file="training_latest.pt")
+    (root / "results" / "policy_selection.json").write_text(
+        json.dumps(selection, indent=2), encoding="utf-8")
     result = dict(episodes=episode, outcome=outcome, best_validation_objective=best_validation,
                   training_seconds=elapsed_before + time.perf_counter() - started,
                   training_ue_solves=sum(r["training_ue_solves"] for r in records),
                   validation_ue_solves=sum(r["validation_ue_solves"] for r in records),
                   cached_days=sum(r["cached_days"] for r in records),
-                  training_worker_seconds=sum(r["worker_seconds"] for r in records))
+                  training_worker_seconds=sum(r["worker_seconds"] for r in records),
+                  policy_selection=selection)
     (root / "results" / "training_summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     if redraw is not None:
         redraw(root)
+    # Load only after final weights/checkpoint are saved. The next test receives
+    # this selected policy; resumed training still restores the final online state.
+    online.net.load_state_dict(best_weights)
     return online, result
