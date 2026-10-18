@@ -1,5 +1,5 @@
 """EXPERIMENTAL (2026-08-23): S2V-DQN (Dai et al., NIPS 2017 / arXiv 1704.01665, structure2vec
-embedding) trained WITH the repo's large-margin ranking hinge, as a solver PARALLEL to
+embedding) with an optional large-margin ranking hinge, as a solver PARALLEL to
 src.methods.rl_rank and kept deliberately removable.
 
 WHAT THIS IS. Dai et al.'s structure2vec graph embedding parameterizing Q, trained by n-step
@@ -7,6 +7,10 @@ Q-learning over an experience-replay buffer, PLUS the repo's large-margin self-i
 the regularizer rl_dqn uses to hold the greedy argmax onto the best order the search has
 found. The hinge's whole configuration (margin, weight cap, imitation ramp) is taken live from
 RANK_PARAMS_DQN so the two solvers regularize identically.
+
+Since 2026-10-14 its default weight is zero, per the project owner's instruction.
+The rationale and measurements below document the historical nonzero setting;
+saved experiment configurations remain explicit overrides, not new defaults.
 
 WHY THE HINGE IS HERE. This module first ran as the FAITHFUL paper reproduction (embedding +
 n-step Q-learning, no hinge -- the `lam=0` special case, which still exists and recovers it
@@ -44,8 +48,8 @@ DEVIATIONS FROM THE PAPER, all deliberate and recorded in run_meta (`paper_devia
      the return scale identical to rl_dqn so diagnostics stay comparable.
   5. Replay tuples are inserted at EPISODE END, not per step: a decision's window credit depends
      on the NEXT completion, so it is unobservable mid-episode.
-  6. gamma = 0.9995 (project owner's decision: aligned with rl_dqn; the paper's
-     cumulative-reward-equals-objective reading implies 1.0).
+  6. gamma = 1.0 by default since 2026-10-14, aligned with the undiscounted objective.
+     Explicit historical configurations may retain 0.9995.
   7. Target network ON by default (project owner's decision: the operational fitted-Q-iteration
      reading, and what the paper's released code does); target_sync=0 restores Algorithm 1's
      literal current-parameter bootstrap.
@@ -63,9 +67,9 @@ DEVIATIONS FROM THE PAPER, all deliberate and recorded in run_meta (`paper_devia
      updates_per_ep steps run at episode end. Forced by deviation 5 -- no tuple exists to learn
      from until the episode's rewards become observable.
  14. The reused n-step helper discounts INSIDE the reward window (sum_k gamma^k r_{t+k}) where
-     the paper sums the window undiscounted with a single gamma on the bootstrap; at
-     gamma=0.9995 over <= 2 steps the difference is ~1e-3 relative, kept for the shared,
-     battle-tested implementation.
+     the paper sums the window undiscounted with a single gamma on the bootstrap.
+     At the current default gamma=1.0 both forms are undiscounted; the shared helper
+     still supports explicit historical discount settings.
  15. The large-margin ranking hinge (the WHOLE point of the current default): a regularizer the
      paper does not have, added on the project owner's instruction to counter the drift the
      faithful run exposed. lam=0 removes it and restores the paper's method.
@@ -262,7 +266,7 @@ S2V_PARAMS = dict(
                          # does not change.
     n_step=2,            # n-step return horizon, inside the paper's per-problem set 1-5
                          # (Table D.9: MVC 5, MAXCUT 1, TSP 1, SCP 2)
-    gamma=0.9995,        # discount, aligned with rl_dqn (deviations 6 and 14)
+    gamma=float(RANK_PARAMS_DQN["gamma"]),  # Shared undiscounted default.
     lr=1e-3,             # CONSTANT Adam step; the paper decays lr by 0.95 (D.5) -- deviation 12
     batch=64,            # replay minibatch (paper Table D.9)
     updates_per_ep=10,   # ~one gradient step per decision, approximating the paper's per-step SGD
@@ -1134,7 +1138,7 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                        "global temporal block th8*g at the readout (use_g)",
                        "reward = completion-window credit (equal in sum to the objective)",
                        "replay tuples inserted at episode end (mid-episode unobservable)",
-                       "gamma=0.9995 aligned with rl_dqn (paper reading implies 1.0)",
+                       f"gamma={r['hp']['gamma']}; default 1.0 aligns with the undiscounted objective",
                        "target network on by default (paper code practice; 0 = Algorithm 1)",
                        "Adam instead of SGD",
                        "plateau stopping + final-policy delivery instead of fixed budget + "
@@ -1146,7 +1150,7 @@ def run_s2v(toy_dir=TOY, N=None, M=P.M_SCENARIOS, seed=P.SEED, ep_cap=EP_CAP, hp
                        "all gradient steps at episode end, not Algorithm 1's per-step "
                        "interleaving (forced by episode-end reward observability)",
                        "n-step window discounted internally by the shared helper (paper sums "
-                       "the window undiscounted); ~1e-3 relative at gamma=0.9995, n<=2",
+                       "the window undiscounted); no difference at gamma=1.0",
                        "large-margin ranking hinge from RANK_PARAMS_DQN (the current "
                        "default; lam=0 removes it and restores the paper's method)",
                        "Double DQN target (online selects, target evaluates); not in the paper, "

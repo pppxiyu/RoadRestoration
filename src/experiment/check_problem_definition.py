@@ -55,8 +55,8 @@ class ProblemDefinitionChecks(unittest.TestCase):
         np.testing.assert_array_equal(recovery_fraction(np.arange(35, 501), DailyRules()), 1.)
 
     def test_02_all_scales_public_hidden_and_flow_quotas(self):
-        self.assertEqual(QUOTAS, {6: (1, 4, 0, 1), 11: (2, 6, 0, 3),
-                                 17: (2, 11, 1, 3), 23: (4, 13, 1, 5)})
+        self.assertEqual(QUOTAS, {6: (1, 3, 0, 2), 11: (1, 6, 1, 3),
+                                 17: (2, 8, 1, 6), 23: (3, 11, 2, 7)})
         for n, problem in self.problems.items():
             with self.subTest(n=n):
                 high, middle, low = map(set, problem["bins"])
@@ -67,7 +67,7 @@ class ProblemDefinitionChecks(unittest.TestCase):
                 self.assertEqual(ranked, sorted(ranked, key=lambda e: (-problem["baseline_flow"][e], e)))
                 public = set(problem["public_roads"])
                 ph, pm, hh, hm = QUOTAS[n]
-                self.assertEqual(len(public), int(np.floor(.75 * n + .5)))
+                self.assertEqual(len(public), int(np.floor(.60 * n + .5)))
                 self.assertEqual((len(public & high), len(public & middle)), (ph, pm))
                 hidden_sets = set()
                 for sample in self.samples[n].values():
@@ -267,7 +267,7 @@ class ProblemDefinitionChecks(unittest.TestCase):
     def test_current_prepare_defaults_to_public_road_class(self):
         problem, splits, simulator, encoder, folder, identity = prepare()
         self.assertEqual(encoder.node_dimension, 17)
-        self.assertEqual(public_spec(problem)["rules"]["version"], "daily_discovery_v3")
+        self.assertEqual(public_spec(problem)["rules"]["version"], "daily_discovery_v4")
         simulator.close()
 
 
@@ -294,10 +294,12 @@ class EntryPointChecks(unittest.TestCase):
         from main import daily_cli
         with patch("src.experiment.daily.run") as run:
             daily_cli([])
-            run.assert_called_once_with(11, "response7d", 42, 4, road_class_input=True)
+            run.assert_called_once_with(11, "response7d", 42, 4, road_class_input=True,
+                                        problem_variant="current")
             run.reset_mock()
             daily_cli(["--training-behavior", "natural", "--n", "23"])
-            run.assert_called_once_with(23, "natural", 42, 4, road_class_input=True)
+            run.assert_called_once_with(23, "natural", 42, 4, road_class_input=True,
+                                        problem_variant="current")
 
     def test_retired_generation_and_solver_apis_fail_explicitly(self):
         for module, name in (("problem.instance", "select_oracle_instance"),

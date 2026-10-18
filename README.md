@@ -33,7 +33,7 @@ AequilibraE; production experiments do not.
   reaches 99% of normal flow, with demand-weighted time at most 101% of normal,
   for two consecutive days. Scenario objectives are averaged with equal weights.
 
-The current rule version is `daily_discovery_v3`. Changing rules, duration
+The current rule version is `daily_discovery_v4`. Changing rules, duration
 parameters or scenario truth changes the experiment identity. Historical samples,
 models and results are not overwritten or reused as results of the new setting.
 
@@ -43,6 +43,18 @@ models and results are not overwritten or reused as results of the new setting.
 python main.py --n 11 --solve rl_s2v_saa64_adaptive --training-behavior both
 python main.py --n 11 --solve ga
 python main.py --n 11 --solve compare
+```
+
+The isolated n11 duration comparison restores eight public and three hidden roads
+and uses duration standard deviations equal to 11% of each cell's unchanged target
+mean. After truncation and integer rounding, every cell has at least 95% probability
+within its target mean plus/minus 25%. It preserves the original 75%-public
+experiment's road identities, severities, discovery dates and random quantiles.
+The default problem and completed experiments remain available.
+
+```powershell
+python -m src.experiment.check_duration_variant
+python main.py --n 11 --problem-variant public75_duration25 --solve rl_s2v_saa64_adaptive,ga_saa10_flow_insert --training-behavior response7d --seed 42 --workers 4
 ```
 
 GA and RL share 64 training, 11 validation and 50 test scenarios. GA scores each
@@ -122,7 +134,7 @@ own settings and evidence and are not relabeled as the current problem.
 
 ## Historical code
 
-Local historical archives under `legacy/` and prior experiment outputs are not
+Local historical archives belong under `.legacy/` (never `legacy/`); they and prior experiment outputs are not
 published in this GitHub repository. Completed historical runs kept locally
 carry their original `config/source_snapshot.zip`.
 
@@ -131,4 +143,4 @@ Some historical modules remain under `src/` because current methods reuse their
 S2V network, genetic operators or traffic utilities. These shared helpers are not
 a second active problem setting. Older analysis/study code is retained for
 reference; it is not a production experiment route. Earlier migration backups
-under `.legacy/` are untouched.
+under `.legacy/` remain available locally.

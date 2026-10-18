@@ -142,7 +142,8 @@ def daily_experiment_identity(problem, simulator, splits):
                     objective="sum_days(0.5*time_loss+0.5*flow_loss); then equal scenario mean",
                     scenario_signatures={name: [s.signature for s in sample] for name, sample in splits.items()})
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:8]
-    name = (f"n{problem['n']}_discovery_response7d_1day_"
+    variant_tag = "" if "variant" not in problem else problem["variant"] + "_"
+    name = (f"n{problem['n']}_{variant_tag}discovery_response7d_1day_"
             f"lhs{len(splits['test'])}_s{problem['seed']}_{digest}")
     return OUTPUTS / "experiments" / name, identity
 

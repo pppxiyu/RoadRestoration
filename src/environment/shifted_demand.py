@@ -25,9 +25,10 @@ def potential_factory(network, incidence, path_od, a, b, reference, gamma, reach
         entropy = (safe*log_ratio-safe)/gamma-reference*q
         below = z < floor
         delta = z[below]-floor[below]
-        entropy[below] += np.log(floor[below]/b[below])*delta/gamma + delta**2/(2*gamma*floor[below])
+        selected_gamma = gamma if np.ndim(gamma) == 0 else gamma[below]
+        entropy[below] += np.log(floor[below]/b[below])*delta/selected_gamma + delta**2/(2*selected_gamma*floor[below])
         marginal = log_ratio/gamma-reference
-        marginal[below] += delta/(gamma*floor[below])
+        marginal[below] += delta/(selected_gamma*floor[below])
         potential = np.sum(network.t0*(x+network.alpha*x**(network.beta+1)
                           /((network.beta+1)*network.cap**network.beta)))+entropy[reachable].sum()
         gradient = np.asarray(incidence.T@network.cost(x)).ravel()+marginal[path_od]
@@ -38,6 +39,12 @@ def potential_factory(network, incidence, path_od, a, b, reference, gamma, reach
 def solve_shifted(ctx, edges, external, reference, gamma, a, b, tolerance=.01,
                   warm_start=None, max_rounds=40, ue_tolerance=1e-3):
     external, reference, a, b = [np.asarray(v,float) for v in (external,reference,a,b)]
+    # Preserve scalar arithmetic for historical runs; vectors use the same
+    # separable inverse-demand integral, one positive sensitivity per OD.
+    if np.ndim(gamma) != 0:
+        gamma = np.broadcast_to(np.asarray(gamma, float), external.shape)
+    if not np.all(np.isfinite(gamma) & (np.asarray(gamma) > 0)):
+        raise ValueError("gamma must be positive and finite for every OD")
     if a.min() < -1e-8 or b.min() <= 0:
         raise ValueError('invalid shifted-demand parameters')
     a = np.maximum(a,0)
@@ -67,7 +74,7 @@ def solve_shifted(ctx, edges, external, reference, gamma, a, b, tolerance=.01,
     keys = set(zip(path_od.tolist(),paths))
     floor = b*.01
     trace, refine, total_iterations = [], False, 0
-    path_threshold = min(.05,np.log1p(tolerance)/gamma)
+    path_threshold = min(.05,float(np.min(np.log1p(tolerance)/gamma)))
     for r in range(1,max_rounds+1):
         incidence = _incidence_matrix(paths,network.m)
         objective = potential_factory(network,incidence,path_od,a,b,reference,gamma,reachable,floor)

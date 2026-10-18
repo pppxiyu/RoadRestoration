@@ -106,8 +106,9 @@ RANK_PARAMS_DQN = dict(
     updates_per_ep=30,
     batch=16,
     margin=0.0689,       # m: the gap the hinge demands between the exemplar action and each rival
-    lam=1.0,             # weight of the hinge relative to the TD regression term. With the ramp
-                         # below this is the CAP, i.e. the terminal weight the schedule climbs to.
+    lam=0.0,             # Default since 2026-10-14: no historical-exemplar imitation loss.
+                         # Explicit historical configurations may retain a positive weight.
+    # The historical ramp below is inactive while lam=0; retained for explicit opt-in/replay.
     # Imitation ramp: lam(ep) = min(lam, lam0 * lam_growth^(ep-1)), the MIRROR of the eps decay
     # (eps explores the action space early and follows Q late; lam lets the greedy order roam free
     # of the best-so-far order early and tightens onto it late).
@@ -167,7 +168,7 @@ RANK_PARAMS_DQN = dict(
     # for the day clipping is revisited.
     huber_delta=None,
     n_step=1,            # n-step return horizon for the TD target (1 = one-step)
-    gamma=0.9995,        # discount on the bootstrap term ONLY; F itself is undiscounted
+    gamma=1.0,           # Undiscounted returns by default since 2026-10-14.
     double_dqn=True,     # decouple action selection from evaluation in the TD target
     target_sync=25,      # gradient steps between target-network copies
     # 2026-08-23: adopted from the sandbox line together with huber_delta=None after the 4-seed

@@ -26,6 +26,7 @@ from src.environment.evaluate import build_damaged_edges, od_travel_times, _matr
 from src.environment.gravity import DEFAULT_MODEL, load_gravity_model
 from src.environment.ue import solve_ue, warm_start_seed
 from src.environment.shifted_demand import solve_shifted
+from src.environment.poi_response import destination_weights, sensitivity
 
 
 def _feasible_daily_seed(edges, demand, context, warm):
@@ -106,6 +107,8 @@ class TrafficState:
     links: pd.DataFrame
     diagnostics: dict
     solver_state: dict | None = None
+    cumulative_unmet: np.ndarray | None = None
+    gamma_od: np.ndarray | None = None
 
     @property
     def served_demand(self):
@@ -121,6 +124,9 @@ class DailyTraffic:
         self.gamma = -float(model["coefficients"]["travel_cost_minutes"])
         if self.gamma <= 0:
             raise ValueError("human-response cost sensitivity must be positive")
+        self.response_spec = problem.get("human_response")
+        self.od_function_weights = (None if self.response_spec is None else
+                                    destination_weights(self.response_spec, self.ctx["od_pairs"]))
         self.weight = 1 - math.exp(math.log(0.05) / self.rules.response_95_days)
         sources = {str(p): hashlib.sha256(Path(p).read_bytes()).hexdigest()
                    for p in [Path(__file__), Path(__file__).with_name("ue.py"),
@@ -134,12 +140,20 @@ class DailyTraffic:
                         penalty=P.UPEN_FACTOR, warm_start=P.UE_WARM_START, sources=sources,
                         network=hashlib.sha256(problem["edges"].to_csv(index=False).encode()).hexdigest(),
                         od=hashlib.sha256(problem["od"].to_csv(index=False).encode()).hexdigest())
+        if self.response_spec is not None:
+            identity["human_response"] = self.response_spec
+            identity["poi_response_source"] = hashlib.sha256(
+                Path(__file__).with_name("poi_response.py").read_bytes()).hexdigest()
         self.fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         self.memo = OrderedDict()
         self.references = {}
         self.solve_calls = self.cache_hits = self.fixed_point_iterations = 0
         self.solve_seconds = 0.0
         self.connection = None
+        # POI histories enlarge daily cache records. Limit this optional cache,
+        # not model checkpoints or experiment data. A miss is recomputed with
+        # exactly the same equations, tolerances and trajectory warm start.
+        self.cache_limit_bytes = 512 * 1024**2 if self.response_spec is not None else None
         if cache_dir is not None:
             folder = Path(cache_dir)
             folder.mkdir(parents=True, exist_ok=True)
@@ -191,11 +205,13 @@ class DailyTraffic:
                                 path_arcs=np.array([a for p in warm["path_arcs"] for a in p], dtype=int),
                                 path_od=warm["path_od"], path_flow=warm["path_flow"],
                                 solver_damage=np.asarray(warm["damage"], dtype=int).reshape(-1, 2))
+        saved_response = {} if state.cumulative_unmet is None else dict(
+            cumulative_unmet=state.cumulative_unmet, gamma_od=state.gamma_od)
         np.savez_compressed(stream, demand=state.demand, external=state.external,
                             costs=state.costs, reachable=state.reachable,
                             road_flow=state.road_flow, road_congestion=state.road_congestion,
                             links=state.links[["from", "to", "volume", "cost"]].to_numpy(),
-                            diagnostics=json.dumps(state.diagnostics), **saved_solver)
+                            diagnostics=json.dumps(state.diagnostics), **saved_solver, **saved_response)
         return stream.getvalue()
 
     def _unpack(self, key, day, payload):
@@ -212,22 +228,25 @@ class DailyTraffic:
                                     damage=data["solver_damage"].tolist())
             return TrafficState(key, day, data["demand"], data["external"], data["costs"],
                                 data["reachable"], data["road_flow"], data["road_congestion"],
-                                links, json.loads(str(data["diagnostics"])), solver_state)
+                                links, json.loads(str(data["diagnostics"])), solver_state,
+                                data["cumulative_unmet"] if "cumulative_unmet" in data else None,
+                                data["gamma_od"] if "gamma_od" in data else None)
 
-    def _nested_response(self, day, edges, forecast, reference_costs, history, warm, *, restored=False):
+    def _nested_response(self, day, edges, forecast, reference_costs, history, warm, *, restored=False, gamma=None):
         """Retained numerical fallback and independent equivalence check.
 
         This uses the SAME demand equation and tolerances as the joint solver;
         failure is never accepted as a scored trajectory.
         """
         q = forecast + history
+        gamma = self.gamma if gamma is None else gamma
         tolerance = (self.rules.restored_fixed_point_tolerance if restored
                      else self.rules.fixed_point_tolerance)
         for iterations in range(1, self.rules.response_max_iter + 1):
             links, raw, costs, convergence = self._links(edges, q, warm, response=True, restored=restored)
             warm = (links, np.where(np.isfinite(raw), q, 0.0))
             target = forecast + history + self.weight * forecast * np.expm1(
-                -self.gamma * (costs - reference_costs))
+                -gamma * (costs - reference_costs))
             if float(target.min()) <= 0:
                 raise RuntimeError(f"nonpositive adjusted demand on day {day}")
             residual = float(np.max(np.abs(target-q) / np.maximum(forecast, 1.0)))
@@ -243,6 +262,15 @@ class DailyTraffic:
         d = int(day)
         if behavior == "response7d" and previous is not None and previous.day != d - 1:
             raise ValueError("seven-day response requires the immediately previous day")
+        # History belongs to an episode state, NEVER to this reusable simulator.
+        # A worker may evaluate many scenarios or branch from a cached prefix.
+        unmet_before, gamma = None, self.gamma
+        if self.response_spec is not None and behavior == "response7d":
+            if previous is not None and previous.cumulative_unmet is None:
+                raise ValueError("POI response requires the previous day's unmet-demand history")
+            unmet_before = (np.zeros_like(self.ctx["H0"]) if previous is None
+                            else previous.cumulative_unmet)
+            gamma = sensitivity(self.gamma, unmet_before, self.od_function_weights, self.response_spec)
         identity = (behavior, d if behavior == "response7d" else min(d, self.rules.recovery_days),
                     tuple(sorted(damaged.items())), previous.key if previous and behavior == "response7d" else None)
         key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
@@ -252,7 +280,7 @@ class DailyTraffic:
             # Natural-recovery traffic is stationary after day 35; keep the caller's date.
             return TrafficState(key, d, cached.demand, cached.external, cached.costs, cached.reachable,
                                 cached.road_flow, cached.road_congestion, cached.links, cached.diagnostics,
-                                cached.solver_state)
+                                cached.solver_state, cached.cumulative_unmet, cached.gamma_od)
         if self.connection is not None:
             row = self.connection.execute("SELECT payload FROM traffic WHERE key=?", (key,)).fetchone()
             if row:
@@ -295,7 +323,7 @@ class DailyTraffic:
             if self.rules.response_solver == "joint":
                 try:
                     q, costs, joint, solver_state, _ = solve_shifted(
-                        self.ctx, edges, forecast, reference_costs, self.gamma,
+                        self.ctx, edges, forecast, reference_costs, gamma,
                         (1-self.weight)*forecast+history, self.weight*forecast,
                         tolerance=fp_tolerance,
                         ue_tolerance=ue_tolerance, warm_start=path_warm)
@@ -317,7 +345,7 @@ class DailyTraffic:
                 raise ValueError("unknown seven-day numerical solver")
             if solver_state is None:
                 q, links, raw, costs, iterations, residual, gap = self._nested_response(
-                    d, edges, forecast, reference_costs, history, warm, restored=restored)
+                    d, edges, forecast, reference_costs, history, warm, restored=restored, gamma=gamma)
             extra_diagnostic.update(refined_after_repairs=restored,
                                     fixed_point_tolerance=fp_tolerance, ue_tolerance=ue_tolerance)
         self.fixed_point_iterations += iterations
@@ -335,10 +363,21 @@ class DailyTraffic:
         self.solve_seconds += diagnostic["solve_seconds"]
         state = TrafficState(key, d, q.copy(), forecast.copy(), costs.copy(), np.isfinite(raw),
                              flows, congestion, links, diagnostic, solver_state)
+        if unmet_before is not None:
+            state.gamma_od = np.asarray(gamma).copy()
+            state.cumulative_unmet = unmet_before + np.maximum(
+                0.0, 1.0 - state.served_demand / self.ctx["H0"])
+            diagnostic.update(gamma_min=float(state.gamma_od.min()),
+                              gamma_max=float(state.gamma_od.max()),
+                              cumulative_unmet_mean=float(state.cumulative_unmet.mean()))
         if self.connection is not None:
-            with self.connection:
-                self.connection.execute("INSERT OR IGNORE INTO traffic VALUES (?, ?)",
-                                        (key, self._pack(state)))
+            used = (0 if self.cache_limit_bytes is None else
+                    self.connection.execute("PRAGMA page_count").fetchone()[0] *
+                    self.connection.execute("PRAGMA page_size").fetchone()[0])
+            if self.cache_limit_bytes is None or used < self.cache_limit_bytes:
+                with self.connection:
+                    self.connection.execute("INSERT OR IGNORE INTO traffic VALUES (?, ?)",
+                                            (key, self._pack(state)))
         return self._remember(key, state)
 
     def close(self):
