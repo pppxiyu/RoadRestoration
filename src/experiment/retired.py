@@ -8,7 +8,7 @@ def retired_problem(function):
     def blocked(*args, **kwargs):
         raise RuntimeError(
             f"{function.__module__}.{function.__name__} belongs to the retired problem. "
-            "Use main.py with the finalized daily setting. For historical reproduction, "
-            "use the preserved source snapshot in .legacy/ or the original run's config/, "
-            "in a separate checkout; do not mix historical and current settings.")
+            "Use main.py with an explicit finalized daily branch. Historical source and "
+            "results are retained for reference in .legacy/LATEST.md and the original "
+            "run's config/. Do not start or resume historical experiments.")
     return blocked

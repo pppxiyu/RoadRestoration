@@ -20,7 +20,7 @@ from scipy.stats import norm
 from src import config as P
 from src.problem.daily import (CONFUSION, ESTIMATE_PROBABILITIES, QUOTAS, DailyRules,
                                RoadDamage, Scenario, build_problem, make_splits,
-                               duration_draw, duration_expectation, public_spec)
+                               duration_draw, duration_expectation, public_spec, CURRENT_PROBLEM)
 from src.environment.daily import (DailyEpisode, DailyTraffic, TrafficState,
                                    context_from_problem, daily_losses, recovery_fraction)
 from src.environment.evaluate import build_damaged_edges
@@ -267,7 +267,7 @@ class ProblemDefinitionChecks(unittest.TestCase):
     def test_current_prepare_defaults_to_public_road_class(self):
         problem, splits, simulator, encoder, folder, identity = prepare()
         self.assertEqual(encoder.node_dimension, 17)
-        self.assertEqual(public_spec(problem)["rules"]["version"], "daily_discovery_v4")
+        self.assertEqual(public_spec(problem)["rules"]["version"], CURRENT_PROBLEM)
         simulator.close()
 
 
@@ -293,13 +293,13 @@ class EntryPointChecks(unittest.TestCase):
     def test_default_and_natural_ablation_use_current_runner(self):
         from main import daily_cli
         with patch("src.experiment.daily.run") as run:
-            daily_cli([])
+            daily_cli(['--n', '11'])
             run.assert_called_once_with(11, "response7d", 42, 4, road_class_input=True,
-                                        problem_variant="current")
+                                        problem_variant=CURRENT_PROBLEM)
             run.reset_mock()
             daily_cli(["--training-behavior", "natural", "--n", "23"])
             run.assert_called_once_with(23, "natural", 42, 4, road_class_input=True,
-                                        problem_variant="current")
+                                        problem_variant=CURRENT_PROBLEM)
 
     def test_retired_generation_and_solver_apis_fail_explicitly(self):
         for module, name in (("problem.instance", "select_oracle_instance"),

@@ -34,6 +34,10 @@ def flow_rollout(simulator, scenario):
     return episode.result(), states
 
 
+from src.experiment.retired import retired_problem
+
+
+@retired_problem
 def audit_and_freeze():
     started = time.perf_counter()
     problem, splits, sim, encoder, folder, identity = prepare(problem_variant="poi_unmet")

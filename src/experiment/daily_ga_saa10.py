@@ -24,6 +24,7 @@ from src.experiment.daily_ga import physical_schedule, schedule_key, single_runn
 from src.experiment.daily_ga_nominal import _initialize, _evaluate, _save_test
 from src.methods.daily_ga import initial_orders, possible_roads, search
 from src.methods.metaheuristic import GA_PARAMS, BUDGET_CAP
+from src.problem.daily import CURRENT_PROBLEM
 
 
 METHOD = "ga_saa10_flow_insert"
@@ -177,9 +178,7 @@ def compare(folder, run_dir, full_rl, *, output_stem="ga_saa10_vs_full_rl", rl_l
     return result
 
 
-def run(n=11, seed=42, workers=4, *, problem_variant="current", full_rl_method=None):
-    if n != 11:
-        raise ValueError("the reviewed ten-scenario comparison is defined for n11")
+def run(n=11, seed=42, workers=4, *, problem_variant=CURRENT_PROBLEM, full_rl_method=None):
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[name] = "1"
     problem, splits, simulator, encoder, folder, identity = prepare(n, problem_variant=problem_variant)

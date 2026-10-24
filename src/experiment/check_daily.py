@@ -187,7 +187,8 @@ class PolicyChecks(unittest.TestCase):
                 self.assertAlmostEqual(float(state["x"][encoder.idx[road.edge_id], 5]),
                                        road.estimated_duration / 35, places=6)
         spec = public_spec(self.problem)
-        self.assertEqual(spec["rules"]["version"], "daily_discovery_v4")
+        from src.problem.daily import CURRENT_PROBLEM
+        self.assertEqual(spec["rules"]["version"], CURRENT_PROBLEM)
         self.assertEqual(spec["estimated_duration_days"][str(("major", 1))], 4)
 
     def test_estimate_calculation_does_not_change_other_random_labels(self):

@@ -26,7 +26,7 @@ class MixedChecks(unittest.TestCase):
 
     def test_original_per_scale_contracts_unchanged(self):
         for n,p in self.problem['components'].items():
-            self.assertEqual(public_spec(p),public_spec(build_problem(n,42,variant='poi_unmet')))
+            self.assertEqual(public_spec(p),public_spec(build_problem(n,42)))
             self.assertEqual(p['rules'],self.problem['rules'])
             self.assertEqual(p['human_response'],self.problem['human_response'])
             self.assertEqual(p['baseline_flow'],self.problem['baseline_flow'])
