@@ -15,8 +15,10 @@ from src.experiment.daily import (prepare, save_problem, _write_json, _source_di
                                   _initialize_worker, _run_world)
 from src.experiment.daily_od_history import check_contract, baseline_hashes, BASE_RL
 from src.methods.daily_s2v import DailyEncoder, DailyQ, train
+from src.experiment.retired import retired_problem
 
 
+@retired_problem
 def main():
     torch.set_num_threads(1)
     problem, splits, sim, encoder, folder, identity = prepare(

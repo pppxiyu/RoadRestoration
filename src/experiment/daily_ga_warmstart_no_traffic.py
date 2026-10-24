@@ -55,6 +55,10 @@ def compare_encoded_states(saved, fresh):
             raise AssertionError("masked donor inputs do not equal the actual no-traffic encoder")
 
 
+from src.experiment.retired import retired_problem
+
+
+@retired_problem
 def run(workers=4):
     import torch
     from src.experiment.daily_ga_warmstart import teacher_rollout

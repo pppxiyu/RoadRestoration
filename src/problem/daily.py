@@ -23,11 +23,11 @@ ROOT = Path(__file__).resolve().parents[2]
 TOY = ROOT / "data" / "siouxfalls_toy"
 QUOTAS = {6: (1, 3, 0, 2), 11: (1, 6, 1, 3),
           17: (2, 8, 1, 6), 23: (3, 11, 2, 7)}
-PROBLEM_VARIANTS = ("current", "public75_duration25", "poi_unmet", "poi_hidden6")
-# A common standard-deviation/mean ratio of 0.11 gives at least 95% coverage
-# of target mean +/-25% in every cell AFTER truncation and integer rounding.
-# The seven-day cell is binding; the other cells have higher coverage.
-NARROW_DURATION_CV = 0.11
+CURRENT_PROBLEM = "finalized_poi_public60_20261021"
+PROBLEM_VARIANTS = (CURRENT_PROBLEM,)
+BRANCHES = ("6", "11", "17", "23", "mixed")
+BASE_TRAIN_COUNT, IMPROVEMENT_TRAIN_COUNT = 64, 256
+VALIDATION_COUNT, TEST_COUNT = 11, 50
 ESTIMATE_PROBABILITIES = (0.25, 0.5, 0.25)
 CONFUSION = {1: (0.6, 1 / 3, 1 / 15), 2: (0.2, 0.6, 0.2),
              3: (1 / 15, 1 / 3, 0.6)}
@@ -35,7 +35,7 @@ CONFUSION = {1: (0.6, 1 / 3, 1 / 15), 2: (0.2, 0.6, 0.2),
 
 @dataclass(frozen=True)
 class DailyRules:
-    version: str = "daily_discovery_v4"
+    version: str = CURRENT_PROBLEM
     estimated_duration_rule: str = "rounded_expectation_of_truncated_integer_cell"
     slot_hours: float = 24.0
     crews: int = 1
@@ -139,21 +139,14 @@ def estimated_duration(road_class: str, estimated_severity: int, *, sd_by_cell=N
         road_class, estimated_severity, sd_by_cell=sd_by_cell) + 0.5)))
 
 
-def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY, *, variant="current"):
+def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY, *, variant=CURRENT_PROBLEM):
     """The public road subset is sampled once per scale, before any split."""
     if int(n) not in QUOTAS:
         raise ValueError(f"daily scales must be one of {tuple(QUOTAS)}")
     if variant not in PROBLEM_VARIANTS:
-        raise ValueError(f"unknown daily problem variant: {variant}")
-    if variant == "public75_duration25" and int(n) != 11:
-        raise ValueError("the public75_duration25 comparison is defined for n11")
-    if variant == "poi_hidden6" and int(n) != 11:
-        raise ValueError("the five-public/six-hidden comparison is defined for n11")
+        raise ValueError(f"retired problem variant: {variant}; use {CURRENT_PROBLEM}. "
+                         "Historical settings and results are indexed in .legacy/LATEST.md")
     rules = DailyRules()
-    if variant == "public75_duration25":
-        rules = replace(rules, version="daily_discovery_v5_public75_duration25")
-    if variant == "poi_hidden6":
-        rules = replace(rules, version="daily_discovery_poi_public5_hidden6_v1")
     edges, od, zones = load_toy_network(toy_dir)
     baseline, convergence = solve_ue(
         edges, od_to_matrix(od, zones), zones, rgap=rules.ue_definition_gap,
@@ -170,11 +163,9 @@ def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY, *, variant="current"
     bins = (tuple(sorted(ranked[:8])), tuple(sorted(ranked[8:29])),
             tuple(sorted(ranked[29:])))
     rng = np.random.default_rng(np.random.SeedSequence([seed, n, 100]))
-    ph, pm, hh, hm = (2, 6, 0, 3) if variant == "public75_duration25" else QUOTAS[int(n)]
-    if variant == "poi_hidden6":
-        # Keep n11's total of two high-flow and nine middle-flow roads.
-        # Move two middle-flow places from the public to the hidden quota.
-        ph, pm, hh, hm = 1, 4, 1, 5
+    ph, pm, hh, hm = QUOTAS[int(n)]
+    if ph + pm != int(np.floor(0.6 * int(n) + 0.5)):
+        raise AssertionError("public quota must be 60% rounded half up")
     public = tuple(sorted([*rng.choice(bins[0], ph, replace=False),
                            *rng.choice(bins[1], pm, replace=False)]))
     public = tuple(int(e) for e in public)
@@ -183,14 +174,9 @@ def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY, *, variant="current"
             "baseline_links": baseline, "baseline_gap": float(convergence.rgap),
             "baseline_flow": flows, "ranked": ranked, "bins": bins,
             "public_roads": public, "hidden_quotas": (hh, hm)}
-    if variant == "public75_duration25":
-        problem["variant"] = variant
-        problem["duration_sd"] = {cell: mean * NARROW_DURATION_CV
-                                  for cell, mean in P.DUR_MEAN.items()}
-    if variant in ("poi_unmet", "poi_hidden6"):
-        from src.environment.poi_response import specification
-        problem["variant"] = variant
-        problem["human_response"] = specification(zones)
+    from src.environment.poi_response import specification
+    problem["variant"] = CURRENT_PROBLEM
+    problem["human_response"] = specification(zones)
     return problem
 
 
@@ -236,7 +222,7 @@ def sample_split(problem, count: int, seed: int, name: str) -> list[Scenario]:
     return output
 
 
-def make_splits(problem, pool_n=64, n_val=11, n_test=50):
+def make_splits(problem, pool_n=BASE_TRAIN_COUNT, n_val=VALIDATION_COUNT, n_test=TEST_COUNT):
     seed = problem["seed"]
     splits = {"train": sample_split(problem, pool_n, seed * 1000 + 21, "train"),
               "validation": sample_split(problem, n_val, seed * 1000 + 15, "validation"),
@@ -247,12 +233,33 @@ def make_splits(problem, pool_n=64, n_val=11, n_test=50):
     return splits
 
 
+def improvement_splits(problem, splits):
+    """Four independent 64-world blocks; never a single 256-row LHS.
+
+    The first block and validation/test worlds are retained exactly. This is
+    data preparation only, and does not train or select a policy.
+    """
+    if len(splits['train']) != BASE_TRAIN_COUNT:
+        raise ValueError("action-difference learning requires the original 64-world block")
+    seed = int(problem['seed'])
+    worlds = list(splits['train'])
+    for block in (1, 2, 3):
+        extension = sample_split(problem, BASE_TRAIN_COUNT, seed * 1000 + 21 + 100 * block, 'extension')
+        worlds.extend(replace(s, scenario_id=f'train_{64 * block + i:03d}')
+                      for i, s in enumerate(extension))
+    result = dict(splits, train=worlds)
+    signatures = [s.signature for group in result.values() for s in group]
+    if len(worlds) != IMPROVEMENT_TRAIN_COUNT or len(signatures) != len(set(signatures)):
+        raise AssertionError("expanded training and evaluation worlds must be unique")
+    return result
+
+
 def public_spec(problem):
     if "components" in problem:
         from src.problem.mixed_daily import mixed_public_spec
         return mixed_public_spec(problem)
     sd_by_cell = problem.get("duration_sd")
-    spec = {"n_disrupted": problem["n"], "scenario_seed": problem["seed"],
+    spec = {"n_disrupted": problem["n"], "variant": problem["variant"], "scenario_seed": problem["seed"],
             "rules": asdict(problem["rules"]), "public_roads": problem["public_roads"],
             "flow_bins": problem["bins"], "hidden_quotas": problem["hidden_quotas"],
             "severity_estimate_probabilities": list(ESTIMATE_PROBABILITIES),

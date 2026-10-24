@@ -38,6 +38,10 @@ def equal_tree(a, b):
         assert a == b
 
 
+from src.experiment.retired import retired_problem
+
+
+@retired_problem
 def main(demand_memory=False, bidirectional=False):
     torch.set_num_threads(1)
     problem, splits, sim, plain, folder, identity = prepare(problem_variant="poi_unmet")

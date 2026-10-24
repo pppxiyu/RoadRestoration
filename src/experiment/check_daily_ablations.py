@@ -182,7 +182,7 @@ class PlanChecks(unittest.TestCase):
     def test_cli_selects_the_suite(self):
         from main import daily_cli
         with patch("src.experiment.daily.run_rl_ablations") as run, redirect_stdout(io.StringIO()):
-            daily_cli(["--solve", "rl_ablations"])
+            daily_cli(["--n", "11", "--solve", "rl_ablations"])
             run.assert_called_once_with(11, 42, 4)
 
 

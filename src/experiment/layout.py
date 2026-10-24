@@ -84,7 +84,7 @@ def analysis_dir(n: int | None = None) -> Path:
 
 
 def study_dir(study: str) -> Path:
-    return OUTPUTS / "studies" / study
+    return OUTPUTS / "current" / "studies" / study
 
 
 def publish_experiment_gallery(n: int | None = None, *, directory=None) -> dict:
@@ -145,7 +145,7 @@ def daily_experiment_identity(problem, simulator, splits):
     variant_tag = "" if "variant" not in problem else problem["variant"] + "_"
     name = (f"n{problem['n']}_{variant_tag}discovery_response7d_1day_"
             f"lhs{len(splits['test'])}_s{problem['seed']}_{digest}")
-    return OUTPUTS / "experiments" / name, identity
+    return OUTPUTS / "current" / "experiments" / name, identity
 
 
 _OLD_METHODS = {

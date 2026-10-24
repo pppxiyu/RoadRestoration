@@ -6,18 +6,18 @@ Each scale retains its fixed public subset and original conditional sampler.
 from dataclasses import replace
 import numpy as np
 
-from src.problem.daily import build_problem, sample_split, public_spec
+from src.problem.daily import build_problem, sample_split, public_spec, CURRENT_PROBLEM, TOY
 
 SCALES = (6, 11, 17, 23)
 PROBABILITIES = (0.25, 0.25, 0.25, 0.25)
 
 
-def build_mixed_problem(seed=42):
-    components = {n: build_problem(n, seed, variant="poi_unmet") for n in SCALES}
+def build_mixed_problem(seed=42, toy_dir=TOY):
+    components = {n: build_problem(n, seed, toy_dir=toy_dir) for n in SCALES}
     base = dict(components[11])
-    # All simulation rules/network/behavior remain those of poi_unmet. Only
+    # All simulation rules/network/behavior remain those of the fixed branches. Only
     # the scenario distribution differs; its full contract enters identity.
-    base.update(n="mixed", variant="poi_mixed_n", components=components,
+    base.update(n="mixed", variant=CURRENT_PROBLEM, components=components,
                 public_roads=tuple(sorted({e for p in components.values() for e in p['public_roads']})))
     return base
 
@@ -39,7 +39,7 @@ def sample_mixed_split(problem, count, seed, name):
 
 def mixed_public_spec(problem):
     spec = public_spec(problem['components'][11])
-    spec.update(n_disrupted=list(SCALES), variant="poi_mixed_n",
+    spec.update(n_disrupted=list(SCALES), variant=CURRENT_PROBLEM,
         public_roads=None, hidden_quotas=None,
         count_distribution=dict(values=SCALES, probabilities=PROBABILITIES,
             sampling="independent categorical draw for every scenario in train, validation and test",

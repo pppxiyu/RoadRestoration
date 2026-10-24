@@ -91,6 +91,10 @@ def paired_report(current, reference):
                 mean_reduction_bootstrap95=np.quantile(boot, [.025, .975]).tolist())
 
 
+from src.experiment.retired import retired_problem
+
+
+@retired_problem
 def run(workers=4):
     import torch
     torch.set_num_threads(1)

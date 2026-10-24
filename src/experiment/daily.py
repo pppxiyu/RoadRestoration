@@ -25,7 +25,7 @@ from src.environment.behavior_models import select_behavior_model
 from src.environment.gravity import DEFAULT_MODEL
 from src.experiment.layout import ROOT, daily_experiment_identity, publish_experiment_gallery
 from src.methods.daily_s2v import DailyEncoder, DailyQ, rollout, train, RETIRED_OD_INPUT_MESSAGE, POLICY_DELIVERY
-from src.problem.daily import build_problem, make_splits, public_spec
+from src.problem.daily import build_problem, make_splits, public_spec, CURRENT_PROBLEM, BRANCHES
 
 
 _WORKER = None
@@ -84,14 +84,18 @@ def _write_json(path, content):
 
 
 def prepare(n=11, scenario_seed=P.SEED, *, road_class_input=True, traffic_input=True,
-            problem_variant="current", od_history_input=False):
+            problem_variant=CURRENT_PROBLEM, od_history_input=False):
     if od_history_input:
         raise ValueError(RETIRED_OD_INPUT_MESSAGE)
-    if problem_variant == "poi_mixed_n":
+    if problem_variant != CURRENT_PROBLEM:
+        raise ValueError(f"retired problem variant: {problem_variant}; see .legacy/LATEST.md")
+    if str(n) not in BRANCHES:
+        raise ValueError(f"select one of the five branches: {BRANCHES}")
+    if str(n) == "mixed":
         from src.problem.mixed_daily import build_mixed_problem
         problem = build_mixed_problem(scenario_seed)
     else:
-        problem = build_problem(n, scenario_seed, variant=problem_variant)
+        problem = build_problem(int(n), scenario_seed, variant=problem_variant)
     splits = make_splits(problem)
     simulator = DailyTraffic(problem)
     encoder = DailyEncoder(problem, simulator.ctx, road_class_input=road_class_input,
@@ -187,7 +191,7 @@ def _save_evaluation(run_dir, trajectories, seconds):
 
 
 def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed=P.SEED,
-        road_class_input=True, traffic_input=True, problem_variant="current", od_history_input=False):
+        road_class_input=True, traffic_input=True, problem_variant=CURRENT_PROBLEM, od_history_input=False):
     """Run either/both training environments with public road class by default.
 
     Explicit road_class_input=False retains the historical 14-column policy.
@@ -206,7 +210,7 @@ def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed
         problem_variant=problem_variant, od_history_input=od_history_input)
     save_problem(folder, problem, splits, identity, encoder)
     source_digest, source_hashes = _source_digest()
-    cache = ROOT / ".cache" / "daily_traffic"
+    cache = ROOT / ".cache" / "current" / "daily_traffic"
     behaviors = ("natural", "response7d") if training_behavior == "both" else (training_behavior,)
     print(f"daily experiment: {folder}; workers={workers}; training={behaviors}", flush=True)
     for behavior in behaviors:
@@ -310,7 +314,7 @@ def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed
     return folder
 
 
-def compare(n=11, *, problem_variant="current"):
+def compare(n=11, *, problem_variant=CURRENT_PROBLEM):
     from src.analysis.daily import refresh_comparison
     *_, folder, identity = prepare(n, problem_variant=problem_variant)
     refresh_comparison(folder)

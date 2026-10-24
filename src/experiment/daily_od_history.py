@@ -102,6 +102,10 @@ def summarize(folder, encoder, baseline):
     return result
 
 
+from src.experiment.retired import retired_problem
+
+
+@retired_problem
 def main():
     problem, splits, simulator, encoder, folder, identity = prepare(
         problem_variant="poi_unmet", od_history_input=True)

@@ -1,0 +1,80 @@
+{
+  "model_version": 2,
+  "travel_cost_basis": "baseline_user_equilibrium_congested_shortest_path_v1",
+  "fit_settings": {
+    "ue_target_relative_gap": 1e-06,
+    "ue_max_iterations": 2000
+  },
+  "source_sha256": {
+    "data/siouxfalls_toy/network/od_pairs.csv": "bb07509238ddaf7b7bdc74b860e8a33e8ad1e7320028384c55086e3b7fa4b747",
+    "data/siouxfalls_toy/network/edges.csv": "12c58fbb69bce5ed24c2e9d73ecd043d7f2f254b077b99ed11ae398bf35ab4a2"
+  },
+  "formula": "exp(intercept) * origin_total^beta_origin * destination_total^beta_destination * exp(beta_cost * travel_cost_minutes)",
+  "coefficients": {
+    "intercept": -12.244777930800547,
+    "log_origin_total": 1.0057911103527746,
+    "log_destination_total": 1.00500956989778,
+    "travel_cost_minutes": -0.026891925846962532
+  },
+  "covariance": {
+    "intercept": {
+      "intercept": 0.14104864762277627,
+      "log_origin_total": -0.007076433701112119,
+      "log_destination_total": -0.007153437849272646,
+      "travel_cost_minutes": -0.00010598933297469047
+    },
+    "log_origin_total": {
+      "intercept": -0.007076433701110962,
+      "log_origin_total": 0.0006622388370903314,
+      "log_destination_total": 5.789653946847408e-05,
+      "travel_cost_minutes": 3.2440171676284035e-06
+    },
+    "log_destination_total": {
+      "intercept": -0.007153437849273176,
+      "log_origin_total": 5.7896539468533724e-05,
+      "log_destination_total": 0.0006691724236461325,
+      "travel_cost_minutes": 3.52916758098235e-06
+    },
+    "travel_cost_minutes": {
+      "intercept": -0.00010598933297465688,
+      "log_origin_total": 3.244017167626913e-06,
+      "log_destination_total": 3.529167580980708e-06,
+      "travel_cost_minutes": 1.7126145890591653e-06
+    }
+  },
+  "diagnostics": {
+    "model": "Poisson pseudo-maximum-likelihood multiplicative gravity model",
+    "mean_specification": "exp(intercept) * origin_total^beta_origin * destination_total^beta_destination * exp(beta_cost * travel_cost_minutes)",
+    "travel_cost_definition": "shortest-path sum of congested link travel times after normal-period OD demand is assigned to the intact network at user equilibrium, in minutes",
+    "travel_cost_basis": "baseline_user_equilibrium_congested_shortest_path_v1",
+    "normal_period_user_equilibrium": {
+      "achieved_relative_gap": 9.664250442089651e-07,
+      "iterations": 692,
+      "target_relative_gap": 1e-06,
+      "maximum_iterations": 2000
+    },
+    "speed_limit_audit": "speed field exists in SiouxFalls_net.tntp but all 76 directed-link values are zero",
+    "observations": 552,
+    "zero_flow_observations": 24,
+    "converged": true,
+    "optimizer_message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "mean_observed_flow": 653.2608695652174,
+    "mean_predicted_flow": 653.2608677865975,
+    "mean_absolute_error": 161.1572561937722,
+    "root_mean_squared_error": 228.56769977794428,
+    "poisson_deviance": 37421.91196690209,
+    "mcfadden_pseudo_r_squared": 0.8699984985574439,
+    "travel_cost_minutes": {
+      "minimum": 2.0622596312138195,
+      "median": 25.153265041155727,
+      "mean": 24.68443166310621,
+      "maximum": 47.16258559196949
+    },
+    "one_additional_minute": {
+      "flow_multiplier": 0.9734664424007594,
+      "flow_percent_decrease": 2.6533557599240587,
+      "robust_95_percent_lower": 2.4033419629420405,
+      "robust_95_percent_upper": 2.902729095440093
+    }
+  }
+}

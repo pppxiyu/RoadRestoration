@@ -232,6 +232,10 @@ def _compare(folder, run_dir, full_rl):
     return comparison
 
 
+from src.experiment.retired import retired_problem
+
+
+@retired_problem
 def run(n=11, seed=42, workers=4):
     if n != 11:
         raise ValueError("this reviewed nominal eight-road comparison is defined only for n11")

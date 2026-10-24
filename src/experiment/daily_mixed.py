@@ -29,6 +29,7 @@ from src.methods.daily_s2v import DailyQ, train, POLICY_DELIVERY
 from src.methods.rl_rank import EP_CAP, STOP_PARAMS
 from src.methods.daily_ga import possible_roads
 from src.problem.mixed_daily import SCALES
+from src.experiment.retired import retired_problem
 
 METHOD = 'rl_s2v_dual_od16_memory_g1_noimit_seed42'
 GA = 'ga_saa10_flow_insert_seed42'
@@ -53,7 +54,7 @@ def protected_results():
 
 
 def setup():
-    problem, splits, simulator, plain, folder, identity = prepare(problem_variant='poi_mixed_n')
+    problem, splits, simulator, plain, folder, identity = prepare('mixed')
     encoder = JunctionEncoder(problem, simulator.ctx, simulator.gamma, demand_memory=True, bidirectional=True)
     simulator.close()
     return problem, splits, encoder, folder, identity
@@ -182,6 +183,7 @@ def finish(folder,splits,root,plan):
     return comparison
 
 
+@retired_problem
 def main(prepare_only=False):
     for key in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS','NUMEXPR_NUM_THREADS'):
         os.environ[key]='1'

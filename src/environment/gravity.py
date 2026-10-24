@@ -36,7 +36,9 @@ MODEL_VERSION = 2
 TRAVEL_COST_BASIS = "baseline_user_equilibrium_congested_shortest_path_v1"
 GRAVITY_UE_TARGET_RELATIVE_GAP = float(P.UE_RGAP_DEF)
 GRAVITY_UE_MAX_ITERATIONS = 2000
-DEFAULT_MODEL = DEFAULT_OUTPUT / "data" / "gravity_model.json"
+# Frozen calibration is a model input, not an implicitly reused legacy result.
+DEFAULT_MODEL = ROOT / "data/siouxfalls_toy/behavior/gravity_model.json"
+STUDY_MODEL = DEFAULT_OUTPUT / "data" / "gravity_model.json"
 MODEL_SOURCES = (
     ROOT / "data/siouxfalls_toy/network/od_pairs.csv",
     ROOT / "data/siouxfalls_toy/network/edges.csv",
@@ -308,8 +310,10 @@ def _artifact_is_current(artifact: dict) -> bool:
     )
 
 
-def fit_and_save_gravity_model(model_path: Path = DEFAULT_MODEL) -> dict:
+def fit_and_save_gravity_model(model_path: Path = STUDY_MODEL) -> dict:
     """Fit once from raw Sioux Falls data and persist a transparent JSON model artifact."""
+    if Path(model_path).resolve() == DEFAULT_MODEL.resolve():
+        raise ValueError("The finalized gravity input is frozen; fit into a separate study output")
     parameters, covariance, _, diagnostics = fit_gravity(
         add_gravity_inputs(complete_od_table())
     )
@@ -322,7 +326,7 @@ def fit_and_save_gravity_model(model_path: Path = DEFAULT_MODEL) -> dict:
     return artifact
 
 
-def ensure_gravity_model(model_path: Path = DEFAULT_MODEL, force: bool = False) -> dict:
+def ensure_gravity_model(model_path: Path = STUDY_MODEL, force: bool = False) -> dict:
     """Reuse the persisted fit unless its raw inputs or schema have changed."""
     model_path = Path(model_path)
     if model_path.exists() and not force:
@@ -337,7 +341,8 @@ def load_gravity_model(model_path: Path = DEFAULT_MODEL) -> dict:
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(
-            f"gravity model is missing at {model_path}; run ensure_gravity_model() first"
+            f"gravity model is missing at {model_path}; restore the approved frozen input, "
+            "or explicitly provide a separately approved model path"
         )
     artifact = json.loads(model_path.read_text(encoding="utf-8"))
     if not _artifact_is_current(artifact):
@@ -369,6 +374,9 @@ def predict_gravity_flow(
 
 
 def run(output_dir: Path = DEFAULT_OUTPUT) -> dict:
+    output_dir = Path(output_dir)
+    if (output_dir / "data/gravity_model.json").resolve() == DEFAULT_MODEL.resolve():
+        raise ValueError("The finalized gravity input is frozen; fit into a separate study output")
     output_dir.mkdir(parents=True, exist_ok=True)
     records = output_dir / "data"
     records.mkdir(parents=True, exist_ok=True)
@@ -376,8 +384,7 @@ def run(output_dir: Path = DEFAULT_OUTPUT) -> dict:
         add_gravity_inputs(complete_od_table())
     )
     artifact = _artifact_from_fit(parameters, covariance, diagnostics)
-    DEFAULT_MODEL.parent.mkdir(parents=True, exist_ok=True)
-    DEFAULT_MODEL.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
+    (records / "gravity_model.json").write_text(json.dumps(artifact, indent=2), encoding="utf-8")
     parameters.to_csv(records / "04_gravity_parameters.csv", index=False)
     covariance.to_csv(records / "04_gravity_parameter_covariance.csv")
     predictions.to_csv(records / "04_gravity_od_predictions.csv", index=False)
