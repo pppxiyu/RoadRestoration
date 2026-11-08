@@ -21,9 +21,12 @@ from src.environment.ue import solve_ue
 
 ROOT = Path(__file__).resolve().parents[2]
 TOY = ROOT / "data" / "siouxfalls_toy"
-QUOTAS = {6: (1, 3, 0, 2), 11: (1, 6, 1, 3),
-          17: (2, 8, 1, 6), 23: (3, 11, 2, 7)}
-CURRENT_PROBLEM = "finalized_poi_public60_20261021"
+PUBLIC_DAMAGE_FRACTION = 0.5
+# Public high/middle, hidden high/middle. Preserve total damage strata and
+# public high-flow quotas while assigning floor(n / 2) public roads.
+QUOTAS = {6: (1, 2, 0, 3), 11: (1, 4, 1, 5),
+          17: (2, 6, 1, 8), 23: (3, 8, 2, 10)}
+CURRENT_PROBLEM = "finalized_poi_public50_floor_20261108"
 PROBLEM_VARIANTS = (CURRENT_PROBLEM,)
 BRANCHES = ("6", "11", "17", "23", "mixed")
 BASE_TRAIN_COUNT, IMPROVEMENT_TRAIN_COUNT = 64, 256
@@ -164,8 +167,8 @@ def build_problem(n: int = 11, seed: int = 42, toy_dir=TOY, *, variant=CURRENT_P
             tuple(sorted(ranked[29:])))
     rng = np.random.default_rng(np.random.SeedSequence([seed, n, 100]))
     ph, pm, hh, hm = QUOTAS[int(n)]
-    if ph + pm != int(np.floor(0.6 * int(n) + 0.5)):
-        raise AssertionError("public quota must be 60% rounded half up")
+    if ph + pm != int(np.floor(PUBLIC_DAMAGE_FRACTION * int(n))):
+        raise AssertionError("public quota must be 50% rounded down")
     public = tuple(sorted([*rng.choice(bins[0], ph, replace=False),
                            *rng.choice(bins[1], pm, replace=False)]))
     public = tuple(int(e) for e in public)
@@ -261,6 +264,7 @@ def public_spec(problem):
     sd_by_cell = problem.get("duration_sd")
     spec = {"n_disrupted": problem["n"], "variant": problem["variant"], "scenario_seed": problem["seed"],
             "rules": asdict(problem["rules"]), "public_roads": problem["public_roads"],
+            "initial_public_damage_rule": "floor(0.5 * n_disrupted)",
             "flow_bins": problem["bins"], "hidden_quotas": problem["hidden_quotas"],
             "severity_estimate_probabilities": list(ESTIMATE_PROBABILITIES),
             "severity_truth_given_estimate": CONFUSION,

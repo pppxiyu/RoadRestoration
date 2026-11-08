@@ -12,6 +12,24 @@ or taken directly from the open-source network data.
 # a second problem through the experiment runner. Historical source is in .legacy/.
 DEFAULT_EXPERIMENT = "daily"
 
+
+def results_profiles():
+    """Named Results protocols, separate from the current training defaults.
+
+    Recorded experiment settings must never inherit newer training defaults.
+    Loading a profile neither starts computation nor mutates module constants.
+    """
+    import json
+    from pathlib import Path
+    return json.loads(Path(__file__).with_name("results_profiles.json").read_text(encoding="utf-8"))
+
+
+def results_profile(name):
+    profiles = results_profiles()["profiles"]
+    if name not in profiles:
+        raise ValueError(f"Unknown Results profile {name!r}; choose from {tuple(profiles)}")
+    return profiles[name]
+
 # --- legacy time / resources ---
 DELTA_T_H = 3.0          # Wall-clock hours per discrete time slot; the recovery horizon is split into slots of this length (given by the problem setup).
 BEHAVIOR_MODEL = "damage_shortfall"  # Experiment runner's currently connected environment option.

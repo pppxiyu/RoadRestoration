@@ -1,184 +1,69 @@
 # Road restoration research code
 
-`main.py` runs the finalized daily problem implemented in `src/problem/daily.py`.
-The detailed research logic map is kept locally under `doc/notes/`. Runnable
-source, input data and dependencies are versioned alongside selected study and
-slide artifacts. Local experiment archives and notes remain on disk.
-Unsupported historical methods fail before an experiment starts.
+本仓库区分当前标准方法和已用于论文的历史实验。`main.py`运行当前标准，`src.config.results_profile`选择已登记的Results配置。历史模型按真实训练设置复现，不会自动套用当前默认值。
 
-Install the direct dependencies with `python -m pip install -r requirements.txt`
-(Python 3.14.5). The optional independent traffic-solver audit also needs
-AequilibraE; production experiments do not.
+## 1 · 从哪里开始
 
-## Current problem
+| 目的 | 入口 |
+| --- | --- |
+| 查看论文各组图及分析逻辑 | [outputs/sections/README.md](outputs/sections/README.md) |
+| 找实验、模型、数据和HPC位置 | [outputs/experiments/README.md](outputs/experiments/README.md) |
+| 查看探索性研究 | [outputs/studies/README.md](outputs/studies/README.md) |
+| 当前方法参数与Results配置 | `src/config.py`及`src/results_profiles.json` |
+| 当前完整RL训练与阶段改进 | `src/experiment/daily_rl.py`及`src/methods/daily_improvement.py` |
 
-- Integer days, one nonpreemptive crew, no crew-accessibility constraint and no
-  voluntary waiting when an eligible road is available.
-- Five explicit branches, selected with `--n 6`, `--n 11`, `--n 17`, `--n 23`, or
-  `--n mixed`. There is no implicit branch selection. Mixed draws each scale with
-  probability 25% independently for every scenario, not an exactly balanced sample.
-  Normal two-way traffic defines high/middle/low
-  bins of 8/21/9 roads. Low-flow roads are excluded. The approved per-scale quotas
-  split damage into shared initially public roads and scenario-specific hidden roads.
-  Public counts are 60% rounded half up, giving public/hidden counts of 4/2, 7/4,
-  10/7 and 14/9. The high/middle-bin quotas remain unchanged.
-- Estimated severities have probabilities 25%/50%/25%. True severity is conditional
-  on the estimate, with 60% on the diagonal. Hidden roads are discovered on days 1–14.
-- Rule (4)'s exact mean/standard-deviation table defines lognormal durations,
-  upper-truncated at 2.5 times the target mean and rounded half up to at least one day.
-  A public duration estimate rounds the expectation of this actual integer
-  distribution for the public road class and estimated severity. True duration
-  is sampled using true severity. These are not interchangeable.
-- Natural demand reaches 100% on day 35. The complete environment includes the
-  approved seven-day response, previous demand deviation and cumulative unmet-demand
-  feedback to gravity sensitivity, weighted by destination POI composition. It does
-  not add unmet trips directly to future demand. Day 35 is not a deadline.
-- Each day contributes 50% normalized travel-time loss and 50% per-OD flow loss.
-  Disconnected trips have zero actual flow and no artificial time-loss penalty.
-  Losses accumulate without dividing by a fixed horizon or recovery duration.
-- Evaluation ends only after all repairs finish and every positive-demand OD
-  reaches 99% of normal flow, with demand-weighted time at most 101% of normal,
-  for two consecutive days. Scenario objectives are averaged with equal weights.
+`doc/`、`paper/`、`.cache/`和`.legacy/`保留既有结构。根目录不再另设analysis、reproducibility或临时编译目录。
 
-The current rule version is `finalized_poi_public60_20261021`. Changing rules, duration
-parameters or scenario truth changes the experiment identity. Historical samples,
-models and results are not overwritten or reused as results of the new setting.
+## 2 · 当前标准问题与RL
 
-## Running and checking
+问题版本为`finalized_poi_public50_floor_20261108`。初始公开受损道路数量为`floor(0.5*n)`，其余初始隐藏。n为6、11、17、23时，公开与隐藏数量分别为3/3、5/6、8/9、11/12。道路分层抽样、隐藏道路发现和真实维修时长继续由`src/problem`生成，不能只按数量替换已有场景。
+
+完整环境保留七日需求响应、需求偏差记忆和累计未满足需求的POI反馈。一个非抢占式维修队按整数日维修，不允许有候选动作时主动等待。系统评价累加50%时间损失和50%逐OD流量损失。所有维修完成且交通满足连续两日恢复条件后才结束，day35不是恢复期限。
+
+RL使用双向OD编码和需求记忆。基础训练从随机权重开始，学习率0.0005，奖励是道路开通后至灾后day60的单次维修长期改善。阶段改进使用64场景基础训练之外的扩展训练集合，共256个训练场景，11个验证场景和50个测试场景保持分离。
+
+阶段改进覆盖全部决策位置，每次抽取8个状态。每轮从紧邻上一轮候选继续，历史最佳模型单独保留。连续5轮没有刷新历史最佳验证损失后停止，最终只按验证结果选模。改进初始学习率0.001，ReduceLROnPlateau跨轮保留，factor为0.5、patience为1、最小学习率0.00001。每轮新建Adam，轮内中断恢复优化器、调度器和随机状态。这些新标准不表示历史4.2或4.3模型已经按它重训。
+
+## 3 · 运行当前方法
+
+直接依赖见`requirements.txt`。当前本地环境为Python3.14系列，历史HPC运行使用各实验记录中的独立环境。代理模型研究有自己的DGL环境，不是主程序依赖。
 
 ```powershell
-python main.py --n 11 --solve rl_s2v_saa64_adaptive --training-behavior both
-python main.py --n 11 --solve ga
-python main.py --n 11 --solve compare
-```
-
-Inspect any of the five branches without starting training or saving experiment
-results. This constructs the problem and its normal-network traffic reference,
-but does not evaluate a repair policy or run the test set.
-
-```powershell
-python main.py --n 6 --describe
+python -m pip install -r requirements.txt
 python main.py --n 11 --describe
-python main.py --n 17 --describe
-python main.py --n 23 --describe
-python main.py --n mixed --describe
+python main.py --n 11 --solve rl_s2v_saa64_adaptive --training-behavior response7d --workers 4
+python main.py --n 11 --solve ga --workers 4
 ```
 
-The base dataset has 64 training, 11 validation and 50 test scenarios. GA scores each
-single fixed-priority policy on all 64 training scenarios in the complete
-environment; test scenarios never enter its search. At execution it selects the
-highest-priority currently discovered, unrepaired road.
+`--describe`不训练策略。`--n`支持6、11、17、23及mixed。`natural`是明确的训练环境对照，`both`分别训练两种环境。各模型在自身训练假设下验证，最终完整环境测试与训练选择分开。新实验写入`outputs/experiments`，既有源码和输入身份不同则不混用检查点。
 
-`ga_saa10_flow_insert` retains its separate 10-training-scenario budget and requires
-an existing current-setting full-RL result. It is not silently expanded to 256.
-The latest approved multiround RL method uses 64 base-training scenarios and 256
-improvement-training scenarios. `improvement_splits` supplies four independent
-64-world blocks, keeping the original block and the same validation/test sets.
-For seed 42 the block seeds are 42021, 42121, 42221 and 42321. In the mixed branch,
-scale is categorical and conditional labels use per-scale LHS within each block.
-This is not one joint 256-row LHS. There are 317 distinct worlds in total.
+## 4 · 重现已确定的Results
 
-This update finalizes the problem setting only. The CLI's existing base-RL trainers
-are not the automatic multiround action-difference runner described in the local
-`latest_rl_method.json`. Historical implementations and results remain legacy.
-No learning algorithm, reward, learning rate or stopping rule was changed here.
-
-For RL, `--training-behavior natural` is the explicit training ablation;
-`response7d` is the default complete training environment, and `both` runs both.
-Each model validates under its own training assumptions. Both final policies are
-tested under the complete seven-day-response environment. Road class is included
-by default in both variants (17 road inputs and six global inputs);
-`--no-road-class-input` explicitly requests the 14-column ablation.
-The S2V architecture, learning algorithm, hyperparameters and stopping rules are
-unchanged by the problem-definition update.
-
-`--workers 4` controls parallel simulation. The training/search seed does not
-change the common scenario seed. Either GA or RL can initialize the same frozen
-problem dataset; later methods verify it instead of rewriting it. Checkpoints
-resume only with compatible source and settings. Each run saves a source archive.
-
-## Five modules and their interfaces
-
-```mermaid
-flowchart LR
-  E[Experiment] <--> P[Problem]
-  E <--> V[Environment]
-  E <--> M[Methods]
-  E <--> A[Analysis]
-  V <--> M
+```powershell
+python -m src.analysis.results list
+python -m src.analysis.results verify all
+python -m src.analysis.results render all
+python -m src.analysis.results prepare behavior_transfer --output C:/work/replay_transfer
 ```
 
-| Responsibility | Current implementation | Data exchanged |
-|---|---|---|
-| Problem definition | `src/problem/daily.py` | Public network/reference data; complete scenarios and timed public revelations. |
-| Repair and traffic environment | `src/environment/daily.py` | Public observations; legal actions; interval rewards; daily losses and recovery termination. |
-| Decision methods | `src/methods/daily_s2v.py`, `daily_ga.py` | Trained policy or fixed priority; selected eligible road. |
-| Experiment execution | `main.py`, `src/experiment/daily.py`, `daily_ga.py` | Frozen samples, source/settings identities, run orchestration and records. |
-| Analysis and visualization | `src/analysis/daily.py`, `src/analysis/viz/` | Verified paired results, computation times and figures. |
+`verify`检查原文件身份并独立重算关键统计。`render`只读已保存科学结果，重画图和动画。`prepare`建立新的独立计算目录，复制对应冻结源码和输入，写明执行命令及HPC脚本，不自动训练或提交。排名与动画的大数组留在HPC，逐文件位置和SHA有记录，具体步骤见实验README。
 
-Complete severity, duration and discovery truth stays inside the environment.
-An observation contains discovered roads and their public estimates, current OD
-flows/times and directional road flows/times. The demand-history encoder also uses
-cumulative unmet demand through yesterday, yesterday's observed demand deviation,
-and yesterday's connectivity. History is updated daily during repairs; the policy
-receives an observation only at decision times. Closed links are observed with zero
-flow and infinite travel time; hidden damage identities and future discoveries
-are not supplied as labels. RL continues to use its existing feature encoder.
+当前归位的7张PNG和2个完整HTML均保留原交付形式。4.2的简化训练模型、受控需求实验与4.3完整RL是不同的研究配置，不能合并成一个默认模型。实验代码可用于独立重算，改变科学设置后应另存新实验。
 
-Rewards are negative cumulative loss between decisions. The final action also
-receives the subsequent traffic-recovery losses. With the approved initial public
-roads, total episode reward is the negative scenario objective.
+这些图已从保留数据重画并逐字节核对通过。完整仿真重算尚未全部验证，双环境评价的小样本检查中有两条完整环境轨迹出现微小数值差异，原结果保留，具体检查范围及后续复核见实验README。
 
-## Output layout
+## 5 · 模块与文件责任
 
-```text
-outputs/
-  current/
-   experiments/
-    n11_finalized_poi_public60_20261021_discovery_response7d_1day_lhs50_s42_<fingerprint>/
-      performance_distribution.png
-      method_figures/
-      data/
-        manifest.json
-        problem/
-        scenarios/{train,validation,test}.json
-        methods/<method>_seed<seed>/
-          config/  results/  log/
-        analysis/{results,config}/
-        evaluation.csv
-        gallery_index.json
-   studies/
-    problem_setting/
-    traffic_solver/
-    human_behavior/
-```
+| 模块 | 责任 |
+| --- | --- |
+| `src/problem` | 路网、场景、信息披露及维修条件 |
+| `src/environment` | 道路和需求演化、交通分配、观测及系统评价 |
+| `src/methods` | 决策网络、规则、GA及阶段改进算法 |
+| `src/experiment` | 训练、评价、检查点和独立实验重放 |
+| `src/analysis` | Results统计核对和可视化 |
 
-Figures are visible at the experiment level; raw tables, models, configurations
-and logs stay under `data/`. Existing historical experiment folders retain their
-own settings and evidence and are not relabeled as the current problem.
+`outputs/sections`面向论文，`outputs/studies`保存研究分析，`outputs/experiments`保存实验和来源。原模型、缓存及失败证据不因整理而删除。图形修改不改变原始数据，重算不覆盖历史实验。
 
-The unchanged gravity calibration is a frozen model input at
-`data/siouxfalls_toy/behavior/gravity_model.json`. New problem construction reads
-this input rather than reaching into historical study outputs. Calibration-study
-outputs have a separate destination and cannot overwrite this frozen input.
-Current traffic caches use `.cache/current/daily_traffic`.
+## 6 · 版本控制范围
 
-## Historical code
-
-Local historical archives belong under `.legacy/` (never `legacy/`); they and prior experiment outputs are not
-published in this GitHub repository. Completed historical runs kept locally
-carry their original `config/source_snapshot.zip`.
-
-All experiment results existing before the 2026-10-21 finalization are legacy,
-including those retained at their original paths under `outputs/` and `.cache/`.
-The local `.legacy/LATEST.md` links the latest pre-finalization code/input archive
-and the result inventory. Consult legacy results only when explicitly requested.
-The pre-finalization repository snapshot is not a substitute for each older run's
-own source/configuration evidence. No old experiment is to be started or resumed.
-
-Old problem samplers and experiment runners now reject execution explicitly.
-Some historical modules remain under `src/` because current methods reuse their
-S2V network, genetic operators or traffic utilities. These shared helpers are not
-a second active problem setting. Older analysis/study code is retained for
-reference; it is not a production experiment route. Earlier migration backups
-under `.legacy/` remain available locally.
+Git仅发布源码、输入数据、源码中的Results配置及选定的根目录文件。`doc/`和`outputs/`全部保留在本地，不纳入Git，也不上传GitHub。上文指向这些目录的链接用于本地仓库。大权重、原始数组和本地历史材料保存在本地或HPC，并通过本地`outputs/experiments/index.json`和各`artifact_manifest.json`匹配。只有源码的干净克隆不包含这些文档、实验索引和结果数据。

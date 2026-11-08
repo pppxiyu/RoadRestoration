@@ -55,8 +55,8 @@ class ProblemDefinitionChecks(unittest.TestCase):
         np.testing.assert_array_equal(recovery_fraction(np.arange(35, 501), DailyRules()), 1.)
 
     def test_02_all_scales_public_hidden_and_flow_quotas(self):
-        self.assertEqual(QUOTAS, {6: (1, 3, 0, 2), 11: (1, 6, 1, 3),
-                                 17: (2, 8, 1, 6), 23: (3, 11, 2, 7)})
+        self.assertEqual(QUOTAS, {6: (1, 2, 0, 3), 11: (1, 4, 1, 5),
+                                 17: (2, 6, 1, 8), 23: (3, 8, 2, 10)})
         for n, problem in self.problems.items():
             with self.subTest(n=n):
                 high, middle, low = map(set, problem["bins"])
@@ -67,7 +67,7 @@ class ProblemDefinitionChecks(unittest.TestCase):
                 self.assertEqual(ranked, sorted(ranked, key=lambda e: (-problem["baseline_flow"][e], e)))
                 public = set(problem["public_roads"])
                 ph, pm, hh, hm = QUOTAS[n]
-                self.assertEqual(len(public), int(np.floor(.60 * n + .5)))
+                self.assertEqual(len(public), n // 2)
                 self.assertEqual((len(public & high), len(public & middle)), (ph, pm))
                 hidden_sets = set()
                 for sample in self.samples[n].values():
@@ -204,8 +204,8 @@ class ProblemDefinitionChecks(unittest.TestCase):
     def test_09_all_repairs_individual_od_and_consecutive_days(self):
         scenario = Scenario("stop", (RoadDamage(1, 1, 1, 1, 1, 0),))
         sim = ConstantTraffic()
+        sim.ctx.update(H0=np.array([10., 10.]), baseline_u=np.ones(2))
         episode = DailyEpisode(sim, scenario, "natural", disconnected_flow="unserved")
-        sim.ctx = dict(H0=np.array([10., 10.]), baseline_u=np.ones(2))
         def day(flows, cost=1.):
             episode.traffic = TrafficState("test", episode.day, np.array(flows), np.array(flows),
                                            np.array([cost, cost]), np.ones(2, dtype=bool),

@@ -14,7 +14,7 @@ from scipy.sparse import csc_matrix, csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.special import xlogy
 
-from src.environment.evaluate import _matrix_from_H
+from src.environment.traffic_network import _matrix_from_H
 from src.environment.ue import _Network
 
 

@@ -11,7 +11,7 @@ convex shifted-demand problem, not a smoothed behavior model.
 import numpy as np
 from scipy.optimize import minimize
 from src.environment.ue import _Network
-from src.environment.evaluate import _matrix_from_H
+from src.environment.traffic_network import _matrix_from_H
 from src.environment.fixed_point_demand import _shortest_paths, _incidence_matrix
 
 

@@ -14,7 +14,6 @@ Run from the repository root:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
@@ -24,33 +23,20 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.special import gammaln
 
-from src import config as P
 from src.experiment.layout import study_dir
 from src.problem.io import load_toy_network, od_to_matrix
 from src.environment.ue import solve_ue
+# Preserve the research API while keeping runtime model loading independent.
+from src.environment.gravity_model import (
+    MODEL_VERSION, TRAVEL_COST_BASIS, GRAVITY_UE_TARGET_RELATIVE_GAP,
+    GRAVITY_UE_MAX_ITERATIONS, DEFAULT_MODEL, MODEL_SOURCES,
+    _source_fingerprint, _artifact_is_current, load_gravity_model,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = study_dir("human_behavior") / "gravity"
-MODEL_VERSION = 2
-TRAVEL_COST_BASIS = "baseline_user_equilibrium_congested_shortest_path_v1"
-GRAVITY_UE_TARGET_RELATIVE_GAP = float(P.UE_RGAP_DEF)
-GRAVITY_UE_MAX_ITERATIONS = 2000
-# Frozen calibration is a model input, not an implicitly reused legacy result.
-DEFAULT_MODEL = ROOT / "data/siouxfalls_toy/behavior/gravity_model.json"
 STUDY_MODEL = DEFAULT_OUTPUT / "data" / "gravity_model.json"
-MODEL_SOURCES = (
-    ROOT / "data/siouxfalls_toy/network/od_pairs.csv",
-    ROOT / "data/siouxfalls_toy/network/edges.csv",
-)
-
-
-def _source_fingerprint() -> dict[str, str]:
-    """Hashes of the raw inputs that define the fitted model."""
-    return {
-        str(path.relative_to(ROOT)).replace("\\", "/"): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in MODEL_SOURCES
-    }
 
 
 def complete_od_table() -> pd.DataFrame:
@@ -295,21 +281,6 @@ def _artifact_from_fit(
     }
 
 
-def _artifact_is_current(artifact: dict) -> bool:
-    return (
-        artifact.get("model_version") == MODEL_VERSION
-        and artifact.get("travel_cost_basis") == TRAVEL_COST_BASIS
-        and artifact.get("fit_settings")
-        == {
-            "ue_target_relative_gap": GRAVITY_UE_TARGET_RELATIVE_GAP,
-            "ue_max_iterations": GRAVITY_UE_MAX_ITERATIONS,
-        }
-        and artifact.get("source_sha256") == _source_fingerprint()
-        and set(artifact.get("coefficients", {}))
-        == {"intercept", "log_origin_total", "log_destination_total", "travel_cost_minutes"}
-    )
-
-
 def fit_and_save_gravity_model(model_path: Path = STUDY_MODEL) -> dict:
     """Fit once from raw Sioux Falls data and persist a transparent JSON model artifact."""
     if Path(model_path).resolve() == DEFAULT_MODEL.resolve():
@@ -334,23 +305,6 @@ def ensure_gravity_model(model_path: Path = STUDY_MODEL, force: bool = False) ->
         if _artifact_is_current(artifact):
             return artifact
     return fit_and_save_gravity_model(model_path)
-
-
-def load_gravity_model(model_path: Path = DEFAULT_MODEL) -> dict:
-    """Load the shared fitted model and reject stale or incompatible artifacts."""
-    model_path = Path(model_path)
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"gravity model is missing at {model_path}; restore the approved frozen input, "
-            "or explicitly provide a separately approved model path"
-        )
-    artifact = json.loads(model_path.read_text(encoding="utf-8"))
-    if not _artifact_is_current(artifact):
-        raise RuntimeError(
-            f"gravity model at {model_path} does not match the current raw inputs or schema"
-        )
-    artifact["path"] = str(model_path)
-    return artifact
 
 
 def predict_gravity_flow(

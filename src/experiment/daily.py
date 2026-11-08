@@ -171,6 +171,8 @@ def _save_evaluation(run_dir, trajectories, seconds):
                                 chosen_road=state["roads"][pick], candidates=json.dumps(state["roads"]), reward=reward))
         feature_arrays[f"scenario_{i}_x"] = np.stack([s["x"] for s in trajectory["states"]])
         feature_arrays[f"scenario_{i}_g"] = np.stack([s["g"] for s in trajectory["states"]])
+        if "od" in trajectory["states"][0]:
+            feature_arrays[f"scenario_{i}_od"] = np.stack([s["od"] for s in trajectory["states"]])
         feature_arrays[f"scenario_{i}_picks"] = np.asarray(trajectory["picks"], dtype=int)
     pd.DataFrame(rows).to_csv(results / "test_results.csv", index=False)
     pd.DataFrame(daily_rows).to_csv(results / "test_daily.csv", index=False)
@@ -190,7 +192,21 @@ def _save_evaluation(run_dir, trajectories, seconds):
     return summary
 
 
-def run(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed=P.SEED,
+def run(n=11, training_behavior="response7d", seed=P.SEED, workers=4, *, scenario_seed=P.SEED,
+        road_class_input=True, traffic_input=True, problem_variant=CURRENT_PROBLEM, od_history_input=False,
+        improvement_settings=None):
+    """Formal RL entry. Complete OD-memory inputs, horizon reward and improvement."""
+    if not road_class_input or not traffic_input or od_history_input:
+        raise ValueError("standard RL uses dual OD-memory, road-class and traffic inputs; "
+                         "legacy input ablations are available only through rl_ablations")
+    from src.experiment.daily_rl import run as run_standard
+    from src.methods.daily_improvement import ImprovementSettings
+    return run_standard(n, training_behavior, seed, workers, scenario_seed=scenario_seed,
+        problem_variant=problem_variant, improvement_settings=(
+            ImprovementSettings() if improvement_settings is None else improvement_settings))
+
+
+def _run_ablation(n=11, training_behavior="both", seed=P.SEED, workers=4, *, scenario_seed=P.SEED,
         road_class_input=True, traffic_input=True, problem_variant=CURRENT_PROBLEM, od_history_input=False):
     """Run either/both training environments with public road class by default.
 
@@ -387,7 +403,7 @@ def run_rl_ablations(n=11, seed=42, workers=4):
             for method in plan["methods"]:
                 _write_json(status_path, dict(status="running", current_method=method["name"],
                             completed_methods=completed, pid=os.getpid(), workers=workers))
-                result = run(n, method["training_behavior"], seed, workers,
+                result = _run_ablation(n, method["training_behavior"], seed, workers,
                              road_class_input=True, traffic_input=method["traffic_input"])
                 if result != folder:
                     raise AssertionError("ablation methods did not share the same experiment")

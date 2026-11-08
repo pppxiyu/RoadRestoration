@@ -20,8 +20,8 @@ from src.experiment.daily import _write_json
 from src.experiment.layout import ROOT
 
 
-OLD = ROOT / "outputs/experiments/n11_discovery_response7d_1day_lhs50_s42_368acec5"
-NEW = ROOT / "outputs/experiments/n11_discovery_response7d_1day_lhs50_s42_d35c7028"
+OLD = ROOT / ".legacy/experiments/n11_discovery_response7d_1day_lhs50_s42_368acec5"
+NEW = ROOT / ".legacy/experiments/n11_discovery_response7d_1day_lhs50_s42_d35c7028"
 FULL = "rl_s2v_saa64_adaptive_train_response7d_roadclass_seed42"
 GA = "ga_saa10_flow_insert_seed42"
 

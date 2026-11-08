@@ -20,7 +20,7 @@ class FinalizedProblemChecks(unittest.TestCase):
         cls.mixed = build_mixed_problem()
         cls.problems = {**cls.mixed['components'], 'mixed': cls.mixed}
 
-    def test_five_branches_share_full_behavior_and_public60(self):
+    def test_five_branches_share_full_behavior_and_public50_floor(self):
         self.assertEqual(BRANCHES, ('6', '11', '17', '23', 'mixed'))
         self.assertEqual(PROBLEM_VARIANTS, (CURRENT_PROBLEM,))
         for n, problem in self.problems.items():
@@ -32,7 +32,8 @@ class FinalizedProblemChecks(unittest.TestCase):
                 self.assertEqual(problem['rules'], self.mixed['rules'])
                 self.assertNotIn('duration_sd', problem)
                 if n != 'mixed':
-                    self.assertEqual(len(problem['public_roads']), int(.6 * n + .5))
+                    self.assertEqual(len(problem['public_roads']), n // 2)
+                    self.assertEqual(sum(problem['hidden_quotas']), n - n // 2)
 
     def test_four_blocks_preserve_base_and_evaluation_worlds(self):
         for n, problem in self.problems.items():
@@ -61,7 +62,8 @@ class FinalizedProblemChecks(unittest.TestCase):
     def test_retired_variants_rejected_before_traffic_or_io(self):
         from src.experiment.daily import prepare
         with patch('src.problem.daily.load_toy_network') as load:
-            for old in ('current', 'poi_unmet', 'poi_hidden6', 'public75_duration25', 'poi_mixed_n'):
+            for old in ('current', 'poi_unmet', 'poi_hidden6', 'public75_duration25', 'poi_mixed_n',
+                        'finalized_poi_public60_20261021'):
                 for entry in (build_problem, prepare):
                     kwargs = {'variant': old} if entry is build_problem else {'problem_variant': old}
                     with self.subTest(old=old, entry=entry.__name__), self.assertRaises(ValueError):
@@ -76,12 +78,12 @@ class FinalizedProblemChecks(unittest.TestCase):
                  patch('src.problem.mixed_daily.build_mixed_problem', return_value=self.mixed):
                 problem, splits, simulator, encoder, folder, identity = prepare(branch)
                 try:
-                    self.assertTrue(folder.is_relative_to(ROOT / 'outputs/current/experiments'))
+                    self.assertTrue(folder.is_relative_to(ROOT / 'outputs/experiments'))
                     self.assertEqual(identity['problem']['variant'], CURRENT_PROBLEM)
                     self.assertEqual(len(splits['train']), 64)
                 finally:
                     simulator.close()
-        self.assertEqual(study_dir('human_behavior'), ROOT / 'outputs/current/studies/human_behavior')
+        self.assertEqual(study_dir('human_behavior'), ROOT / 'outputs/studies/human_behavior')
 
 
 class FinalizedEntryChecks(unittest.TestCase):

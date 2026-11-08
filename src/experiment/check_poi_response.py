@@ -49,7 +49,7 @@ def audit_and_freeze():
         assert spec == public_spec(baseline_problem)
         assert all([s.record() for s in splits[k]] == [s.record() for s in baseline_splits[k]]
                    for k in splits)
-        old = ROOT / "outputs/experiments/n11_discovery_response7d_1day_lhs50_s42_d35c7028"
+        old = ROOT / ".legacy/experiments/n11_discovery_response7d_1day_lhs50_s42_d35c7028"
         for split in splits:
             assert [s.record() for s in splits[split]] == json.loads(
                 (old / f"data/scenarios/{split}.json").read_text(encoding="utf-8"))

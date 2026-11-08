@@ -227,7 +227,8 @@ def rollout(episode, encoder, q_function, *, epsilon=0.0, rng=None):
 
 def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
           identity, hp=None, stop_params=None, ep_cap=EP_CAP, redraw=None,
-          initialization=None, pause_after=None):
+          initialization=None, pause_after=None,
+          reward_description="negative cumulative daily loss until next action, including terminal recovery"):
     """Daily SAA trainer, preserving existing network, loss and stop defaults.
 
     run_batch receives a split name, world indices and frozen network parameters.
@@ -263,7 +264,7 @@ def train(encoder, run_batch, *, train_count, validation_count, seed, run_dir,
     contract = dict(identity=identity, seed=seed, hyperparameters=h, stop=stop_config,
                     ep_cap=ep_cap, feature_schema=encoder.specification(),
                     delivery=POLICY_DELIVERY,
-                    reward="negative cumulative daily loss until next action, including terminal recovery",
+                    reward=reward_description,
                     discount="existing gamma per decision, not per calendar day")
     if initialization is not None:
         contract["initialization"] = initialization["metadata"]

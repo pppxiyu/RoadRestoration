@@ -1,0 +1,779 @@
+{
+  "schema": 1,
+  "results_plan": "doc/literature_analysis/notes/14-results-plan-current-20261107.md",
+  "default_training": "main.py and src.experiment.daily_rl, public floor(0.5*n), standard_20261108",
+  "rule": "Historical Results profiles are isolated scientific configurations. Do not apply current defaults to existing checkpoints.",
+  "sections": {
+    "case_background": {
+      "title": "案例背景",
+      "profiles": [],
+      "status": "plan_only"
+    },
+    "behavior_effects": {
+      "title": "简化环境开发方法的局限与行为机制的影响",
+      "profiles": [
+        "behavior_transfer",
+        "behavior_ranking",
+        "behavior_congestion",
+        "behavior_latent"
+      ],
+      "status": "recorded_results"
+    },
+    "full_rl_performance": {
+      "title": "完整环境和完整建模标准设置下的RL表现",
+      "profiles": [
+        "full_rl",
+        "full_baselines"
+      ],
+      "status": "recorded_results"
+    },
+    "advantage_conditions": {
+      "title": "RL表现更好的条件",
+      "profiles": [],
+      "status": "plan_only"
+    },
+    "decision_mechanisms": {
+      "title": "RL优势背后的决策规则与机制",
+      "profiles": [],
+      "status": "plan_only"
+    },
+    "robustness": {
+      "title": "RL优势的稳健性",
+      "profiles": [],
+      "status": "plan_only"
+    }
+  },
+  "profiles": {
+    "behavior_transfer": {
+      "section": "behavior_effects",
+      "experiment": "outputs/experiments/simplified_rl_transfer_20261102",
+      "renderer": "transfer",
+      "protocol": {
+        "problem": "historical n11 poi_hidden6, public 5 hidden 6",
+        "training_environment": "OD-matched simplified",
+        "simplified_demand": "Calendar-day OD curve averaged from 256 flow-priority response trajectories, no current network feedback",
+        "complete_demand": "Original response7d with original exogenous curve and intact-network cost reference",
+        "evaluation_scenarios": 50,
+        "weights_sha256": "5175a4fccad9e38a45ff5effbb24e4b64e143792639fa5d9f274a6fd12757cb0",
+        "selected_round": 4,
+        "selected_update": 4000,
+        "selection_caveat": "Round 4 was validation-selected in its chain. User later selected this version after viewing test outcomes across experiments. Not a test-blind cross-experiment choice.",
+        "ga": "same frozen solution, no retraining",
+        "objective": "0.5 * time_loss + 0.5 * flow_loss"
+      },
+      "source_archive": "outputs/experiments/behavior_results_archive_20261102",
+      "source_comparison": "outputs/sections/behavior_effects/support/comparison_round4_both_environments.json",
+      "remote": {
+        "host": "torch",
+        "root": "/scratch/xp2239/road_od_matched_rl_sample8_lr001_group3_20261102",
+        "jobs": [
+          "21660688",
+          "21669269",
+          "21695608"
+        ]
+      },
+      "compute": "transfer",
+      "input_manifests": [
+        "runtime/formal_manifest.json",
+        "runtime/continuation_group3_manifest.json"
+      ]
+    },
+    "behavior_ranking": {
+      "section": "behavior_effects",
+      "experiment": "outputs/experiments/demand_response_anchor_20261103",
+      "renderer": "ranking",
+      "protocol": {
+        "experiment": "decision_date_anchor_post_completion_response_v3",
+        "worlds": 100,
+        "scenario_seed": 2026110201,
+        "sampling_seed": 2026110202,
+        "bootstrap_seed": 2026110203,
+        "bootstrap_replicates": 2000,
+        "policies": [
+          "rl"
+        ],
+        "minimum_candidates": 6,
+        "max_states_per_trajectory": 6,
+        "horizon_after_start_days": 60,
+        "tie_absolute_tolerance": 0.1,
+        "fixed_rl_sha256": "5175a4fccad9e38a45ff5effbb24e4b64e143792639fa5d9f274a6fd12757cb0",
+        "response_equation": "Q=B+(1-w)*(Qprev-Bprev)+w*B*expm1(-gamma*(c-C))",
+        "response_reference": "C frozen jointly with B from reference trajectory; no reference roads or repair order used downstream",
+        "response_change": "paired external demand and cost; original absolute deviation memory and POI history retained",
+        "curve_origin": "one original response7d static-flow-priority trajectory per world, frozen before policy prefixes; H0 after original reference completion",
+        "prefix": "natural demand with passive original cumulative shortfall history",
+        "cache": "true calendar date and curve SHA; no original stationary-day shortcut",
+        "no_training": true,
+        "no_sensitivity": true,
+        "no_animation": true,
+        "decision_cost_ties": "minimum response loss among simplified near-best set, explicitly optimistic tie resolution",
+        "source_experiment": "demand_response_decision_ranking_v2_20261103",
+        "anchor": "B0 and C0 taken at decision day and constant for all subsequent days",
+        "response_activation": "only on and after selected repair completion; fixed demand before completion; none baseline never activates",
+        "passive_history": "continue actual unmet history during construction and no-repair, never reset",
+        "reuse": "100 existing paired world curves and fixed RL; regenerate unchanged RL prefixes to recover all 468 eligible snapshots; compare original 292 snapshots",
+        "iterations": {
+          "joint": 200,
+          "nested": 1000,
+          "ue_multiplier": 3
+        },
+        "sampling": "all eligible positions among first six decisions, at least six currently selectable roads",
+        "expected_states": 468
+      },
+      "compute": "anchor",
+      "remote": {
+        "host": "torch",
+        "root": "/scratch/xp2239/demand_response_decision_ranking_v3_anchor_20261103",
+        "job": "21787600"
+      },
+      "input_manifests": [
+        "runtime/source_manifest.json",
+        "runtime/execution_manifest.json",
+        "runtime/inherited_manifest.json"
+      ],
+      "scope": "Best single repair under fixed 60-day observation, not a globally optimal recovery sequence",
+      "availability": {
+        "original_states": 468,
+        "valid_states": 467,
+        "excluded": [
+          "w062_rl_d03"
+        ],
+        "remote_inherited_files": 394
+      }
+    },
+    "behavior_congestion": {
+      "section": "behavior_effects",
+      "experiment": "outputs/experiments/demand_response_congestion_20261103",
+      "renderer": "animation",
+      "compute": "animation",
+      "parent": "behavior_ranking",
+      "case": [
+        {
+          "kind": "congestion",
+          "evidence": {
+            "state_id": "w008_rl_d04",
+            "world": 8,
+            "policy": "rl",
+            "decision_position": 4,
+            "day": 39,
+            "candidates": [
+              8,
+              10,
+              14,
+              18,
+              21,
+              31,
+              32
+            ],
+            "snapshot_sha256": "0c0b9d4db377e0b0d9d32a19e30ce01529285314befd502ae3c9150b82cda712",
+            "category": "changed",
+            "fixed_best": [
+              10
+            ],
+            "response_best": [
+              18
+            ],
+            "penalty_min": 2.140446712425822,
+            "penalty_max": 2.140446712425822,
+            "sankey_eligible": false,
+            "flows": [],
+            "fixed_rewards": [
+              0.5400890044435336,
+              5.407075344632222,
+              0.19896820106550095,
+              5.053035178947617,
+              2.1069280943947444,
+              1.53678637254235,
+              2.294601582117462
+            ],
+            "response_rewards": [
+              -2.8840088863455104,
+              -0.4092321847317759,
+              -2.4836824428908457,
+              1.7312145276940463,
+              -1.0970580820311486,
+              -1.9134941058757189,
+              -1.1187700062530297
+            ],
+            "response_best_loss": 9.600152713197184,
+            "relative_cost_percent": 22.295965245254717,
+            "fixed_losses": [
+              10.791278236447697,
+              5.9242918962590085,
+              11.13239903982573,
+              6.278332061943614,
+              9.224439146496486,
+              9.79458086834888,
+              9.036765658773769
+            ],
+            "response_losses": [
+              14.215376127236741,
+              11.740599425623007,
+              13.815049683782076,
+              9.600152713197184,
+              12.42842532292238,
+              13.24486134676695,
+              12.45013724714426
+            ],
+            "a": 10,
+            "b": 18,
+            "branches": {
+              "fixed_a": {
+                "loss": 5.9242918962590085,
+                "completion": 40,
+                "time_loss": 0.013781837051878298,
+                "flow_loss": 11.834801955466139
+              },
+              "fixed_b": {
+                "loss": 6.278332061943614,
+                "completion": 44,
+                "time_loss": 0.7218621684210884,
+                "flow_loss": 11.834801955466139
+              },
+              "fixed_none": {
+                "loss": 11.33136724089123,
+                "completion": null,
+                "time_loss": 10.827932526316326,
+                "flow_loss": 11.834801955466139
+              },
+              "response_a": {
+                "loss": 11.740599425623007,
+                "completion": 40,
+                "time_loss": 16.401560255875612,
+                "flow_loss": 7.079638595370403
+              },
+              "response_b": {
+                "loss": 9.600152713197184,
+                "completion": 44,
+                "time_loss": 12.982396370163416,
+                "flow_loss": 6.217909056230955
+              },
+              "response_none": {
+                "loss": 11.33136724089123,
+                "completion": null,
+                "time_loss": 10.827932526316326,
+                "flow_loss": 11.834801955466139
+              }
+            }
+          },
+          "example_day": 46
+        }
+      ],
+      "kind": "congestion",
+      "template": "outputs/sections/behavior_effects/support/congestion_standalone_template.html",
+      "remote": {
+        "host": "torch",
+        "root": "/scratch/xp2239/demand_response_decision_ranking_v3_anchor_20261103/audits/animation_case_v3",
+        "job": "21791566"
+      },
+      "orange": "max(Q_response - Q_fixed, 0) for same action/day/OD, passively labelled on response equilibrium paths; not link net-flow difference",
+      "animation_status": "Approved display saved; mechanism narrative remains revisable per Results plan"
+    },
+    "behavior_latent": {
+      "section": "behavior_effects",
+      "experiment": "outputs/experiments/demand_response_latent_20261103",
+      "renderer": "animation",
+      "compute": "animation",
+      "parent": "behavior_ranking",
+      "case": [
+        {
+          "kind": "latent",
+          "evidence": {
+            "state_id": "w093_rl_d04",
+            "world": 93,
+            "policy": "rl",
+            "day": 15,
+            "decision_position": 4,
+            "category": "changed",
+            "relative_cost_percent": 22.69935447888517,
+            "a": 23,
+            "b": 17,
+            "sankey_eligible": true,
+            "branches": {
+              "fixed_a": {
+                "loss": 13.725823732308376,
+                "completion": 17,
+                "time_loss": 1.3546646097122648,
+                "flow_loss": 26.096982854904486
+              },
+              "fixed_b": {
+                "loss": 14.497729182767035,
+                "completion": 24,
+                "time_loss": 2.8984755106295825,
+                "flow_loss": 26.096982854904486
+              },
+              "fixed_none": {
+                "loss": 23.91777459231318,
+                "completion": null,
+                "time_loss": 21.73856632972187,
+                "flow_loss": 26.096982854904486
+              },
+              "response_a": {
+                "loss": 14.468127258983445,
+                "completion": 17,
+                "time_loss": 6.3836148732109,
+                "flow_loss": 22.55263964475599
+              },
+              "response_b": {
+                "loss": 11.79152679362564,
+                "completion": 24,
+                "time_loss": 2.8984755106295825,
+                "flow_loss": 20.684578076621698
+              },
+              "response_none": {
+                "loss": 23.91777459231318,
+                "completion": null,
+                "time_loss": 21.73856632972187,
+                "flow_loss": 26.096982854904486
+              }
+            },
+            "actions": {
+              "a": {
+                "road": 23,
+                "u": 13,
+                "v": 24,
+                "duration": 2,
+                "initial_flow": 7036.306225824245
+              },
+              "b": {
+                "road": 17,
+                "u": 10,
+                "v": 15,
+                "duration": 9,
+                "initial_flow": 4984.520790010511
+              }
+            },
+            "congestion": {
+              "repair_spillover_days": 59,
+              "paired_higher_cost_days": 59,
+              "repair_spillover_examples": [
+                {
+                  "day": 23,
+                  "od": [
+                    10,
+                    17
+                  ],
+                  "fixed_cost": 13.5073153187206,
+                  "response_cost": 22.20512831693798,
+                  "fixed_none_cost": 14.376148658389667,
+                  "response_none_cost": 14.376148658389667,
+                  "fixed_demand": 2106.6900306448265,
+                  "response_demand": 2534.0801456719296,
+                  "positive_demand": 33486.59472900178,
+                  "negative_demand": 10157.655679025034,
+                  "net_demand_percent": 11.449385207616391,
+                  "demand_gain_vs_none_percent": 11.449385207616398
+                },
+                {
+                  "day": 24,
+                  "od": [
+                    10,
+                    17
+                  ],
+                  "fixed_cost": 13.5073153187206,
+                  "response_cost": 22.20381806722996,
+                  "fixed_none_cost": 14.376148658389667,
+                  "response_none_cost": 14.376148658389667,
+                  "fixed_demand": 2106.6900306448265,
+                  "response_demand": 2533.1124202637197,
+                  "positive_demand": 33595.65712277459,
+                  "negative_demand": 10234.316228618714,
+                  "net_demand_percent": 11.465287396509307,
+                  "demand_gain_vs_none_percent": 11.465287396509305
+                },
+                {
+                  "day": 25,
+                  "od": [
+                    10,
+                    17
+                  ],
+                  "fixed_cost": 13.5073153187206,
+                  "response_cost": 22.180569849073187,
+                  "fixed_none_cost": 14.376148658389667,
+                  "response_none_cost": 14.376148658389667,
+                  "fixed_demand": 2106.6900306448265,
+                  "response_demand": 2531.8017510056834,
+                  "positive_demand": 33600.181272586844,
+                  "negative_demand": 10249.655685544247,
+                  "net_demand_percent": 11.459979456143337,
+                  "demand_gain_vs_none_percent": 11.459979456143346
+                }
+              ],
+              "paired_examples": [
+                {
+                  "day": 23,
+                  "od": [
+                    10,
+                    17
+                  ],
+                  "fixed_cost": 13.5073153187206,
+                  "response_cost": 22.20512831693798,
+                  "fixed_none_cost": 14.376148658389667,
+                  "response_none_cost": 14.376148658389667,
+                  "fixed_demand": 2106.6900306448265,
+                  "response_demand": 2534.0801456719296,
+                  "positive_demand": 33486.59472900178,
+                  "negative_demand": 10157.655679025034,
+                  "net_demand_percent": 11.449385207616391,
+                  "demand_gain_vs_none_percent": 11.449385207616398
+                },
+                {
+                  "day": 24,
+                  "od": [
+                    10,
+                    17
+                  ],
+                  "fixed_cost": 13.5073153187206,
+                  "response_cost": 22.20381806722996,
+                  "fixed_none_cost": 14.376148658389667,
+                  "response_none_cost": 14.376148658389667,
+                  "fixed_demand": 2106.6900306448265,
+                  "response_demand": 2533.1124202637197,
+                  "positive_demand": 33595.65712277459,
+                  "negative_demand": 10234.316228618714,
+                  "net_demand_percent": 11.465287396509307,
+                  "demand_gain_vs_none_percent": 11.465287396509305
+                },
+                {
+                  "day": 25,
+                  "od": [
+                    10,
+                    17
+                  ],
+                  "fixed_cost": 13.5073153187206,
+                  "response_cost": 22.180569849073187,
+                  "fixed_none_cost": 14.376148658389667,
+                  "response_none_cost": 14.376148658389667,
+                  "fixed_demand": 2106.6900306448265,
+                  "response_demand": 2531.8017510056834,
+                  "positive_demand": 33600.181272586844,
+                  "negative_demand": 10249.655685544247,
+                  "net_demand_percent": 11.459979456143337,
+                  "demand_gain_vs_none_percent": 11.459979456143346
+                }
+              ]
+            },
+            "latent": {
+              "fixed_rank_b": 2,
+              "net_b_vs_fixed": 1951713.1630487745,
+              "net_a_vs_fixed": 1278090.1615795488,
+              "has_example": true,
+              "served_gain_b_tripdays": 673623.0014692259,
+              "max_daily_gain": 17274.887608992776,
+              "time_advantage_b": 3.485139362581317,
+              "flow_advantage_b": 1.8680615681342907,
+              "example": {
+                "day": 33,
+                "od": [
+                  15,
+                  10
+                ],
+                "demand_a": 1508.6803536429647,
+                "demand_b": 2850.4209897049927,
+                "fixed_b": 1561.9379846583483,
+                "cost_a": 43.90080338425143,
+                "cost_b": 10.050732670079643,
+                "positive_b_vs_fixed": 47838.9956625676
+              }
+            },
+            "temporal": {
+              "same_duration": false,
+              "switches": 1,
+              "min_b_advantage": -1.1115563044193215,
+              "max_b_advantage": 2.6766004653578026,
+              "days": [
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                35,
+                36,
+                37,
+                38,
+                39,
+                40,
+                41,
+                42,
+                43,
+                44,
+                45,
+                46,
+                47,
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55,
+                56,
+                57,
+                58,
+                59,
+                60,
+                61,
+                62,
+                63,
+                64,
+                65,
+                66,
+                67,
+                68,
+                69,
+                70,
+                71,
+                72,
+                73,
+                74,
+                75
+              ],
+              "response_cumulative_b_advantage": [
+                0.0,
+                -0.17267353000725782,
+                -0.33644336875829683,
+                -0.49367456539099686,
+                -0.6484850287413968,
+                -0.8026546705239908,
+                -0.9569186035050079,
+                -1.1115563044193215,
+                -1.0591769613397268,
+                -0.9928515222555427,
+                -0.9192843111960389,
+                -0.8420718649693475,
+                -0.7630812104352525,
+                -0.683345790146002,
+                -0.6033937972497747,
+                -0.5235057698375085,
+                -0.4438243551586165,
+                -0.3644218450522452,
+                -0.2853401414183443,
+                -0.20660171215530898,
+                -0.12821500601362512,
+                -0.05018291072357073,
+                0.027465972201771827,
+                0.1047623073074897,
+                0.1817019321959199,
+                0.2582946658698031,
+                0.3345080421162283,
+                0.4104217345945509,
+                0.4860083321971267,
+                0.5612648708143322,
+                0.6361859581120797,
+                0.7107683021971782,
+                0.7850085766979849,
+                0.8589757322647209,
+                0.9326179730733095,
+                1.0059286722526446,
+                1.0789248533225768,
+                1.1516025912464745,
+                1.2239650230276986,
+                1.296028348775609,
+                1.3677810360803289,
+                1.4392358716694034,
+                1.5103886842294507,
+                1.5812509169619027,
+                1.6518157773619073,
+                1.7220979525938631,
+                1.7920875617066443,
+                1.8617620182239332,
+                1.931177673818386,
+                2.0003103149133423,
+                2.0691232534007256,
+                2.1376869743267175,
+                2.205940627807882,
+                2.2739566254783394,
+                2.34168079878218,
+                2.409167840259757,
+                2.4763997692555932,
+                2.5433308875428153,
+                2.610078690243032,
+                2.6766004653578026
+              ],
+              "fixed_cumulative_b_advantage": [
+                0.0,
+                -0.17274492983058987,
+                -0.34548985966117973,
+                -0.5182347894917696,
+                -0.6909797193223595,
+                -0.8637246491529491,
+                -1.036469578983539,
+                -1.2092145088141288,
+                -1.2008047192303701,
+                -1.1923949296466114,
+                -1.1839851400628527,
+                -1.1755753504790936,
+                -1.1671655608953344,
+                -1.1587557713115753,
+                -1.150345981727816,
+                -1.141936192144057,
+                -1.1335264025602978,
+                -1.1251166129765382,
+                -1.1167068233927786,
+                -1.108297033809019,
+                -1.0998872442252594,
+                -1.0914774546414998,
+                -1.0830676650577402,
+                -1.0746578754739806,
+                -1.066248085890221,
+                -1.0578382963064614,
+                -1.0494285067227018,
+                -1.0410187171389422,
+                -1.0326089275551826,
+                -1.024199137971423,
+                -1.0157893483876643,
+                -1.0073795588039047,
+                -0.9989697692201451,
+                -0.9905599796363855,
+                -0.9821501900526268,
+                -0.9737404004688681,
+                -0.9653306108851094,
+                -0.9569208213013507,
+                -0.948511031717592,
+                -0.9401012421338333,
+                -0.9316914525500746,
+                -0.9232816629663159,
+                -0.9148718733825572,
+                -0.9064620837987984,
+                -0.8980522942150397,
+                -0.889642504631281,
+                -0.8812327150475223,
+                -0.8728229254637636,
+                -0.8644131358800049,
+                -0.8560033462962462,
+                -0.8475935567124875,
+                -0.8391837671287288,
+                -0.8307739775449701,
+                -0.8223641879612114,
+                -0.8139543983774526,
+                -0.8055446087936939,
+                -0.7971348192099352,
+                -0.7887250296261765,
+                -0.7803152400424178,
+                -0.7719054504586591
+              ]
+            }
+          },
+          "example_day": 33
+        }
+      ],
+      "kind": "latent",
+      "template": "outputs/sections/behavior_effects/support/latent_standalone_template.html",
+      "remote": {
+        "host": "torch",
+        "root": "/scratch/xp2239/demand_response_decision_ranking_v3_anchor_20261103/audits/animation_latent_v3",
+        "job": "21794123"
+      },
+      "orange": "max(Q_response - Q_fixed, 0) for same action/day/OD, passively labelled on response equilibrium paths; not link net-flow difference",
+      "animation_status": "Approved display saved; mechanism narrative remains revisable per Results plan"
+    },
+    "full_rl": {
+      "section": "full_rl_performance",
+      "experiment": "outputs/experiments/full_rl_verification_20261106",
+      "renderer": "full",
+      "compute": "actions",
+      "protocol": {
+        "model_hashes": {
+          ".cache\\babaee_horizon_pure_rl\\training\\results\\model_best_validation.pt": "c8abe301113f6eb0f31976558546d2470601e64cbd3f19ec421da8baeda92ffc",
+          ".cache\\babaee_base0005_paired_two_rounds\\stage1\\fit\\weights_1000.pt": "724f957c76be29496582ef973a642239e549de84580535c0f56b56768e3262e8",
+          ".cache\\babaee_base0005_paired_two_rounds\\stage2\\fit\\weights_300.pt": "dc3ec4d2bfb72bf863f88ad55689a5b4adf2ecbb96a99f80a997a5123ce5b04e",
+          ".cache\\babaee_base0005_paired_round3\\stage3\\fit\\weights_300.pt": "7abe2e65d76087d3a8d6a84ff9ebef83b3a58cc4294f840e3fea8f6c5c97de7b",
+          ".cache\\babaee_horizon_pure_rl\\selection.json": "96c5010e097776b7b3971a33230733bb57edf513c8843e8bde9420423c47f83b",
+          ".cache\\babaee_base0005_paired_two_rounds\\stage1\\selection.json": "3706ab9df990b03d793cca4595c208c56cf4e5002878882ec45c2cd22de7738c",
+          ".cache\\babaee_base0005_paired_two_rounds\\stage2\\selection.json": "fa18079210a34b49b3de196a46d4d7ce385f2a1fa138415c89a78c05f3496f4c",
+          ".cache\\babaee_base0005_paired_round3\\stage3\\selection.json": "f44c7e6a8350d54f10b12ef325ca2c7f8f8e1eca45104a4ad32922a55a996fd5",
+          ".cache\\babaee_horizon_pure_rl\\training\\config\\training.json": "5cda0eee31f28c19c9841007ce283a6261d627d9f404831a492f2c9ca893c936",
+          "outputs\\experiments\\n11_poi_hidden6_discovery_response7d_1day_lhs50_s42_0514ff84\\data\\problem\\gravity_model.json": "b00869cded4a7f09f26dfd78e8a12f1a13c24383dae61dcb301cd3a3a7e9bfb1",
+          "outputs\\experiments\\n11_poi_hidden6_discovery_response7d_1day_lhs50_s42_0514ff84\\data\\scenarios\\test.json": "fba0023e6a36ef4d45608448f7705cc0c258449bdd9b5de2ae0d90654287765f"
+        },
+        "environment": "legacy n11 poi_hidden6 response7d",
+        "test_worlds": 50,
+        "decision_index": 2,
+        "selection": "Third decision of each saved final-policy test trajectory, before inspecting candidate returns",
+        "continuation": "Same frozen final round2 policy after every candidate first action",
+        "diagnostics_models": [
+          "Base RL",
+          "Round 1",
+          "Round 2 (selected)",
+          "Round 3 (rejected)"
+        ],
+        "base_target_caveat": "Base horizon-improvement Q targets differ from full-recovery cost differences. Diagonal calibration applies to refinement scores.",
+        "partial_observation_caveat": "Each target is one realized hidden world, not conditional expected return or a global optimum.",
+        "ties": "Exclude only abs(realized loss difference)<=1e-8 from sign-accuracy denominator; preserve every pair in source data",
+        "training": false,
+        "solver_unchanged": true
+      },
+      "current_display": {
+        "rounds": [
+          0,
+          1,
+          2
+        ],
+        "topx": [
+          6,
+          3
+        ],
+        "pairs": "both actions within simulated top X",
+        "bootstrap": 2000
+      },
+      "training": {
+        "base_learning_rate": 0.0005,
+        "base_reward": "Opening-day improvement through disaster day 60 against no-further-repair",
+        "improvement_learning_rate": 0.0005,
+        "positions": [
+          0,
+          2,
+          4,
+          6,
+          8
+        ],
+        "selected_round": 2,
+        "selected_update": 300,
+        "status": "Historical completed model; NOT trained with the new 20261108 scheduler/all-position/patience5 standard"
+      },
+      "pending": "Top3 internal ordering did not improve. Preserve measured values and revisit later.",
+      "remote": null
+    },
+    "full_baselines": {
+      "section": "full_rl_performance",
+      "experiment": "outputs/experiments/full_baseline_comparison_20261021",
+      "renderer": "baselines",
+      "compute": "baseline_replay",
+      "protocol": {
+        "methods": [
+          "static flow priority",
+          "dynamic accessibility / duration",
+          "GA",
+          "final full RL"
+        ],
+        "scenarios": 50,
+        "quantiles": [
+          0.1,
+          0.9
+        ],
+        "metrics": [
+          "time_loss",
+          "flow_loss",
+          "road damage free-flow delay",
+          "network congestion delay"
+        ]
+      },
+      "recomputation": "Replay all 200 recorded schedules in the frozen environment and verify original daily losses; no retraining or policy search."
+    }
+  }
+}
